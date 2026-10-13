@@ -1,10 +1,12 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { GitflareSecurity } from './security';
-import type { Mission, Repository } from '../shared/types';
+import type { Mission, ModelConnection, Repository } from '../shared/types';
+import { assertPinnedModel } from './model-config';
 import { executeMission, type ExecutionEnv, type ExecutionResult } from './execution';
 
 export interface MissionWorkflowParams { repositoryId: string; missionId: string; epoch: number }
 interface Coordinator {
+  getModelConnections(): Promise<ModelConnection[]>;
   getRepository(repositoryId: string): Promise<Repository | undefined>;
   getMission(missionId: string): Promise<Mission | undefined>;
   isMissionActive(missionId: string, epoch: number): Promise<boolean>;
@@ -28,9 +30,11 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
         if (!authorization || (repository.workspaceId ?? 'legacy') !== authorization.workspaceId || authorization.principal.workspaceId !== authorization.workspaceId) throw new Error('Execution authorization is missing or belongs to another workspace');
         const assertAuthority = () => this.env.GITFLARE_SECURITY.getByName('security').check(authorization.principal, 'execute', 'repository', repositoryId, missionId);
         await assertAuthority();
+        const catalog = this.env.GITFLARE_COORDINATOR.getByName(authorization.workspaceId === 'legacy' ? 'catalog:owner' : `catalog:${authorization.workspaceId}`);
+        const modelConnections = await catalog.getModelConnections();
         const result = await executeMission(
-          { repository, mission, testCommand: this.env.TEST_COMMAND ?? 'node --test --test-reporter=tap tests/*.test.mjs' },
-          this.env,
+          { repository, mission, modelConnections, testCommand: this.env.TEST_COMMAND ?? 'node --test --test-reporter=tap tests/*.test.mjs' },
+          { ...this.env, assertModelAllowed: async model => assertPinnedModel(await catalog.getModelConnections(), model) },
           async (progress) => { await coordinator.recordExecution(missionId, epoch, progress, false); },
           () => coordinator.isMissionActive(missionId, epoch),
           assertAuthority,

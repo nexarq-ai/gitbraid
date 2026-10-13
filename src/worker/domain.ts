@@ -1,4 +1,7 @@
 import type { CreateMissionInput } from '../shared/types';
+import { modelIdentifier } from './model-config';
+
+export const MISSION_REQUEST_MAX_BYTES = 262_144;
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly code: string, public readonly detail: string) {
@@ -46,19 +49,24 @@ export function repositoryRef(value: string): string {
 }
 
 export function missionInput(body: Record<string, unknown>): CreateMissionInput {
+  if (body.skillChange !== undefined) throw new ApiError(400, 'SKILL_ENDPOINT_REQUIRED', 'Create skill proposals through the repository Skills endpoint.');
   const input: CreateMissionInput = { title: requireString(body.title, 'Title', 120), prompt: requireString(body.prompt, 'Prompt', 8000, 10), repositoryId: requireString(body.repositoryId, 'Repository', 100) };
+  if (body.expectedBaseSha !== undefined) {
+    if (typeof body.expectedBaseSha !== 'string' || !/^[a-f0-9]{40}$/.test(body.expectedBaseSha)) throw new ApiError(400, 'INVALID_COMMIT', 'Provide the exact lowercase 40 character proposal base commit SHA.');
+    input.expectedBaseSha = body.expectedBaseSha;
+  }
   if (body.acceptanceCriteria !== undefined) {
     if (!Array.isArray(body.acceptanceCriteria) || body.acceptanceCriteria.length > 12) throw new ApiError(400, 'INVALID_CRITERIA', 'Provide up to 12 acceptance criteria.');
     input.acceptanceCriteria = body.acceptanceCriteria.map((criterion) => requireString(criterion, 'Acceptance criterion', 500));
   }
   if (body.tasks !== undefined) {
-    if (!Array.isArray(body.tasks) || body.tasks.length !== 2) throw new ApiError(400, 'INVALID_TASKS', 'Assign exactly two agent tasks.');
+    if (!Array.isArray(body.tasks) || body.tasks.length < 1 || body.tasks.length > 8) throw new ApiError(400, 'INVALID_TASKS', 'Assign between one and eight agent tasks.');
     input.tasks = body.tasks.map((task: unknown) => {
       if (!task || typeof task !== 'object' || Array.isArray(task)) throw new ApiError(400, 'INVALID_TASKS', 'Each task must include a name, role, and task description.');
       const fields = task as Record<string, unknown>;
-      return { name: requireString(fields.name, 'Agent name', 60), role: requireString(fields.role, 'Agent role', 80), task: requireString(fields.task, 'Agent task', 2500, 10) };
+      return { name: requireString(fields.name, 'Agent name', 60), role: requireString(fields.role, 'Agent role', 80), task: requireString(fields.task, 'Agent task', 2500, 10), ...(fields.model === undefined ? {} : { model: modelIdentifier(fields.model) }) };
     });
-    if (input.tasks[0].name.toLowerCase() === input.tasks[1].name.toLowerCase()) throw new ApiError(400, 'INVALID_TASKS', 'Give each agent a distinct name.');
+    if (new Set(input.tasks.map(task => task.name.toLowerCase())).size !== input.tasks.length) throw new ApiError(400, 'INVALID_TASKS', 'Give each agent a distinct name.');
   }
   return input;
 }
@@ -86,7 +94,7 @@ export function isLocalRequest(request: Request, appEnv: string | undefined): bo
   return appEnv === 'local' && ['localhost', '127.0.0.1', '[::1]'].includes(new URL(request.url).hostname);
 }
 
-export async function readJson(request: Request): Promise<Record<string, unknown>> {
+export async function readJson(request: Request, maxBytes = 16_384): Promise<Record<string, unknown>> {
   const reader = request.body?.getReader();
   if (!reader) throw new ApiError(400, 'INVALID_JSON', 'A JSON object is required.');
   const chunks: Uint8Array[] = [];
@@ -95,9 +103,9 @@ export async function readJson(request: Request): Promise<Record<string, unknown
     const { done, value } = await reader.read();
     if (done) break;
     length += value.byteLength;
-    if (length > 16_384) {
+    if (length > maxBytes) {
       await reader.cancel();
-      throw new ApiError(413, 'REQUEST_TOO_LARGE', 'Requests must be smaller than 16 KB.');
+      throw new ApiError(413, 'REQUEST_TOO_LARGE', `Requests must not exceed ${maxBytes} bytes.`);
     }
     chunks.push(value);
   }

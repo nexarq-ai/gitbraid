@@ -36,7 +36,7 @@ import {
   SignOutIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import type { AccessSnapshot, Mission, Repository, Workspace } from "../shared/types";
+import type { AccessSnapshot, Repository, Workspace } from "../shared/types";
 import { request, RequestError, selectWorkspace } from "./api";
 import {
   BranchIllustration,
@@ -58,8 +58,11 @@ import McpConnections from "./McpConnections";
 import Homepage from "./SelfHostedHome";
 import AccessSettings from "./AccessSettings";
 import RepositoryWork from "./RepositoryWork";
+import ProposalCreate from "./ProposalCreate";
+import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
+import ModelConnections from "./ModelConnections";
 
-type Modal = "mission" | "repository" | "connect" | "learn" | "session" | null;
+type Modal = "repository" | "connect" | "learn" | "session" | null;
 const blankWorkspace: Workspace = {
   name: "Your workspace",
   mode: "local",
@@ -91,7 +94,6 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [toast, setToast] = useState("");
-  const [selectedRepository, setSelectedRepository] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadGeneration = useRef(0);
@@ -226,9 +228,8 @@ export default function App() {
   }
 
   function createMission(repositoryId?: string) {
-    if (!permissions.includes("contribute")) { notify("Your role cannot create missions."); return; }
-    setSelectedRepository(repositoryId ?? workspace.repositories[0]?.id ?? "");
-    setModal(workspace.repositories.length ? "mission" : "repository");
+    if (!permissions.includes("contribute")) { notify("Your role cannot create proposals."); return; }
+    navigate(repositoryId ? `repository/${repositoryId}/proposals/new` : "proposals/new");
   }
 
   async function signOut() {
@@ -277,14 +278,18 @@ export default function App() {
     );
   }
 
+  const creatingProposal = route === "proposals/new" || /^repository\/[^/]+\/proposals\/new$/.test(route);
+  const importingRepository = /^repository\/[^/]+\/import$/.test(route);
+  const importRepository = importingRepository ? workspace.repositories.find(repo => repo.id === route.split("/")[1]) : undefined;
+  const proposalRepositoryId = route.startsWith("repository/") && creatingProposal ? route.split("/")[1] : undefined;
   const requestedPage = ["signin", "signup"].includes(route) ? "overview" : route.split("/")[0];
   const page = requestedPage === "access" ? "settings" : requestedPage;
-  const pageName =
+  const pageName = importingRepository ? "Import code" : creatingProposal ? "Create a proposal" :
     {
       overview: "Overview",
       repositories: "Repositories",
-      missions: "Missions",
-      mission: "Mission",
+      missions: "Proposals",
+      mission: "Proposal",
       repository: "Repository",
       activity: "Activity",
       settings: "Settings",
@@ -315,7 +320,7 @@ export default function App() {
     { id: "repositories", label: "Repositories", icon: FolderSimpleIcon },
     {
       id: "missions",
-      label: "Missions",
+      label: "Proposals",
       icon: GitBranchIcon,
       count: activeCount,
     },
@@ -377,7 +382,7 @@ export default function App() {
           {navigation.map((item) => (
             <button
               key={item.id}
-              className={`nav-item ${page === item.id || (page === "mission" && item.id === "missions") || (page === "repository" && item.id === "repositories") ? "active" : ""}`}
+              className={`nav-item ${page === item.id || ((page === "mission" || (page === "proposals" && creatingProposal)) && item.id === "missions") || (page === "repository" && item.id === "repositories") ? "active" : ""}`}
               onClick={() => navigate(item.id)}
               aria-current={page === item.id ? "page" : undefined}
             >
@@ -397,6 +402,7 @@ export default function App() {
             <GearSixIcon size={17} />
             Settings
           </button>
+          <button className={`nav-item ${route === "settings/models" ? "active" : ""}`} aria-current={route === "settings/models" ? "page" : undefined} onClick={() => navigate("settings/models")}><RobotIcon size={17} />AI models</button>
           <button className={`nav-item ${route === "settings/cloudflare" ? "active" : ""}`} aria-current={route === "settings/cloudflare" ? "page" : undefined} onClick={() => navigate("settings/cloudflare")}><CloudIcon size={17} />Cloudflare</button>
           <button className={`nav-item ${page === "docs" ? "active" : ""}`} onClick={() => navigate("docs/how-it-works")} aria-current={page === "docs" ? "page" : undefined}>
             <BookOpenIcon size={17} />
@@ -471,7 +477,7 @@ export default function App() {
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
           <>
-            {route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
+            {importingRepository ? importRepository ? <RepositoryImport key={importRepository.id} repository={importRepository} canManage={permissions.includes("manage")} canContribute={permissions.includes("contribute")} onBack={() => navigate(`repository/${importRepository.id}/code`)} onImported={item => setWorkspace(current => ({ ...current, repositories: current.repositories.map(repo => repo.id === item.id ? item : repo) }))} onCreateProposal={() => createMission(importRepository.id)} /> : <ErrorNotice message="This repository could not be found." /> : creatingProposal ? <ProposalCreate key={route} repositories={workspace.repositories} repositoryId={proposalRepositoryId} canContribute={permissions.includes("contribute")} canManage={permissions.includes("manage")} onImportRepository={id => navigate(`repository/${id}/import`)} onBack={() => navigate(proposalRepositoryId ? `repository/${proposalRepositoryId}/proposals` : "missions")} onCreateRepository={() => setModal("repository")} onCreated={async proposal => { await load(); navigate(`mission/${proposal.id}`); notify("Proposal draft created."); }} /> : route === "settings/models" ? <ModelConnections canManage={permissions.includes("manage")} /> : route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (
               <MissionDetail
@@ -497,9 +503,11 @@ export default function App() {
                 onOpenMission={(id, tab, runId) => navigate(`mission/${id}/${tab || "overview"}${runId ? `/${runId}` : ""}`)}
                 tab={route.split("/")[2] || "code"}
                 onTabChange={(tab) => navigate(`repository/${route.split("/")[1]}/${tab}`)}
+                onImport={() => navigate(`repository/${route.split("/")[1]}/import`)}
                 canManage={permissions.includes("manage")}
                 onNotify={notify}
                 canContribute={permissions.includes("contribute")}
+                canExecute={permissions.includes("execute")}
               />
             ) : (
               <>
@@ -558,7 +566,7 @@ export default function App() {
                           disabled={!permissions.includes("contribute")}
                           onClick={() => createMission()}
                         >
-                          Create mission
+                          Create proposal
                         </Button>
                       )
                     )}
@@ -584,7 +592,7 @@ export default function App() {
                       <div>
                         <div className="section-heading">
                           <h2>
-                            Recent missions
+                            Recent proposals
                             <span className="number-tag">
                               {workspace.missions.length}
                             </span>
@@ -607,7 +615,7 @@ export default function App() {
                           ) : (
                             <EmptyState
                               icon={<GitBranchIcon size={25} />}
-                              title="The next change starts with a mission"
+                              title="The next change starts with a proposal"
                               description="Describe what you want to build. Track each agent's work and review the result in one place."
                               action={
                                 <Button
@@ -617,7 +625,7 @@ export default function App() {
                                   disabled={!permissions.includes("contribute")}
                           onClick={() => createMission()}
                                 >
-                                  Create your first mission
+                                  Create your first proposal
                                 </Button>
                               }
                             />
@@ -767,7 +775,7 @@ export default function App() {
                         value={filter}
                         onValueChange={setFilter}
                         tabs={[
-                          { value: "all", label: "All missions" },
+                          { value: "all", label: "All proposals" },
                           {
                             value: "active",
                             label: `Active (${activeCount})`,
@@ -785,15 +793,15 @@ export default function App() {
                       <div className="search-input">
                         <MagnifyingGlassIcon size={15} />
                         <Input
-                          aria-label="Search missions"
-                          placeholder="Search missions…"
+                          aria-label="Search proposals"
+                          placeholder="Search proposals…"
                           value={search}
                           onChange={(event) => setSearch(event.target.value)}
                         />
                       </div>
                       <span className="status-strip">
                         {missionList.length}{" "}
-                        {missionList.length === 1 ? "mission" : "missions"}
+                        {missionList.length === 1 ? "proposal" : "proposals"}
                       </span>
                     </div>
                     <section className="panel">
@@ -808,8 +816,8 @@ export default function App() {
                           icon={<GitBranchIcon size={25} />}
                           title={
                             search || filter !== "all"
-                              ? "No missions match this view"
-                              : "Create your first mission"
+                              ? "No proposals match this view"
+                              : "Create your first proposal"
                           }
                           description={
                             search || filter !== "all"
@@ -831,7 +839,7 @@ export default function App() {
                             >
                               {search || filter !== "all"
                                 ? "Clear filters"
-                                : "Create mission"}
+                                : "Create proposal"}
                             </Button>
                           }
                         />
@@ -891,7 +899,7 @@ export default function App() {
                                       mission.repositoryId === repo.id,
                                   ).length
                                 }{" "}
-                                missions
+                                proposals
                               </span>
                             </div>
                             <button
@@ -920,7 +928,7 @@ export default function App() {
                           description={
                             search
                               ? "Try searching for another name."
-                              : "Keep your code and its mission history together."
+                              : "Keep your code and its proposal history together."
                           }
                           action={
                             <Button
@@ -945,7 +953,8 @@ export default function App() {
                 )}
                 {page === "settings" && (
                   <>
-                    <a className="text-link" href="#settings/cloudflare">Cloudflare account and resources</a>
+                    <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><img src={cloudflareIcon} alt="" /><div><h2>Cloudflare account and resources</h2><p>Connect your account and manage the services used by your repositories.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/cloudflare")}>Manage Cloudflare</Button></section>
+                    <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><RobotIcon size={27} /><div><h2>AI models</h2><p>Choose available Workers AI models and manage provider connections.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/models")}>Manage AI models</Button></section>
                     <AccessSettings selfHosted={authConfig.edition === "self-hosted"} repositories={workspace.repositories} onWorkspaceChanged={load} />
 
                     <section className="panel">
@@ -988,7 +997,7 @@ export default function App() {
                       </h3>
                       <p>
                         {workspace.mode === "local"
-                          ? "This is a local development workspace. Repository records and mission drafts are saved locally. Git hosting and agent execution require connected services."
+                          ? "This is a local development workspace. Repository records and proposal drafts are saved locally. Git hosting and agent execution require connected services."
                           : "Your account permissions determine what you can access and change. Agent execution is limited to authorized repositories and the services configured for this deployment."}
                       </p>
                       <a
@@ -1028,17 +1037,11 @@ export default function App() {
         modal={modal}
         onClose={() => setModal(null)}
         workspace={workspace}
-        repositoryId={selectedRepository}
-        onCreated={async (kind, item) => {
+        onCreated={async (item, importCode) => {
           await load();
           setModal(null);
-          if (kind === "mission") navigate(`mission/${item.id}`);
-          else navigate(`repository/${item.id}`);
-          notify(
-            kind === "mission"
-              ? "Mission draft created."
-              : "Repository created.",
-          );
+          navigate(importCode ? `repository/${item.id}/import` : creatingProposal ? `repository/${item.id}/proposals/new` : `repository/${item.id}`);
+          notify("Repository created.");
         }}
         onSignedIn={async () => {
           setModal(null);
@@ -1104,7 +1107,7 @@ function ActivityView({
         <EmptyState
           icon={<ActivityIcon size={25} />}
           title="Your workspace history starts here"
-          description="Mission creation, agent execution, checks, and review decisions will appear as they happen."
+          description="Proposal creation, agent execution, checks, and review decisions will appear as they happen."
         />
       )}
     </section>
@@ -1119,9 +1122,11 @@ function RepositoryDetail({
   onOpenMission,
   onNotify,
   canContribute,
+  canExecute,
   canManage,
   tab,
   onTabChange,
+  onImport,
 }: {
   repository?: Repository;
   workspace: Workspace;
@@ -1130,9 +1135,11 @@ function RepositoryDetail({
   onOpenMission: (id: string, tab?: string, runId?: string) => void;
   onNotify: (message: string) => void;
   canContribute: boolean;
+  canExecute: boolean;
   canManage: boolean;
   tab: string;
   onTabChange: (tab: string) => void;
+  onImport: () => void;
 }) {
   if (!repository)
     return (
@@ -1161,7 +1168,7 @@ function RepositoryDetail({
           </h1>
           <p>
             {repository.description ||
-              "Your source code and its mission history."}
+              "Your source code and its proposal history."}
           </p>
         </div>
         <Button
@@ -1185,8 +1192,8 @@ function RepositoryDetail({
             { value: "overview", label: "Overview" },
           ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
-      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
-        <RepositoryBrowser repository={repository} />
+      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
+        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} /></>
       ) : tab === "overview" ? (
         <>
           <section className="panel">
@@ -1231,7 +1238,7 @@ function RepositoryDetail({
               </div>
               {repository.remote && (
                 <div className="clipboard-row">
-                  <code>git clone {repository.remote}</code>
+                  <code>git clone {quoteGitArgument(repository.remote)}</code>
                   <Button
                     variant="ghost"
                     size="base"
@@ -1240,7 +1247,7 @@ function RepositoryDetail({
                     icon={CopyIcon}
                     onClick={() => {
                       void navigator.clipboard
-                        .writeText(`git clone ${repository.remote}`)
+                        .writeText(`git clone ${quoteGitArgument(repository.remote ?? "")}`)
                         .then(() => onNotify("Clone command copied."))
                         .catch(() =>
                           onNotify("Copy is unavailable in this browser."),
@@ -1278,7 +1285,7 @@ function RepositoryDetail({
               <EmptyState
                 icon={<GitBranchIcon size={25} />}
                 title="What should we build next?"
-                description="Start a mission to give your agents a clear outcome and track their contributions."
+                description="Start a proposal to give your agents a clear outcome and track their contributions."
                 action={
                   <Button
                     variant="secondary"
@@ -1304,8 +1311,8 @@ function RepositoryDetail({
           ) : (
             <EmptyState
               icon={<GitBranchIcon size={25} />}
-              title="No missions yet"
-              description="Create your first mission for this repository."
+              title="No proposals yet"
+              description="Create your first proposal for this repository."
               action={
                 <Button
                   variant="secondary"
@@ -1328,87 +1335,43 @@ function CreationDialog({
   modal,
   onClose,
   workspace,
-  repositoryId,
   onCreated,
   onSignedIn,
 }: {
   modal: Modal;
   onClose: () => void;
   workspace: Workspace;
-  repositoryId: string;
-  onCreated: (
-    kind: "mission" | "repository",
-    item: Mission | Repository,
-  ) => Promise<void>;
+  onCreated: (item: Repository, importCode?: boolean) => Promise<void>;
   onSignedIn: () => Promise<void>;
 }) {
-  const [title, setTitle] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [repoId, setRepoId] = useState(repositoryId);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [initializeReadme, setInitializeReadme] = useState(true);
+  const [importCode, setImportCode] = useState(false);
   const [gitignore, setGitignore] = useState("none");
   const [license, setLicense] = useState("none");
   const [copyrightHolder, setCopyrightHolder] = useState("");
   const [token, setToken] = useState("");
-  const [criteria, setCriteria] = useState("");
-  const [taskOne, setTaskOne] = useState("");
-  const [taskTwo, setTaskTwo] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mutation = useRef<{ signature: string; key: string } | null>(null);
 
   useEffect(() => {
-    setTitle("");
-    setPrompt("");
     setName("");
     setDescription("");
-    setInitializeReadme(true); setGitignore("none"); setLicense("none"); setCopyrightHolder("");
+    setImportCode(false); setInitializeReadme(true); setGitignore("none"); setLicense("none"); setCopyrightHolder("");
     setToken("");
-    setCriteria("");
-    setTaskOne("");
-    setTaskTwo("");
     setError("");
     setBusy(false);
-    setRepoId(repositoryId || workspace.repositories[0]?.id || "");
     mutation.current = null;
-  }, [modal, repositoryId]);
+  }, [modal]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
     setError("");
-    const acceptanceCriteria = criteria
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const tasks =
-      taskOne.trim() && taskTwo.trim()
-        ? [
-            { name: "Agent 1", role: "Implementation", task: taskOne.trim() },
-            {
-              name: "Agent 2",
-              role: "Complementary implementation",
-              task: taskTwo.trim(),
-            },
-          ]
-        : undefined;
-    const body =
-      modal === "session"
-        ? { token }
-        : modal === "repository" || modal === "connect"
-          ? { name: name.trim(), description: description.trim(), ...(modal === "repository" ? { initializeReadme, gitignore, license, copyrightHolder: copyrightHolder.trim() || undefined } : {}) }
-          : {
-              title: title.trim(),
-              prompt: prompt.trim(),
-              repositoryId: repoId,
-              acceptanceCriteria: acceptanceCriteria.length
-                ? acceptanceCriteria
-                : undefined,
-              tasks,
-            };
+    const body = modal === "session" ? { token } : { name: name.trim(), description: description.trim(), ...(modal === "repository" ? { initializeReadme: importCode ? false : initializeReadme, gitignore: importCode ? "none" : gitignore, license: importCode ? "none" : license, copyrightHolder: importCode ? undefined : copyrightHolder.trim() || undefined } : {}) };
     const signature = JSON.stringify({ modal, body });
     if (mutation.current?.signature !== signature)
       mutation.current = { signature, key: crypto.randomUUID() };
@@ -1425,14 +1388,7 @@ function CreationDialog({
           body,
           mutation.current.key,
         );
-        await onCreated("repository", result);
-      } else {
-        const result = await request<Mission>(
-          "/api/missions",
-          body,
-          mutation.current.key,
-        );
-        await onCreated("mission", result);
+        await onCreated(result, modal === "repository" && importCode);
       }
       mutation.current = null;
     } catch (failure) {
@@ -1447,15 +1403,12 @@ function CreationDialog({
   }
 
   const titleText = {
-    mission: "Create a proposal",
     repository: "Create a repository",
     connect: "Connect an existing repository",
     learn: "From intent to a reviewed change",
     session: "Sign in to Gitflare",
-  }[modal ?? "mission"];
+  }[modal ?? "repository"];
   const descriptionText = {
-    mission:
-      "Create a mission draft for this proposal: define the outcome and each agent task. No agent runs until you choose Start mission.",
     repository: "A home for your code and every agent contribution.",
     connect:
       "Add a repository that already exists in the Artifacts namespace connected to this workspace.",
@@ -1463,7 +1416,7 @@ function CreationDialog({
       "Keep the speed of parallel agents, with a clear record of what changed and why.",
     session:
       "Enter the owner access token for this workspace. It is used to establish a private session.",
-  }[modal ?? "mission"];
+  }[modal ?? "repository"];
 
   return (
     <Dialog.Root
@@ -1573,7 +1526,8 @@ function CreationDialog({
                     onChange={(event) => setDescription(event.target.value)}
                   />
                 </div>
-                {modal === "repository" && <div className="form-field"><label className="access-checkbox"><input type="checkbox" checked={initializeReadme} onChange={event => setInitializeReadme(event.target.checked)}/>Initialize with a README</label><label htmlFor="repository-gitignore">.gitignore template</label><select id="repository-gitignore" value={gitignore} onChange={event => setGitignore(event.target.value)}>{["none", "Node", "Python"].map(value => <option key={value} value={value}>{value === "none" ? "None" : value}</option>)}</select><label htmlFor="repository-license">License</label><select id="repository-license" value={license} onChange={event => setLicense(event.target.value)}>{["none", "MIT", "Apache-2.0"].map(value => <option key={value} value={value}>{value === "none" ? "No license" : value}</option>)}</select>{license === "MIT" && <><label htmlFor="repository-copyright">Copyright holder</label><Input id="repository-copyright" value={copyrightHolder} onChange={event => setCopyrightHolder(event.target.value)} required maxLength={200}/></>}</div>}
+                {modal === "repository" && <div className="form-field"><label htmlFor="repository-start">Start this repository</label><select id="repository-start" value={importCode ? "import" : "new"} onChange={event => setImportCode(event.target.value === "import")}><option value="new">Start a new project</option><option value="import">Import existing code</option></select><small>{importCode ? "Create an empty repository, then choose your project ZIP on the import page." : "Choose initial setup files for your repository."}</small></div>}
+                {modal === "repository" && !importCode && <div className="form-field"><label className="access-checkbox"><input type="checkbox" checked={initializeReadme} onChange={event => setInitializeReadme(event.target.checked)}/>Initialize with a README</label><label htmlFor="repository-gitignore">.gitignore template</label><select id="repository-gitignore" value={gitignore} onChange={event => setGitignore(event.target.value)}>{["none", "Node", "Python"].map(value => <option key={value} value={value}>{value === "none" ? "None" : value}</option>)}</select><label htmlFor="repository-license">License</label><select id="repository-license" value={license} onChange={event => setLicense(event.target.value)}>{["none", "MIT", "Apache-2.0"].map(value => <option key={value} value={value}>{value === "none" ? "No license" : value}</option>)}</select>{license === "MIT" && <><label htmlFor="repository-copyright">Copyright holder</label><Input id="repository-copyright" value={copyrightHolder} onChange={event => setCopyrightHolder(event.target.value)} required maxLength={200}/></>}</div>}
                 {modal === "repository" &&
                   workspace.mode === "local" &&
                   !workspace.integrations.find(
@@ -1588,99 +1542,7 @@ function CreationDialog({
                     </div>
                   )}
               </>
-            ) : (
-              <>
-                <div className="form-field">
-                  <label htmlFor="mission-repository">Repository</label>
-                  <select
-                    id="mission-repository"
-                    required
-                    value={repoId}
-                    onChange={(event) => setRepoId(event.target.value)}
-                  >
-                    {workspace.repositories.map((repo) => (
-                      <option key={repo.id} value={repo.id}>
-                        {repo.name}
-                        {repo.provider === "local" ? " (local)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-field">
-                  <label htmlFor="mission-title">Mission title</label>
-                  <Input
-                    id="mission-title"
-                    aria-label="Mission title"
-                    placeholder="Make checkout resilient to retries"
-                    required
-                    maxLength={120}
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                  />
-                </div>
-                <div className="form-field">
-                  <label htmlFor="mission-prompt">What should change?</label>
-                  <textarea
-                    id="mission-prompt"
-                    required
-                    minLength={10}
-                    maxLength={6000}
-                    placeholder="Describe the outcome, relevant context, and constraints…"
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                  />
-                </div>
-                <div className="form-field">
-                  <label htmlFor="mission-criteria">Acceptance criteria</label>
-                  <textarea
-                    id="mission-criteria"
-                    className="short-textarea"
-                    maxLength={1000}
-                    placeholder="One criterion per line (up to 12)…"
-                    value={criteria}
-                    onChange={(event) => setCriteria(event.target.value)}
-                  />
-                </div>
-                <div className="task-fields">
-                  <div className="form-field">
-                    <label htmlFor="agent-one">
-                      <RobotIcon size={14} />
-                      Agent 1 assignment
-                    </label>
-                    <textarea
-                      id="agent-one"
-                      required={!!taskTwo.trim()}
-                      minLength={10}
-                      className="short-textarea"
-                      maxLength={400}
-                      placeholder="Implement the core change…"
-                      value={taskOne}
-                      onChange={(event) => setTaskOne(event.target.value)}
-                    />
-                  </div>
-                  <div className="form-field">
-                    <label htmlFor="agent-two">
-                      <RobotIcon size={14} />
-                      Agent 2 assignment
-                    </label>
-                    <textarea
-                      id="agent-two"
-                      required={!!taskOne.trim()}
-                      minLength={10}
-                      className="short-textarea"
-                      maxLength={400}
-                      placeholder="Handle a complementary change…"
-                      value={taskTwo}
-                      onChange={(event) => setTaskTwo(event.target.value)}
-                    />
-                  </div>
-                </div>
-                <p className="security-note">
-                  <ShieldCheckIcon size={15} />
-                  Creating a draft does not start agent execution.
-                </p>
-              </>
-            )}
+            ) : null}
             {error && (
               <div className="form-error" role="alert">
                 {error}
@@ -1708,7 +1570,7 @@ function CreationDialog({
                     ? "Create repository"
                     : modal === "connect"
                       ? "Connect repository"
-                      : "Create draft"}
+                      : "Create repository"}
               </Button>
             </div>
           </form>
