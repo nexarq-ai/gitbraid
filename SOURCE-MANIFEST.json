@@ -255,8 +255,8 @@
     },
     {
       "path": "src/ui/ModelConnections.tsx",
-      "size": 8106,
-      "sha256": "c0373bb2598c3f20da8ac38bf77a6fa65738325c2fee2e5b595f880825bec1cc"
+      "size": 8188,
+      "sha256": "9265cc8a26e0ef9f740622f414980144c06874be8b4fb3662fc65172ffed1884"
     },
     {
       "path": "src/ui/proposal-create.css",
