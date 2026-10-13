@@ -68,5 +68,5 @@ export async function discoverRepositorySkills(source: ArtifactRepo, ref: string
 export async function listRepositorySkills(artifacts: ArtifactsBinding | undefined, repository: { name: string; provider: string; defaultBranch: string }, ref?: string): Promise<RepositorySkills> {
   if (!artifacts || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to discover its skills.');
   using source = await artifacts.get(repository.name);
-  return discoverRepositorySkills(source, ref || repository.defaultBranch);
+  return await discoverRepositorySkills(source, ref || repository.defaultBranch);
 }

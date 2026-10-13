@@ -400,8 +400,8 @@
     },
     {
       "path": "src/worker/repository-skills.ts",
-      "size": 4318,
-      "sha256": "63aecd456ac842f02912db5bff14d8ea4c579a042783e502997b936f812d23ef"
+      "size": 4324,
+      "sha256": "f77ffbee125b8b235c37d2192818c7dbdbbb0434889e15be0279bb63d41c83fd"
     },
     {
       "path": "src/worker/security.ts",
