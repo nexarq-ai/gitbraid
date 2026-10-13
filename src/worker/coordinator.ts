@@ -7,7 +7,14 @@ import { SqlStore } from './store';
 import { assertReviewClear, reviewMissionInput } from './proposal-review';
 
 interface Receipt<T> { fingerprint: string; result: T }
-interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string }
+interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number }
+// Longer than any landing request can run, so a claim this old has no live owner
+const STALE_INTEGRATION_CLAIM_MS = 600_000;
+
+function eligibleRaceRuns(mission: Mission): Mission['runs'] {
+  const checks = mission.raceChecks ?? mission.checks;
+  return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
+}
 export interface PreviewCapability { workspaceId?: string; principal?: import('./security').Principal; repositoryId: string; missionId: string; epoch: number; candidateSha: string; sandboxName: string; expiresAt: number }
 interface PreviewState { claimId: string; epoch: number; candidateSha: string; phase: 'preparing' | 'ready'; expiresAt: number; sandboxName?: string }
 export const PREVIEW_LEASE_MS = 120_000;
@@ -189,15 +196,19 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
       const now = new Date().toISOString();
       const criteria = input.acceptanceCriteria ?? [];
-      const tasks = input.tasks ?? [
+      const race = input.mode === 'race';
+      const tasks = input.tasks ?? (race ? [
+        { name: 'Candidate A', role: 'Independent attempt', task: 'Complete the whole mission with the smallest change that satisfies every criterion.' },
+        { name: 'Candidate B', role: 'Independent attempt', task: 'Complete the whole mission, favouring clarity and explicit error handling.' },
+      ] : [
         { name: 'Implementation agent', role: 'Implementation', task: 'Implement the core change. If this mission assigns explicit agent roles, implement only your assigned role.' },
         { name: 'Compatibility agent', role: 'Compatibility', task: 'Improve compatibility and error handling. If this mission assigns explicit agent roles, implement only your assigned role.' },
-      ];
+      ]);
       const mission: Mission = {
         id: crypto.randomUUID(), repositoryId: repository.id, title: input.title, prompt: input.prompt,
-        acceptanceCriteria: criteria, authorization,
+        acceptanceCriteria: criteria, authorization, ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
-        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). Your assigned task: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
+        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
       };
       return this.saveMission(mission, 'Mission created. Agent execution has not started.');
@@ -236,6 +247,9 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.approvedAt;
       delete mission.approvedBy;
       delete mission.integrationForkName;
+      delete mission.selectedRunId;
+      delete mission.raceChecks;
+      delete mission.raceChanges;
       mission.runs = mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, status: 'queued', changedFiles: [] }));
       this.queueDispatch(mission);
       return this.saveMission(mission, `Execution attempt ${mission.epoch} queued.`);
@@ -362,11 +376,14 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (result.integrationForkName !== undefined) mission.integrationForkName = result.integrationForkName;
     mission.status = 'running';
     if (complete) {
-      const passed = !!mission.candidateSha && mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') && mission.runs.every((run) => run.status === 'completed');
+      const race = mission.mode === 'race';
+      const passed = race
+        ? eligibleRaceRuns(mission).length > 0
+        : !!mission.candidateSha && mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') && mission.runs.every((run) => run.status === 'completed');
       mission.status = passed && !result.error ? 'needs_review' : 'failed';
       mission.error = result.error;
       return this.ctx.storage.transactionSync(() => {
-        this.saveMission(mission, passed && !result.error ? 'Candidate checks passed. Review the exact commit before approval.' : 'Execution finished without a passing integration candidate.', passed && !result.error ? 'success' : 'error');
+        this.saveMission(mission, passed && !result.error ? (race ? `${eligibleRaceRuns(mission).length} candidate(s) passed. Compare them and select one to review.` : 'Candidate checks passed. Review the exact commit before approval.') : 'Execution finished without a passing integration candidate.', passed && !result.error ? 'success' : 'error');
         this.archive(mission, 'completed');
         return mission;
       });
@@ -400,6 +417,25 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         }
       }
       return this.saveMission(mission, input.action === 'resolve' ? `Reviewer ${actorId} resolved their change request.` : input.action === 'request_changes' ? `Reviewer ${actorId} requested changes to this revision.` : `${actorId} added a review comment.`, input.action === 'request_changes' ? 'warning' : 'info');
+    });
+  }
+
+  selectCandidate(key: string, id: string, runId: string, epoch: number, actorId = 'workspace-owner'): Mission {
+    return this.mutateMission(key, JSON.stringify(['select', id, runId, epoch]), id, () => {
+      const mission = this.requiredMission(id);
+      if (mission.mode !== 'race') throw new ApiError(409, 'NOT_A_RACE', 'Only a race mission has candidates to choose between.');
+      if (mission.epoch !== epoch) throw new ApiError(409, 'STALE_SELECTION', 'This selection belongs to another attempt. Refresh the mission.');
+      if (mission.status !== 'needs_review') throw new ApiError(409, 'SELECTION_LOCKED', 'A candidate can be selected only while the race awaits review. Revoke approval to choose again.');
+      const run = eligibleRaceRuns(mission).find((entry) => entry.id === runId);
+      if (!run) throw new ApiError(409, 'CANDIDATE_NOT_ELIGIBLE', 'Select an agent whose candidate passed its checks.');
+      mission.raceChecks ??= mission.checks;
+      mission.raceChanges ??= mission.changes;
+      mission.selectedRunId = run.id;
+      mission.candidateSha = run.commitSha!;
+      mission.integrationForkName = run.forkName;
+      mission.checks = mission.raceChecks.filter((check) => check.runId === run.id);
+      mission.changes = mission.raceChanges.filter((change) => change.runIds.includes(run.id));
+      return this.saveMission(mission, `${actorId} selected ${run.name.slice(0, 120)}'s candidate ${run.commitSha!.slice(0, 12)} for review.`);
     });
   }
 
@@ -455,7 +491,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (this.getRepository(mission.repositoryId)?.headSha !== baseSha) throw new ApiError(409, 'STALE_APPROVAL', 'The repository changed after approval. Run and review the change again.');
       if (!mission.integrationForkName || !mission.checks.some((check) => check.candidateSha === candidateSha && check.status === 'passed') || mission.checks.some((check) => check.status !== 'passed')) throw new ApiError(409, 'CHECKS_REQUIRED', 'The exact candidate must have passing verification and an integration fork.');
       const claimId = crypto.randomUUID();
-      this.store.put('integration:claim', { claimId, missionId: id, epoch: mission.epoch, candidateSha, baseSha });
+      this.store.put('integration:claim', { claimId, missionId: id, epoch: mission.epoch, candidateSha, baseSha, claimedAt: Date.now() });
       this.store.put(`request:${key}`, { fingerprint, result: true });
       mission.status = 'integrating';
       delete mission.error;
@@ -477,6 +513,21 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.error;
       this.saveMission(mission, `Verified canonical branch at approved commit ${sha.slice(0, 12)}. No production deployment was triggered.`, 'success');
       this.archive(mission, 'integrated');
+      return mission;
+    });
+  }
+
+  releaseStaleIntegration(id: string, claimId: string): Mission | null {
+    return this.ctx.storage.transactionSync(() => {
+      const mission = this.requiredMission(id);
+      const claim = this.store.get<IntegrationClaim>('integration:claim');
+      if (!claim || claim.claimId !== claimId || claim.missionId !== id || claim.epoch !== mission.epoch || mission.status !== 'integrating') return null;
+      if (Date.now() - (claim.claimedAt ?? 0) < STALE_INTEGRATION_CLAIM_MS) return null;
+      this.store.delete('integration:claim');
+      mission.status = 'approved';
+      mission.error = 'An earlier landing attempt ended without updating the canonical branch. Its repository claim was released; retry landing.';
+      this.saveMission(mission, mission.error, 'warning');
+      this.archive(mission, 'integration_failed');
       return mission;
     });
   }

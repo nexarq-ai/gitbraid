@@ -13,7 +13,7 @@ export const ROLE_ACTIONS: Record<Role, Action[]> = {
   Viewer: ['read'], Contributor: ['read', 'contribute', 'execute'], Reviewer: ['read', 'review'],
   Maintainer: ['read', 'contribute', 'execute', 'review', 'land'], Deployer: ['read', 'deploy'], Owner: ['read', 'contribute', 'execute', 'review', 'land', 'deploy', 'migrate', 'manage'],
 };
-interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean }
+interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean }
 interface Member { userId: string; workspaceId: string; role: Role; repositoryIds?: string[] }
 interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean }
 interface WorkspaceRecord { id: string; name: string; bootstrapDisabled?: boolean; agentPending?: boolean }
@@ -27,11 +27,13 @@ export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOK
 interface MfaRecord { id: string; encryptedSecret: string; enabled: boolean; lastStep: number; recoveryHashes: string[] }
 interface AuthChallenge { id: string; userId: string; kind: 'setup' | 'enroll' | 'login'; workspaceId?: string; expiresAt: number; used?: boolean }
 interface Installation { workspaceName?: string; workspaceId?: string; pendingUser?: User; challengeId?: string }
+interface EmailToken { id: string; userId: string; email: string; kind: 'verify' | 'reset'; expiresAt: number }
+interface LoginFailures { count: number; lockedUntil: number; updatedAt: number }
 interface MachineRegistration { id: string; requestHash: string; response: string; workspaceId: string; userId: string; claimHash: string; expiresAt: number; claimedBy?: string }
 export interface MfaChallengeResult { mfaRequired: true; challengeId: string; expiresAt: number; enrollmentRequired: boolean; secret?: string; otpauthUri?: string }
-interface State { cloudflareConnections: Record<string, CloudflareConnection>; cloudflareStates: Record<string, CloudflareOAuthState>; cloudflareProjects: Record<string, {mapping: ProjectMapping | null; plans: MigrationPlan[]}>; mfa: MfaRecord[]; challenges: AuthChallenge[]; installations: Record<string, Installation>; machines: MachineRegistration[]; users: User[]; members: Member[]; sessions: Session[]; workspaces: WorkspaceRecord[]; invitations: Invitation[]; teams: Team[]; grants: Grant[]; credentials: Credential[]; audit: Audit[]; protections: Record<string, Protection>; approvals: Record<string, string[]>; limits: Record<string, { count: number; until: number }> }
+interface State { cloudflareConnections: Record<string, CloudflareConnection>; cloudflareStates: Record<string, CloudflareOAuthState>; cloudflareProjects: Record<string, {mapping: ProjectMapping | null; plans: MigrationPlan[]}>; mfa: MfaRecord[]; challenges: AuthChallenge[]; emailTokens: EmailToken[]; loginFailures: Record<string, LoginFailures>; installations: Record<string, Installation>; machines: MachineRegistration[]; users: User[]; members: Member[]; sessions: Session[]; workspaces: WorkspaceRecord[]; invitations: Invitation[]; teams: Team[]; grants: Grant[]; credentials: Credential[]; audit: Audit[]; protections: Record<string, Protection>; approvals: Record<string, string[]>; limits: Record<string, { count: number; until: number }> }
 export interface Principal { userId: string; workspaceId: string; role: Role; sessionId?: string; credentialId?: string; bootstrap?: boolean }
-const initial = (): State => ({ cloudflareConnections: {}, cloudflareStates: {}, cloudflareProjects: {}, mfa: [], challenges: [], installations: {}, machines: [], users: [], members: [], sessions: [], workspaces: [{ id: 'legacy', name: 'Gitflare workspace' }], invitations: [], teams: [], grants: [], credentials: [], audit: [], protections: {}, approvals: {}, limits: {} });
+const initial = (): State => ({ cloudflareConnections: {}, cloudflareStates: {}, cloudflareProjects: {}, mfa: [], challenges: [], emailTokens: [], loginFailures: {}, installations: {}, machines: [], users: [], members: [], sessions: [], workspaces: [{ id: 'legacy', name: 'Gitflare workspace' }], invitations: [], teams: [], grants: [], credentials: [], audit: [], protections: {}, approvals: {}, limits: {} });
 const encode = new TextEncoder();
 export async function hashToken(value: string): Promise<string> { return hex(await crypto.subtle.digest('SHA-256', encode.encode(value))); }
 function hex(value: ArrayBuffer): string { return Array.from(new Uint8Array(value), b => b.toString(16).padStart(2, '0')).join(''); }
@@ -41,40 +43,110 @@ export async function passwordHash(password: string, salt: string): Promise<stri
   return hex(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: encode.encode(salt), iterations: 100000 }, key, 256));
 }
 function role(value: unknown): Role { if (!ROLES.includes(value as Role)) throw new ApiError(400, 'INVALID_ROLE', 'Select a valid workspace role.'); return value as Role; }
-function safeUser(user: User) { return { id: user.id, name: user.name, email: user.email, emailVerified: false }; }
+function safeUser(user: User) { return { id: user.id, name: user.name, email: user.email, emailVerified: user.emailVerified === true }; }
 function fail(code = 'FORBIDDEN', message = 'Your workspace permissions do not allow this action.'): never { throw new ApiError(403, code, message); }
 function publicValue<T extends { hash: string }>(value: T): Omit<T, 'hash'> { const { hash: _hash, ...rest } = value; return rest; }
+const AUDIT_LIMIT_PER_WORKSPACE = 1000;
+const MAX_DERIVED_SESSION_AGE_MS = 86_400_000;
+// Storage lists records by random ID, so order and retention must come from timestamps
+function boundedAudit<T extends { workspaceId: string; timestamp: string }>(audit: T[]): T[] {
+  const kept = new Map<string, number>();
+  const newestFirst = [...audit].sort((a, b) => a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0);
+  return newestFirst.filter(entry => { const count = (kept.get(entry.workspaceId) ?? 0) + 1; kept.set(entry.workspaceId, count); return count <= AUDIT_LIMIT_PER_WORKSPACE; }).reverse();
+}
+const RETENTION_MS = 7 * 86_400_000;
+const LOGIN_FAILURE_LIMIT = 10;
+const LOGIN_LOCK_MS = 900_000;
+const LOGIN_FAILURE_WINDOW_MS = 86_400_000;
+const VERIFY_TOKEN_MS = 86_400_000;
+const RESET_TOKEN_MS = 3_600_000;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+type StoredRecord = { group: string; value: unknown };
+function sameHash(left: string, right: string): boolean { const a = encode.encode(left); const b = encode.encode(right); return a.length === b.length && timingSafeEqual(a, b); }
+function recordKey(group: string, id: string): string { return `sec:${group}:${encodeURIComponent(id)}`; }
+function buildState(records: Iterable<[string, string]>): State {
+  const state = initial(); let stored = false;
+  for (const [key, serialized] of records) {
+    if (!stored) { stored = true; for (const [group, value] of Object.entries(state)) (state as unknown as Record<string, unknown>)[group] = Array.isArray(value) ? [] : {}; }
+    const record = JSON.parse(serialized) as StoredRecord; const target = (state as unknown as Record<string, unknown>)[record.group];
+    if (Array.isArray(target)) target.push(record.value);
+    else if (target) (target as Record<string, unknown>)[decodeURIComponent(key.split(':').slice(2).join(':'))] = record.value;
+  }
+  state.audit = boundedAudit(state.audit);
+  return state;
+}
+function serializeState(state: State, persisted: Map<string, string>): Map<string, string> {
+  const next = new Map<string, string>();
+  const add = (group: string, id: string, value: unknown) => { const key = recordKey(group, id); next.set(key, group === 'audit' && persisted.has(key) ? persisted.get(key)! : JSON.stringify({ group, value })); };
+  for (const [group, values] of Object.entries(state)) {
+    if (Array.isArray(values)) for (const value of values) add(group, 'id' in value ? value.id : `${value.workspaceId}/${value.userId}`, value);
+    else for (const [id, value] of Object.entries(values)) add(group, id, value);
+  }
+  return next;
+}
+function prune(state: State, now: number): void {
+  state.sessions = state.sessions.filter(session => session.expiresAt > now);
+  state.challenges = state.challenges.filter(challenge => !challenge.used && challenge.expiresAt > now);
+  state.emailTokens = state.emailTokens.filter(item => item.expiresAt > now);
+  state.invitations = state.invitations.filter(invitation => invitation.expiresAt + RETENTION_MS > now);
+  state.credentials = state.credentials.filter(credential => credential.expiresAt + RETENTION_MS > now);
+  for (const [id, limit] of Object.entries(state.limits)) if (limit.until <= now) delete state.limits[id];
+  for (const [id, value] of Object.entries(state.cloudflareStates)) if (value.expiresAt <= now) delete state.cloudflareStates[id];
+  for (const [id, failures] of Object.entries(state.loginFailures)) if (failures.lockedUntil ? failures.lockedUntil <= now : failures.updatedAt + LOGIN_FAILURE_WINDOW_MS <= now) delete state.loginFailures[id];
+}
+function consumeLimit(state: State, key: string, max: number, windowMs: number): boolean {
+  const now = Date.now(); const entry = state.limits[key];
+  state.limits[key] = !entry || entry.until <= now ? { count: 1, until: now + windowMs } : { ...entry, count: entry.count + 1 };
+  return state.limits[key].count <= max;
+}
 export class SecurityService {
+  private state?: State;
+  private persisted = new Map<string, string>();
+  private queue: Promise<unknown> = Promise.resolve();
   constructor(private storage: Pick<DurableObjectStorage, 'transaction'>, private options: SecurityOptions = {}) {}
-  private async mutate<T>(operation: (state: State) => Promise<T> | T): Promise<T> {
-    return this.storage.transaction(async txn => {
-      const existing = await txn.list<{ group: string; value: unknown }>({ prefix: 'sec:' });
-      const state = { ...initial(), ...await txn.get<State>('security') };
-      if (existing.size) {
-        for (const [group, value] of Object.entries(initial())) (state as unknown as Record<string, unknown>)[group] = Array.isArray(value) ? [] : {};
-        for (const [key, record] of existing) {
-          const group = record.group as keyof State;
-          if (Array.isArray(state[group])) (state[group] as unknown[]).push(structuredClone(record.value));
-          else (state[group] as Record<string, unknown>)[decodeURIComponent(key.split(':').slice(2).join(':'))] = structuredClone(record.value);
-        }
-      }
-      state.sessions = state.sessions.filter(session => session.expiresAt > Date.now());
-      if (state.audit.length > 1000) state.audit.splice(0, state.audit.length - 1000);
-      const result = await operation(state);
-      const next = new Map<string, { group: string; value: unknown }>();
-      for (const [group, values] of Object.entries(state)) {
-        if (Array.isArray(values)) for (const value of values) { const key = 'id' in value ? value.id : `${value.workspaceId}/${value.userId}`; next.set(`sec:${group}:${encodeURIComponent(key)}`, { group, value }); }
-        else for (const [key, value] of Object.entries(values)) next.set(`sec:${group}:${encodeURIComponent(key)}`, { group, value });
-      }
-      for (const [key, value] of next) if (JSON.stringify(existing.get(key)) !== JSON.stringify(value)) await txn.put(key, value);
-      for (const key of existing.keys()) if (!next.has(key)) await txn.delete(key);
+  // Operations await crypto between reads and writes of the shared state, so they must never interleave
+  private exclusive<T>(task: () => Promise<T>): Promise<T> { const next = this.queue.then(task); this.queue = next.catch(() => {}); return next; }
+  private async load(): Promise<State> {
+    if (this.state) return this.state;
+    const persisted = new Map<string, string>();
+    await this.storage.transaction(async txn => {
+      const existing = await txn.list<StoredRecord>({ prefix: 'sec:' });
+      for (const [key, record] of existing) persisted.set(key, JSON.stringify(record));
+      const legacy = await txn.get<State>('security');
+      if (legacy === undefined) return;
+      if (!existing.size) for (const [key, serialized] of serializeState({ ...initial(), ...legacy }, persisted)) { persisted.set(key, serialized); await txn.put(key, JSON.parse(serialized)); }
       await txn.delete('security');
-      return result;
+    });
+    this.persisted = persisted;
+    return this.state = buildState(persisted);
+  }
+  private read<T>(operation: (state: State) => T): Promise<T> { return this.exclusive(async () => structuredClone(operation(await this.load()))); }
+  private mutate<T>(operation: (state: State) => Promise<T> | T): Promise<T> {
+    return this.exclusive(async () => {
+      const state = await this.load();
+      try {
+        prune(state, Date.now());
+        const audited = state.audit.length;
+        const result = await operation(state);
+        if (state.audit.length !== audited) state.audit = boundedAudit(state.audit);
+        const next = serializeState(state, this.persisted);
+        const writes = [...next].filter(([key, serialized]) => this.persisted.get(key) !== serialized);
+        const removals = [...this.persisted.keys()].filter(key => !next.has(key));
+        if (writes.length || removals.length) await this.storage.transaction(async txn => {
+          for (const [key, serialized] of writes) await txn.put(key, JSON.parse(serialized));
+          for (const key of removals) await txn.delete(key);
+        });
+        this.persisted = next;
+        return structuredClone(result);
+      } catch (error) {
+        this.state = buildState(this.persisted);
+        throw error;
+      }
     });
   }
   async connectionStore(p: Principal | null, operation: 'get' | 'put' | 'delete' | 'state-put' | 'state-consume', body: Record<string, unknown> = {}): Promise<unknown> {
+    body = structuredClone(body);
     return this.mutate(state => {
-      for (const [id, value] of Object.entries(state.cloudflareStates)) if (value.expiresAt <= Date.now()) delete state.cloudflareStates[id];
       if (operation === 'state-consume') {
         const value = state.cloudflareStates[String(body.id)];
         if (!value || value.browserHash !== body.browserHash || value.expiresAt <= Date.now()) throw new ApiError(400, 'CLOUDFLARE_STATE_INVALID', 'The connection request has expired. Start again.');
@@ -116,6 +188,7 @@ export class SecurityService {
     });
   }
   async projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}): Promise<unknown> {
+    body = structuredClone(body);
     return this.mutate(state => {
       this.validate(state, p);
       if (p.credentialId || !this.authorityAllows(state, p, 'read', 'repository', repositoryId)) fail();
@@ -161,25 +234,37 @@ export class SecurityService {
     });
   }
   async rateLimit(key: string, max = 15, windowMs = 900000): Promise<void> {
-    const accepted = await this.mutate(state => { const now = Date.now(); for (const [id, limit] of Object.entries(state.limits)) if (limit.until <= now) delete state.limits[id]; const entry = state.limits[key]; state.limits[key] = !entry || entry.until <= now ? { count: 1, until: now + windowMs } : { ...entry, count: entry.count + 1 }; return state.limits[key].count <= max; });
+    const accepted = await this.mutate(state => consumeLimit(state, key, max, windowMs));
     if (!accepted) throw new ApiError(429, 'RATE_LIMITED', 'Too many authentication attempts. Try again in 15 minutes.');
   }
   async signup(body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
   async login(body: Record<string, unknown>) {
     const email = requireString(body.email, 'Email', 254).toLowerCase(); const password = requireString(body.password, 'Password', 256);
-    const user = await this.mutate(state => state.users.find(item => item.email === email));
-    const hash = await passwordHash(password, user?.salt ?? 'invalid-account-salt');
-    if (!user || user.machine || user.hash !== hash) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
-    const enrolled = await this.mutate(state => state.mfa.find(m => m.id === user.id)?.enabled);
+    const found = await this.read(state => state.users.find(item => item.email === email));
+    const hash = await passwordHash(password, found?.salt ?? 'invalid-account-salt');
+    // A locked account must be indistinguishable from a wrong password
+    const user = await this.mutate(state => {
+      const current = found && state.users.find(item => item.id === found.id && item.email === email && item.salt === found.salt);
+      if (!current || current.machine) return null;
+      const failures = state.loginFailures[current.id]; const now = Date.now();
+      if (failures && failures.lockedUntil > now) return null;
+      if (sameHash(current.hash, hash)) { delete state.loginFailures[current.id]; return current; }
+      const count = (failures?.count ?? 0) + 1;
+      state.loginFailures[current.id] = { count, lockedUntil: count >= LOGIN_FAILURE_LIMIT ? now + LOGIN_LOCK_MS : 0, updatedAt: now };
+      if (count === LOGIN_FAILURE_LIMIT) this.auditAccount(state, current.id, 'account:login-locked');
+      return null;
+    });
+    if (!user) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
+    const enrolled = await this.read(state => state.mfa.find(m => m.id === user.id)?.enabled);
     if (enrolled || this.options.EDITION === 'self-hosted') return this.beginMfa(user.id);
     const value = token(); const sessionHash = await hashToken(value);
     return this.mutate(state => { const membership = state.members.find(member => member.userId === user.id); if (!membership) fail(); state.sessions.push({ id: crypto.randomUUID(), userId: user.id, workspaceId: membership.workspaceId, hash: sessionHash, expiresAt: Date.now() + 28800000, authenticatedAt: Date.now() }); return { token: value, user: safeUser(user), workspaceId: membership.workspaceId }; });
   }
   async legacySession() { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); const value = token(); const hash = await hashToken(value); return this.mutate(state => { if (state.workspaces.find(w => w.id === 'legacy')?.bootstrapDisabled) fail(); state.sessions.push({ id: crypto.randomUUID(), userId: 'bootstrap-owner', workspaceId: 'legacy', hash, expiresAt: Date.now() + 28800000, authenticatedAt: Date.now() }); return value; }); }
-  async bootstrap(): Promise<Principal> { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); return this.mutate(state => { if (state.workspaces.find(workspace => workspace.id === 'legacy')?.bootstrapDisabled) fail('BOOTSTRAP_DISABLED', 'The legacy owner key was retired by ownership transfer.'); return { userId: 'bootstrap-owner', workspaceId: 'legacy', role: 'Owner', bootstrap: true }; }); }
+  async bootstrap(): Promise<Principal> { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); return this.read(state => { if (state.workspaces.find(workspace => workspace.id === 'legacy')?.bootstrapDisabled) fail('BOOTSTRAP_DISABLED', 'The legacy owner key was retired by ownership transfer.'); return { userId: 'bootstrap-owner', workspaceId: 'legacy', role: 'Owner', bootstrap: true }; }); }
   async authenticate(value: string, workspaceId?: string): Promise<Principal> {
     const hash = await hashToken(value);
-    return this.mutate(state => {
+    return this.read(state => {
       const session = state.sessions.find(item => item.hash === hash && !item.revoked && item.expiresAt > Date.now());
       if (session?.userId === 'bootstrap-owner') { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); if (workspaceId && workspaceId !== 'legacy' || state.workspaces.find(w => w.id === 'legacy')?.bootstrapDisabled) fail(); return { userId: 'bootstrap-owner', workspaceId: 'legacy', role: 'Owner', bootstrap: true, sessionId: session.id }; }
       if (session && this.options.EDITION === 'self-hosted' && (!state.installations.self?.workspaceId || !state.mfa.some(m => m.id === session.userId && m.enabled))) fail('MFA_REQUIRED');
@@ -196,7 +281,6 @@ export class SecurityService {
       if (principal.credentialId) { const credential = state.credentials.find(item => item.id === principal.credentialId)!; if (!this.authorityAllows(state, principal, action, resourceType, resourceId, missionId) || !credential.actions.includes(action) || resourceType !== 'repository' || credential.scope !== 'workspace-read' && credential.repositoryId !== resourceId || (credential.missionId && (missionId ? credential.missionId !== missionId : action !== 'read'))) fail(); if (credential.requests >= credential.maxRequests || (action === 'execute' && credential.executions >= credential.maxExecutions)) fail('BUDGET_EXHAUSTED', 'This task credential has exhausted its execution budget.'); credential.requests++; if (action === 'execute') credential.executions++; }
       else if (!this.roleAllows(state, principal, action, resourceType, resourceId) && !state.grants.some(grant => grant.workspaceId === principal.workspaceId && (grant.resourceType === resourceType && grant.resourceId === resourceId || grant.resourceType === 'stream' && grant.resourceId === missionId) && grant.actions.includes(action) && (grant.subjectType === 'user' ? grant.subjectId === principal.userId : state.teams.some(team => team.id === grant.subjectId && team.workspaceId === principal.workspaceId && team.userIds.includes(principal.userId))))) fail();
       state.audit.push({ id: crypto.randomUUID(), workspaceId: principal.workspaceId, actorId: principal.userId, action, resourceId, timestamp: new Date().toISOString() });
-      if (state.audit.length > 10000) state.audit.splice(0, state.audit.length - 10000);
     });
   }
   async authorizeMetadata(p: Principal): Promise<void> {
@@ -221,10 +305,10 @@ export class SecurityService {
     if (p.credentialId && !state.credentials.some(c => c.id === p.credentialId && c.userId === p.userId && c.workspaceId === p.workspaceId && !c.revoked && c.expiresAt > Date.now())) fail();
   }
   async check(p: Principal, action: Action, resourceType = 'workspace', resourceId = p.workspaceId, missionId?: string): Promise<void> {
-    await this.mutate(state => { this.validate(state, p); if (p.credentialId) { const c = state.credentials.find(c => c.id === p.credentialId)!; if (!this.authorityAllows(state, p, action, resourceType, resourceId, missionId) || !c.actions.includes(action) || resourceType !== 'repository' || c.scope !== 'workspace-read' && c.repositoryId !== resourceId || c.missionId && (missionId ? c.missionId !== missionId : action !== 'read')) fail(); } else if (!this.roleAllows(state, p, action, resourceType, resourceId) && !state.grants.some(g => g.workspaceId === p.workspaceId && (g.resourceType === resourceType && g.resourceId === resourceId || g.resourceType === 'stream' && g.resourceId === missionId) && g.actions.includes(action) && (g.subjectType === 'user' ? g.subjectId === p.userId : state.teams.some(t => t.id === g.subjectId && t.workspaceId === p.workspaceId && t.userIds.includes(p.userId))))) fail(); });
+    await this.read(state => { this.validate(state, p); if (p.credentialId) { const c = state.credentials.find(c => c.id === p.credentialId)!; if (!this.authorityAllows(state, p, action, resourceType, resourceId, missionId) || !c.actions.includes(action) || resourceType !== 'repository' || c.scope !== 'workspace-read' && c.repositoryId !== resourceId || c.missionId && (missionId ? c.missionId !== missionId : action !== 'read')) fail(); } else if (!this.roleAllows(state, p, action, resourceType, resourceId) && !state.grants.some(g => g.workspaceId === p.workspaceId && (g.resourceType === resourceType && g.resourceId === resourceId || g.resourceType === 'stream' && g.resourceId === missionId) && g.actions.includes(action) && (g.subjectType === 'user' ? g.subjectId === p.userId : state.teams.some(t => t.id === g.subjectId && t.workspaceId === p.workspaceId && t.userIds.includes(p.userId))))) fail(); });
   }
-  async workspace(p: Principal) { return this.mutate(state => { this.validate(state,p); const workspace = state.workspaces.find(w => w.id === p.workspaceId); if (!workspace) fail(); return { id: workspace.id, name: workspace.name }; }); }
-  async snapshot(p: Principal) { return this.mutate(state => { this.validate(state, p); if (p.credentialId) fail(); const owner = p.role === 'Owner'; return { user: state.users.find(u => u.id === p.userId) ? safeUser(state.users.find(u => u.id === p.userId)!) : { id: p.userId, name: 'Legacy owner', emailVerified: false }, workspace: state.workspaces.find(w => w.id === p.workspaceId), role: p.role, permissions: ROLE_ACTIONS[p.role], members: state.members.filter(m => m.workspaceId === p.workspaceId).map(m => ({ ...m, user: state.users.find(u => u.id === m.userId) ? safeUser(state.users.find(u => u.id === m.userId)!) : null })), teams: state.teams.filter(t => t.workspaceId === p.workspaceId), invitations: owner ? state.invitations.filter(i => i.workspaceId === p.workspaceId).map(publicValue) : [], grants: owner ? state.grants.filter(g => g.workspaceId === p.workspaceId) : [], credentials: state.credentials.filter(c => c.workspaceId === p.workspaceId && (owner || c.userId === p.userId)).map(publicValue), sessions: state.sessions.filter(s => s.userId === p.userId).map(publicValue), protection: state.protections[p.workspaceId] ?? { requiredApprovals: 1, requiredChecks: [], preventSelfApproval: false }, audit: owner ? state.audit.filter(a => a.workspaceId === p.workspaceId).slice(-100).reverse() : [], workspaces: state.workspaces.filter(w => state.members.some(m => m.workspaceId === w.id && m.userId === p.userId) || p.bootstrap && w.id === 'legacy') }; }); }
+  async workspace(p: Principal) { return this.read(state => { this.validate(state,p); const workspace = state.workspaces.find(w => w.id === p.workspaceId); if (!workspace) fail(); return { id: workspace.id, name: workspace.name }; }); }
+  async snapshot(p: Principal) { return this.read(state => { this.validate(state, p); if (p.credentialId) fail(); const owner = p.role === 'Owner'; return { user: state.users.find(u => u.id === p.userId) ? safeUser(state.users.find(u => u.id === p.userId)!) : { id: p.userId, name: 'Legacy owner', emailVerified: false }, workspace: state.workspaces.find(w => w.id === p.workspaceId), role: p.role, permissions: ROLE_ACTIONS[p.role], members: state.members.filter(m => m.workspaceId === p.workspaceId).map(m => ({ ...m, user: state.users.find(u => u.id === m.userId) ? safeUser(state.users.find(u => u.id === m.userId)!) : null })), teams: state.teams.filter(t => t.workspaceId === p.workspaceId), invitations: owner ? state.invitations.filter(i => i.workspaceId === p.workspaceId).map(publicValue) : [], grants: owner ? state.grants.filter(g => g.workspaceId === p.workspaceId) : [], credentials: state.credentials.filter(c => c.workspaceId === p.workspaceId && (owner || c.userId === p.userId)).map(publicValue), sessions: state.sessions.filter(s => s.userId === p.userId && s.expiresAt > Date.now()).map(publicValue), protection: state.protections[p.workspaceId] ?? { requiredApprovals: 1, requiredChecks: [], preventSelfApproval: false }, audit: owner ? state.audit.filter(a => a.workspaceId === p.workspaceId).slice(-100).reverse() : [], workspaces: state.workspaces.filter(w => state.members.some(m => m.workspaceId === w.id && m.userId === p.userId) || p.bootstrap && w.id === 'legacy') }; }); }
   async action(p: Principal, action: string, body: Record<string, unknown>) {
     if (action === 'user-create') return this.createInstallationUser(p, body);
     if (action === 'agent-claim') return this.claimMachine(p, body);
@@ -232,13 +316,13 @@ export class SecurityService {
     const raw = token(); const hash = await hashToken(raw);
     return this.mutate(state => {
       this.validate(state, p); if (p.credentialId) fail(); const workspaceId = p.workspaceId; state.audit.push({ id: crypto.randomUUID(), workspaceId, actorId: p.userId, action: `access:${action}`, timestamp: new Date().toISOString() });
-      if (action === 'session-create') { if (p.bootstrap) fail('ACCOUNT_REQUIRED'); const session = { id: crypto.randomUUID(), userId: p.userId, workspaceId, hash, expiresAt: Date.now() + 28800000, authenticatedAt: state.sessions.find(s => s.id === p.sessionId)?.authenticatedAt ?? 0 }; state.sessions.push(session); return { token: raw, session: publicValue(session) }; }
+      if (action === 'session-create') { if (p.bootstrap) fail('ACCOUNT_REQUIRED'); const authenticatedAt = state.sessions.find(s => s.id === p.sessionId)?.authenticatedAt ?? 0; if (Date.now() - authenticatedAt > MAX_DERIVED_SESSION_AGE_MS) fail('RECENT_AUTH_REQUIRED', 'Sign in again before creating another session.'); const session = { id: crypto.randomUUID(), userId: p.userId, workspaceId, hash, expiresAt: Date.now() + 28800000, authenticatedAt }; state.sessions.push(session); return { token: raw, session: publicValue(session) }; }
       if (action === 'session-revoke') { const session = state.sessions.find(s => s.id === body.id && s.userId === p.userId); if (!session) fail(); session.revoked = true; return { ok: true }; }
       if (p.role !== 'Owner') fail();
       const member = (userId: unknown) => { const found = state.members.find(m => m.workspaceId === workspaceId && m.userId === userId); if (!found) throw new ApiError(404, 'MEMBER_NOT_FOUND', 'Select an existing workspace member.'); return found; };
       if (action === 'invite-revoke') { const invitation = state.invitations.find(i => i.id === body.id && i.workspaceId === workspaceId); if (!invitation) fail(); invitation.accepted = true; return { ok: true }; }
       if (action === 'invite') { const invitation: Invitation = { id: crypto.randomUUID(), workspaceId, email: requireString(body.email, 'Email', 254).toLowerCase(), role: role(body.role), hash, expiresAt: Date.now() + 86400000 }; if (invitation.role === 'Owner') fail('TRANSFER_REQUIRED', 'Use ownership transfer to assign the Owner role.'); state.invitations.push(invitation); return { token: raw, invitation: publicValue(invitation) }; }
-      if (action === 'membership') { const target = member(body.userId); if (target.role === 'Owner' || body.role === 'Owner') fail('TRANSFER_REQUIRED'); if (body.role === null) { const email = state.users.find(user => user.id === target.userId)?.email; for (const invitation of state.invitations) if (invitation.workspaceId === workspaceId && invitation.email === email) invitation.accepted = true; state.members = state.members.filter(m => m !== target); for (const c of state.credentials) if (c.workspaceId === workspaceId && c.userId === target.userId) c.revoked = true; for (const session of state.sessions) if (session.userId === target.userId) session.revoked = true; state.grants = state.grants.filter(g => !(g.workspaceId === workspaceId && g.subjectType === 'user' && g.subjectId === target.userId)); for (const team of state.teams) if (team.workspaceId === workspaceId) team.userIds = team.userIds.filter(id => id !== target.userId); } else { if (body.role !== undefined) target.role = role(body.role); if (body.repositoryIds !== undefined) { if (!Array.isArray(body.repositoryIds) || body.repositoryIds.length > 100 || body.repositoryIds.some(id => typeof id !== 'string' || id.length > 200)) throw new ApiError(400, 'INVALID_SCOPE', 'Provide a bounded list of repository IDs.'); target.repositoryIds = [...new Set(body.repositoryIds)] as string[]; } else delete target.repositoryIds; } return { ok: true }; }
+      if (action === 'membership') { const target = member(body.userId); if (target.role === 'Owner' || body.role === 'Owner') fail('TRANSFER_REQUIRED'); if (body.role === null) { const email = state.users.find(user => user.id === target.userId)?.email; for (const invitation of state.invitations) if (invitation.workspaceId === workspaceId && invitation.email === email) invitation.accepted = true; state.members = state.members.filter(m => m !== target); for (const c of state.credentials) if (c.workspaceId === workspaceId && c.userId === target.userId) c.revoked = true; for (const session of state.sessions) if (session.userId === target.userId) session.revoked = true; state.grants = state.grants.filter(g => !(g.workspaceId === workspaceId && g.subjectType === 'user' && g.subjectId === target.userId)); for (const team of state.teams) if (team.workspaceId === workspaceId) team.userIds = team.userIds.filter(id => id !== target.userId); } else { if (body.role !== undefined) target.role = role(body.role); if (body.repositoryIds === null) delete target.repositoryIds; else if (body.repositoryIds !== undefined) { if (!Array.isArray(body.repositoryIds) || body.repositoryIds.length > 100 || body.repositoryIds.some(id => typeof id !== 'string' || id.length > 200)) throw new ApiError(400, 'INVALID_SCOPE', 'Provide a bounded list of repository IDs.'); target.repositoryIds = [...new Set(body.repositoryIds)] as string[]; } } return { ok: true }; }
       if (action === 'transfer') { const authenticatedAt = state.sessions.find(s => s.id === p.sessionId)?.authenticatedAt; if ((!p.bootstrap || p.sessionId) && (authenticatedAt === undefined || Date.now() - authenticatedAt > 300000 || authenticatedAt > Date.now())) fail('RECENT_AUTH_REQUIRED', 'Sign in again before transferring workspace ownership.'); const target = member(body.userId); if (target.userId === p.userId) fail(); const previous = state.members.find(m => m.workspaceId === workspaceId && m.userId === p.userId); if (previous) previous.role = 'Maintainer'; target.role = 'Owner'; delete target.repositoryIds; state.workspaces.find(w => w.id === workspaceId)!.bootstrapDisabled = true; return { ok: true }; }
       if (action === 'team-create') { const team = { id: crypto.randomUUID(), workspaceId, name: requireString(body.name, 'Team name', 100), userIds: [] }; state.teams.push(team); return team; }
       if (action === 'team-member') { const team = state.teams.find(t => t.id === body.teamId && t.workspaceId === workspaceId); if (!team) fail(); const target = member(body.userId); team.userIds = body.remove ? team.userIds.filter(id => id !== target.userId) : [...new Set([...team.userIds, target.userId])]; return team; }
@@ -250,7 +334,7 @@ export class SecurityService {
     });
   }
   async authConfig() {
-    return this.mutate(state => ({ edition: this.options.EDITION ?? 'hosted', setupRequired: this.options.EDITION === 'self-hosted' && !state.installations.self?.workspaceId, publicSignup: this.options.EDITION !== 'self-hosted', mfaRequired: this.options.EDITION === 'self-hosted', ...(this.options.EDITION === 'self-hosted' ? { setupMode: this.setupMode() } : {}) }));
+    return this.read(state => ({ edition: this.options.EDITION ?? 'hosted', setupRequired: this.options.EDITION === 'self-hosted' && !state.installations.self?.workspaceId, publicSignup: this.options.EDITION !== 'self-hosted', mfaRequired: this.options.EDITION === 'self-hosted', ...(this.options.EDITION === 'self-hosted' ? { setupMode: this.setupMode() } : {}) }));
   }
   private setupMode(): 'admin-credentials' | 'setup-token' | 'unconfigured' {
     if (this.options.ADMIN_EMAIL !== undefined || this.options.ADMIN_PASSWORD !== undefined) {
@@ -269,7 +353,7 @@ export class SecurityService {
   }
   private accountInput(body: Record<string, unknown>) {
     const name = requireString(body.name, 'Name', 100); const email = requireString(body.email, 'Email', 254).toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ApiError(400, 'INVALID_EMAIL', 'Enter a valid email address.');
+    if (!EMAIL_PATTERN.test(email)) throw new ApiError(400, 'INVALID_EMAIL', 'Enter a valid email address.');
     return { name, email, password: requireString(body.password, 'Password', 256, 12) };
   }
   private session(state: State, user: User, workspaceId: string, raw: string, hash: string) {
@@ -318,7 +402,7 @@ export class SecurityService {
     return { mfaRequired: true, enrollmentRequired: result.enrollmentRequired, challengeId, expiresAt, ...(result.enrollmentRequired ? { secret, otpauthUri: authenticatorUri(secret, result.email) } : {}) };
   }
   async enrollMfa(p: Principal): Promise<MfaChallengeResult> {
-    await this.mutate(state => {
+    await this.read(state => {
       this.validate(state, p); if (p.bootstrap || p.credentialId) fail();
       const session = state.sessions.find(s => s.id === p.sessionId);
       if (!session?.authenticatedAt || Date.now() - session.authenticatedAt > 300000) fail('RECENT_AUTH_REQUIRED', 'Sign in again before setting up an authenticator.');
@@ -329,7 +413,7 @@ export class SecurityService {
   async verifyMfa(body: Record<string, unknown>, setupOnly = false) {
     const challengeId = requireString(body.challengeId, 'Authentication challenge', 128); const id = await hashToken(challengeId);
     await this.rateLimit(`mfa:${id}`, 5, 300000);
-    const userId = await this.mutate(state => state.challenges.find(c => c.id === id && !c.used && c.expiresAt > Date.now())?.userId);
+    const userId = await this.read(state => state.challenges.find(c => c.id === id && !c.used && c.expiresAt > Date.now())?.userId);
     if (userId) await this.rateLimit(`mfa-user:${userId}`, 10, 300000);
     const code = body.code === undefined ? undefined : requireString(body.code, 'Authenticator code', 6, 6);
     const recoveryHash = body.recoveryCode === undefined ? undefined : await hashToken(requireString(body.recoveryCode, 'Recovery code', 64));
@@ -377,18 +461,95 @@ export class SecurityService {
   async registerInvitedUser(body: Record<string, unknown>) {
     const input = this.accountInput(body); const invitationHash = await hashToken(requireString(body.token, 'Invitation token', 128));
     const userId = crypto.randomUUID(); const salt = token(); const hash = await passwordHash(input.password, salt);
-    const raw = token(); const sessionHash = await hashToken(raw);
+    const raw = token(); const sessionHash = await hashToken(raw); const verificationToken = token(); const verificationHash = await hashToken(verificationToken);
     const registered = await this.mutate(state => {
       const invite = state.invitations.find(i => i.hash === invitationHash && !i.accepted && i.expiresAt > Date.now());
       if (!invite || this.options.EDITION === 'self-hosted' && invite.workspaceId !== state.installations.self?.workspaceId) throw new ApiError(410, 'INVITATION_EXPIRED', 'This invitation is invalid, expired, or already used.');
       if (invite.email !== input.email) fail('INVITATION_IDENTITY');
-      if (state.users.some(u => u.email === input.email)) throw new ApiError(409, 'ACCOUNT_EXISTS', 'This email is already registered. Sign in instead.');
+      const holder = state.users.find(u => u.email === input.email);
+      if (holder && (holder.emailVerified || holder.machine || this.options.EDITION === 'self-hosted')) throw new ApiError(409, 'ACCOUNT_EXISTS', 'This email is already registered. Sign in instead.');
+      if (holder) {
+        this.releaseEmail(state, holder);
+        state.audit.push({ id: crypto.randomUUID(), workspaceId: invite.workspaceId, actorId: userId, action: 'account:unverified-email-released', resourceId: holder.id, timestamp: new Date().toISOString() });
+      }
       const user = { id: userId, name: input.name, email: input.email, salt, hash };
       state.users.push(user); state.members.push({ userId, workspaceId: invite.workspaceId, role: invite.role }); invite.accepted = true;
-      return this.options.EDITION === 'self-hosted' ? { workspaceId: invite.workspaceId } : this.session(state, user, invite.workspaceId, raw, sessionHash);
+      if (this.options.EDITION === 'self-hosted') return { workspaceId: invite.workspaceId };
+      state.emailTokens.push({ id: verificationHash, userId, email: input.email, kind: 'verify', expiresAt: Date.now() + VERIFY_TOKEN_MS });
+      return { ...this.session(state, user, invite.workspaceId, raw, sessionHash), verificationToken };
     });
     if ('token' in registered) return registered;
     return this.beginMfa(userId);
+  }
+  // An address nobody proved control of is not reserved: the account keeps its data but loses the address and every way to sign in
+  private releaseEmail(state: State, user: User) {
+    user.email = `${user.id}@released.gitflare.invalid`; user.salt = ''; user.hash = '';
+    for (const session of state.sessions) if (session.userId === user.id) session.revoked = true;
+    for (const credential of state.credentials) if (credential.userId === user.id) credential.revoked = true;
+    state.challenges = state.challenges.filter(challenge => challenge.userId !== user.id);
+    state.emailTokens = state.emailTokens.filter(item => item.userId !== user.id);
+    delete state.loginFailures[user.id];
+  }
+  private auditAccount(state: State, userId: string, action: string) {
+    for (const member of state.members) if (member.userId === userId) state.audit.push({ id: crypto.randomUUID(), workspaceId: member.workspaceId, actorId: userId, action, timestamp: new Date().toISOString() });
+  }
+  async verifyEmail(body: Record<string, unknown>) {
+    if (this.options.EDITION === 'self-hosted') fail('HOSTED_ONLY');
+    const id = await hashToken(requireString(body.token, 'Verification token', 128));
+    return this.mutate(state => {
+      const item = state.emailTokens.find(candidate => candidate.id === id && candidate.kind === 'verify' && candidate.expiresAt > Date.now());
+      const user = item && state.users.find(candidate => candidate.id === item.userId && candidate.email === item.email && !candidate.machine);
+      if (!user) throw new ApiError(410, 'VERIFICATION_EXPIRED', 'This verification link is invalid, expired, or already used.');
+      user.emailVerified = true;
+      state.emailTokens = state.emailTokens.filter(candidate => candidate.userId !== user.id || candidate.kind !== 'verify');
+      this.auditAccount(state, user.id, 'account:email-verified');
+      return { ok: true };
+    });
+  }
+  async resendVerification(p: Principal) {
+    if (this.options.EDITION === 'self-hosted') fail('HOSTED_ONLY');
+    const raw = token(); const id = await hashToken(raw);
+    const email = await this.mutate(state => {
+      this.validate(state, p); if (p.bootstrap || p.credentialId) fail();
+      const user = state.users.find(candidate => candidate.id === p.userId); if (!user || user.machine) fail();
+      if (user.emailVerified) throw new ApiError(409, 'EMAIL_ALREADY_VERIFIED', 'This email address is already verified.');
+      if (!consumeLimit(state, `verify-email:${user.id}`, 3, 3_600_000)) return null;
+      state.emailTokens = state.emailTokens.filter(candidate => candidate.userId !== user.id || candidate.kind !== 'verify');
+      state.emailTokens.push({ id, userId: user.id, email: user.email, kind: 'verify', expiresAt: Date.now() + VERIFY_TOKEN_MS });
+      return user.email;
+    });
+    if (!email) throw new ApiError(429, 'RATE_LIMITED', 'Too many verification emails were requested. Try again in an hour.');
+    return { email, token: raw };
+  }
+  async requestPasswordReset(body: Record<string, unknown>): Promise<{ email: string; token: string } | null> {
+    const email = requireString(body.email, 'Email', 254).toLowerCase();
+    if (!EMAIL_PATTERN.test(email)) throw new ApiError(400, 'INVALID_EMAIL', 'Enter a valid email address.');
+    const raw = token(); const id = await hashToken(raw); const limitKey = `password-reset:${await hashToken(email)}`;
+    return this.mutate(state => {
+      if (!consumeLimit(state, limitKey, 3, 3_600_000)) return null;
+      const user = state.users.find(candidate => candidate.email === email && !candidate.machine);
+      if (!user) return null;
+      state.emailTokens = state.emailTokens.filter(candidate => candidate.userId !== user.id || candidate.kind !== 'reset');
+      state.emailTokens.push({ id, userId: user.id, email, kind: 'reset', expiresAt: Date.now() + RESET_TOKEN_MS });
+      this.auditAccount(state, user.id, 'account:password-reset-requested');
+      return { email, token: raw };
+    });
+  }
+  async confirmPasswordReset(body: Record<string, unknown>) {
+    const id = await hashToken(requireString(body.token, 'Reset token', 128)); const password = requireString(body.password, 'Password', 256, 12);
+    const salt = token(); const hash = await passwordHash(password, salt);
+    return this.mutate(state => {
+      const item = state.emailTokens.find(candidate => candidate.id === id && candidate.kind === 'reset' && candidate.expiresAt > Date.now());
+      const user = item && state.users.find(candidate => candidate.id === item.userId && candidate.email === item.email && !candidate.machine);
+      if (!user) throw new ApiError(410, 'RESET_EXPIRED', 'This password reset link is invalid, expired, or already used.');
+      user.salt = salt; user.hash = hash; user.emailVerified = true;
+      for (const session of state.sessions) if (session.userId === user.id) session.revoked = true;
+      state.challenges = state.challenges.filter(challenge => challenge.userId !== user.id);
+      state.emailTokens = state.emailTokens.filter(candidate => candidate.userId !== user.id);
+      delete state.loginFailures[user.id];
+      this.auditAccount(state, user.id, 'account:password-reset');
+      return { ok: true };
+    });
   }
   async registerMachine(body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
   async claimMachine(p: Principal, body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
@@ -398,7 +559,7 @@ export class SecurityService {
   async logout(p: Principal) { if (p.sessionId) await this.action(p, 'session-revoke', { id: p.sessionId }); }
   async recordApproval(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, checks: {name: string; status: string; candidateSha?: string}[], creatorId?: string) { return this.mutate(state => { this.validate(state, p); if (p.credentialId) fail(); const protection = state.protections[p.workspaceId] ?? { requiredApprovals: 1, requiredChecks: [], preventSelfApproval: false }; if (protection.preventSelfApproval && (!creatorId || creatorId === p.userId)) fail('SELF_APPROVAL', 'A different member must review this Stream.'); if (protection.requiredChecks.some(name => !checks.some(check => check.name === name && check.status === 'passed' && check.candidateSha === candidateSha))) throw new ApiError(409, 'CHECKS_REQUIRED', 'Required checks have not passed for this revision.'); const key = `${p.workspaceId}:${missionId}:${candidateSha}:${baseSha}:${epoch}`; const reviewers = [...new Set([...(state.approvals[key] ?? []), p.userId])]; state.approvals[key] = reviewers; return { approvals: reviewers.length, requiredApprovals: protection.requiredApprovals, ready: reviewers.length >= protection.requiredApprovals }; }); }
   async assertLand(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, repositoryId?: string) {
-    await this.mutate(state => {
+    await this.read(state => {
       this.validate(state, p);
       const required = state.protections[p.workspaceId]?.requiredApprovals ?? 1;
       const reviewers = state.approvals[`${p.workspaceId}:${missionId}:${candidateSha}:${baseSha}:${epoch}`] ?? [];
@@ -428,6 +589,10 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   claimMachine(p: Principal, body: Record<string, unknown>) : never { throw new Error('This feature belongs to the hosted edition'); }
   rateLimit(key: string, max?: number, windowMs?: number) { return this.service.rateLimit(key, max, windowMs); }
   signup(body: Record<string, unknown>) : never { throw new Error('This feature belongs to the hosted edition'); }
+  verifyEmail(body: Record<string, unknown>) { return this.service.verifyEmail(body); }
+  resendVerification(p: Principal) { return this.service.resendVerification(p); }
+  requestPasswordReset(body: Record<string, unknown>) { return this.service.requestPasswordReset(body); }
+  confirmPasswordReset(body: Record<string, unknown>) { return this.service.confirmPasswordReset(body); }
   login(body: Record<string, unknown>) { return this.service.login(body); }
   legacySession() { return this.service.legacySession(); }
   bootstrap() { return this.service.bootstrap(); }

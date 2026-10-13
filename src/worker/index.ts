@@ -12,7 +12,7 @@ import { PREVIEW_HEARTBEAT_MS, startWithDurableDispatch } from './coordinator';
 import type { Principal, Action } from './security';
 import { listDocs, readDoc } from './docs';
 import { documentationImage, documentationMarkdown } from './docs-markdown';
-import { handleOnboarding } from './onboarding';
+import { handleOnboarding, signupWithVerification } from './onboarding';
 import { listPublicDocs, readPublicDoc, publicSourceResponse } from './distribution';
 import { oauthConsent, oauthProvider } from './oauth';
 import { publicGitResponse } from './hosted-source';
@@ -24,7 +24,7 @@ import { validateRepositoryInitialization, initializeArtifactsRepository } from 
 export { GitflareSecurity } from './security';
 export { GitflareCoordinator } from './coordinator';
 export { MissionWorkflow } from './workflow';
-export { AgentSandbox, BootstrapOutbound, GitOutbound } from '../../runner/sandbox';
+export { AgentSandbox, BootstrapOutbound, GitOutbound, RegistryOutbound } from '../../runner/sandbox';
 
 const encoder = new TextEncoder();
 
@@ -248,7 +248,7 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
     if (repositoryMatch[2] === 'skills') return Response.json(await listRepositorySkills(env.ARTIFACTS, repository, url.searchParams.get('ref') ?? undefined));
     return browseRepository(env, repository, repositoryMatch[2], url);
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review))?$/.exec(url.pathname);
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -322,7 +322,7 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
     const { mission, repository } = await findMission(env, match[1], principal.workspaceId);
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
     const reviewInput = match[2] === 'review' ? reviewMissionInput(body) : undefined;
-    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' ? 'execute' : ['approve', 'revoke'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
+    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
     try { await access.authorize(principal, action, 'repository', repository.id, mission.id); }
     catch (error) {
       if (reviewInput?.action !== 'comment' || publicError(error).code !== 'FORBIDDEN') throw error;
@@ -334,6 +334,12 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
       return Response.json(reviewed);
     }
     if (match[2] === 'cancel') return Response.json(await coordinator.cancelMission(key, mission.id));
+    if (match[2] === 'select') {
+      if (!Number.isInteger(body.epoch)) throw new ApiError(400, 'INVALID_INPUT', 'Include the attempt number this selection applies to.');
+      const selected = await coordinator.selectCandidate(key, mission.id, requireString(body.runId, 'Agent run', 100), body.epoch as number, principal.userId);
+      await access.clearApprovals(principal, mission.id);
+      return Response.json(selected);
+    }
     if (match[2] === 'preview') {
       if (!env.PREVIEW_ORIGIN || !env.SANDBOX || !env.ARTIFACTS) throw new ApiError(503, 'PREVIEW_NOT_CONFIGURED', 'Configure the isolated preview service before creating a preview.');
       const previewOrigin = new URL(env.PREVIEW_ORIGIN);
@@ -394,6 +400,7 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
       if (!claim.claimId) throw new ApiError(500, 'INTEGRATION_CLAIM_MISSING', 'The integration claim could not be established.');
       if (!claim.claimed) {
         if (current.headSha === candidateSha) return Response.json(await coordinator.completeIntegration(mission.id, claim.mission.epoch, candidateSha, claim.claimId));
+        if (await coordinator.releaseStaleIntegration(mission.id, claim.claimId)) throw new ApiError(409, 'INTEGRATION_RELEASED', 'An earlier landing attempt ended without updating the canonical branch. Its claim was released; retry landing.');
         throw new ApiError(409, 'INTEGRATION_PENDING', 'An integration is in progress or needs reconciliation. The canonical branch has not confirmed the approved commit.');
       }
       try {
