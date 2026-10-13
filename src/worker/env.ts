@@ -4,13 +4,19 @@ import type { ArtifactsBinding } from './artifacts';
 import type { GitflareSecurity } from './security';
 import type { GitflareCoordinator } from './coordinator';
 
-export type AppEnv = Omit<Env, 'EDITION' | 'EMAIL_FROM' | 'OAUTH_KV' | 'GITFLARE_SECURITY' | 'APP_ENV' | 'GITFLARE_COORDINATOR' | 'ARTIFACTS' | 'SANDBOX' | 'MISSION_WORKFLOW' | 'MODEL' | 'AI' | 'AI_GATEWAY_ID' | 'TEST_COMMAND'> & {
+export type AppEnv = Omit<Env, 'CLOUDFLARE_CLIENT_ID' | 'CLOUDFLARE_CLIENT_SECRET' | 'CLOUDFLARE_OAUTH_SCOPES' | 'CLOUDFLARE_CLIENT_AUTH_METHOD' | 'EDITION' | 'ADMIN_EMAIL' | 'ADMIN_PASSWORD' | 'EMAIL_FROM' | 'OAUTH_KV' | 'GITFLARE_SECURITY' | 'APP_ENV' | 'GITFLARE_COORDINATOR' | 'ARTIFACTS' | 'SANDBOX' | 'MISSION_WORKFLOW' | 'MODEL' | 'AI' | 'AI_GATEWAY_ID' | 'TEST_COMMAND'> & {
   GITFLARE_SECURITY: DurableObjectNamespace<GitflareSecurity>;
   APP_ENV: 'local' | 'production';
   GITFLARE_COORDINATOR: DurableObjectNamespace<GitflareCoordinator>;
   OWNER_TOKEN?: string;
+  CLOUDFLARE_CLIENT_ID?: string;
+  CLOUDFLARE_CLIENT_SECRET?: string;
+  CLOUDFLARE_OAUTH_SCOPES?: string;
+  CLOUDFLARE_CLIENT_AUTH_METHOD?: 'client_secret_post' | 'client_secret_basic';
   EDITION?: 'hosted' | 'self-hosted';
   SETUP_TOKEN?: string;
+  ADMIN_EMAIL?: string;
+  ADMIN_PASSWORD?: string;
   AUTH_ENCRYPTION_KEY?: string;
   OAUTH_KV?: KVNamespace;
   OAUTH_PROVIDER?: OAuthHelpers;

@@ -12,7 +12,7 @@ export const mcpToolNames = [
   'gitflare_inspect_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
   'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
-  'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_access_status', 'gitflare_manage_access',
+  'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
 ] as const;
 
 const identifier = z.string().min(1).max(100).regex(/^[a-zA-Z0-9-]+$/);
@@ -93,6 +93,23 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     }
     return response.json() as Promise<T>;
   }
+  server.registerTool('gitflare_cloudflare_connection', {
+    title: 'Connect and manage Cloudflare', description: 'Owner-only connection status, authorized accounts, resources, account selection and disconnect. Connect opens the browser consent page; credentials are never returned to agents.',
+    inputSchema: z.object({ action: z.enum(['status', 'connect', 'accounts', 'resources', 'select-account', 'disconnect']), accountId: z.string().regex(/^[a-f0-9]{32}$/).optional() }).strict(), annotations: mutation,
+  }, (input) => guarded(async () => {
+    if (input.action === 'connect') {
+      await call<Record<string, unknown>>('/api/cloudflare');
+      return { browserStartUrl: `${origin}/#settings/cloudflare`, browserAuthorizationRequired: true };
+    }
+    return call<Record<string, unknown>>(`/api/cloudflare/${input.action}`, ['select-account','disconnect'].includes(input.action) ? { accountId: input.accountId } : undefined);
+  }));
+  server.registerTool('gitflare_cloudflare_project', {
+    title: 'Manage project Cloudflare resources', description: 'Read or map this repository’s Worker, D1 database and Durable Object namespace; read project-only usage; prepare a pinned SQL migration for review and explicitly apply its exact checksum. A migration can alter database data and schema. Uncertain executions cannot be retried. Worker Builds and Durable Object migrations are not implemented.',
+    inputSchema: z.object({ repositoryId: identifier, action: z.enum(['get','map','usage','migration-plan','migration-execute']), workerName: z.string().max(64).optional(), d1DatabaseId: z.string().max(36).optional(), durableObjectNamespaceId: z.string().max(36).optional(), commitSha: commit.optional(), path: z.string().max(500).optional(), planId: z.string().uuid().optional(), checksum: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict(), annotations: { ...mutation, destructiveHint: true },
+  }, ({repositoryId, action, ...fields}) => guarded(async () => {
+    const path = `/api/repositories/${repositoryId}/cloudflare`;
+    return call<Record<string, unknown>>(action === 'get' ? path : action === 'usage' ? `${path}/usage` : `${path}/action`, ['get','usage'].includes(action) ? undefined : { action, ...Object.fromEntries(Object.entries(fields).filter(([,value]) => value !== undefined)) });
+  }));
   server.registerTool('gitflare_access_status', {
     title: 'Read workspace access', description: 'Read your identity, role, memberships, teams, invitations, task credentials, session revocation controls, protection requirements and audit events permitted by your current role. Email verification, MFA and SSO remain planned.',
     inputSchema: z.object({}).strict(), annotations: readOnly,
@@ -113,11 +130,17 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     return { ...metadata, content: excerpt(content, input.offset, input.limit) };
   }));
   server.registerTool('gitflare_public_source', {
-    title: 'Browse the public self-hosted source', description: 'Read the MIT release manifest, source tree, README or a source file published by this hosted installation. The manifest includes the source archive URL and commit SHA. Standalone installations may not publish a distribution.',
-    inputSchema: z.object({ view: z.enum(['manifest', 'tree', 'readme', 'file']).default('manifest'), path: z.string().max(2000).default(''), offset, limit: z.number().int().min(1).max(12000).default(8000) }).strict(), annotations: readOnly,
+    title: 'Browse the public self-hosted source', description: 'Read the MIT release manifest, source tree, README or a source file published by this hosted installation. The manifest includes the source archive URL and commit SHA. Repository view returns actual published-revision history and a snapshot timestamp; provide path for that file’s last commit. Standalone installations may not publish a distribution.',
+    inputSchema: z.object({ view: z.enum(['manifest', 'tree', 'readme', 'file', 'repository']).default('manifest'), path: z.string().max(2000).default(''), offset, limit: z.number().int().min(1).max(12000).default(8000) }).strict(), annotations: readOnly,
   }, (input) => guarded(async () => {
-    const suffix = input.view === 'manifest' ? '' : `/${input.view}?${new URLSearchParams({ path: repositoryPath(input.path) })}`;
+    const suffix = input.view === 'manifest' ? '' : input.view === 'repository' ? '/repository' : `/${input.view}?${new URLSearchParams({ path: repositoryPath(input.path) })}`;
     const source = await call<Record<string, unknown>>(`/api/public/source${suffix}`);
+    if (input.view === 'repository') {
+      const { files, commits, ...metadata } = source;
+      const fileMap = files && typeof files === 'object' && !Array.isArray(files) ? files as Record<string, unknown> : {};
+      const path = input.path ? repositoryPath(input.path) : '';
+      return { ...metadata, ...page(Array.isArray(commits) ? commits : [], input.offset, Math.min(input.limit, 30)), fileCount: Object.keys(fileMap).length, ...(path ? { path, lastCommit: fileMap[path] ?? null } : {}) };
+    }
     if (typeof source.content === 'string') return { ...source, content: excerpt(source.content, input.offset, input.limit) };
     if (Array.isArray(source.entries)) return { ...source, ...page(source.entries, input.offset, Math.min(input.limit, 50)), entries: undefined };
     return { ...source, fileCount: Array.isArray(source.files) ? source.files.length : undefined, files: undefined };

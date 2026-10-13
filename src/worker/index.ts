@@ -15,6 +15,8 @@ import { listPublicDocs, readPublicDoc, publicSourceResponse } from './distribut
 import { oauthConsent, oauthProvider } from './oauth';
 import { publicGitResponse } from './hosted-source';
 import { deliverInvitation } from './email';
+import { handleCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
+import { dispatchCloudflareProject, projectDependencies, type ProjectOperation } from './cloudflare-projects';
 import { validateRepositoryInitialization, initializeArtifactsRepository } from './repository-initialization';
 
 export { GitflareSecurity } from './security';
@@ -162,6 +164,8 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
     return markdown ? documentationMarkdown(doc, listPublicDocs(), request.url, true) : Response.json(doc);
   }
   if (url.pathname.startsWith('/api/public/source')) return publicSourceResponse(request, env.ASSETS);
+  const cloudflare = await handleCloudflare(request, env, authorize);
+  if (cloudflare) return cloudflare;
   const onboarding = await handleOnboarding(request, env, authorize);
   if (onboarding) return onboarding;
   if (request.method === 'POST' && ['/api/login', '/api/session'].includes(url.pathname)) {
@@ -213,6 +217,26 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
     for (const mission of groups.flat()) { try { await access.check(principal, 'read', 'repository', mission.repositoryId, mission.id); missions.push(mission); } catch {} }
     const workspace: Workspace = { name: principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : (await access.workspace(principal)).name, mode: local ? 'local' : 'connected', repositories: visible, missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local) };
     return Response.json(workspace);
+  }
+  const cloudflareProject = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/cloudflare(?:\/(usage|action))?$/.exec(url.pathname);
+  if (cloudflareProject) {
+    const repository = await catalog.getRepository(cloudflareProject[1]);
+    if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+    let operation: ProjectOperation = cloudflareProject[2] === 'usage' ? 'usage' : 'get';
+    let body: Record<string, unknown> = {};
+    if (request.method === 'POST' && cloudflareProject[2] === 'action') {
+      assertMutationOrigin(request);
+      const input = await readJson(request);
+      if (!['map', 'migration-plan', 'migration-execute', 'build-trigger'].includes(String(input.action))) throw new ApiError(400, 'INVALID_PROJECT_OPERATION', 'Choose a supported project operation.');
+      const { action, ...fields } = input; operation = action as ProjectOperation; body = fields;
+    } else if (request.method !== 'GET' || cloudflareProject[2] === 'action') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use a supported project operation.');
+    const read = { action: 'read' as const, resourceType: 'repository', resourceId: repository.id };
+    const dependencies = projectDependencies(env, principal, { ...repository, workspaceId: principal.workspaceId }, {
+      account: () => cloudflareAccount(env, principal, read),
+      api: (path, options) => cloudflareApiRequest(env, principal, path, { ...options, authorization: options?.method === 'POST' ? { action: 'migrate', resourceType: 'database', resourceId: path.split('/')[3] } : read }),
+      analytics: (query) => cloudflareAnalyticsRequest(env, principal, query, { ...read, expectedAccountId: query.expectedAccountId }),
+    });
+    return Response.json(await dispatchCloudflareProject(principal, { ...repository, workspaceId: principal.workspaceId }, operation, body, dependencies));
   }
   const repositoryMatch = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/(tree|file)$/.exec(url.pathname);
   if (request.method === 'GET' && repositoryMatch) {

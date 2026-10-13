@@ -1,6 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
+import { timingSafeEqual } from 'node:crypto';
 import { ApiError, requireString } from './domain';
 import type { AppEnv } from './env';
+import type { CloudflareConnection, CloudflareOAuthState } from './cloudflare';
+import type { ProjectMapping, MigrationPlan } from './cloudflare-projects';
 import { authenticatorUri, decryptAuth, encryptAuth, mfaSecret, randomCapability, verifyTotp } from './mfa';
 
 export const ROLES = ['Viewer', 'Contributor', 'Reviewer', 'Maintainer', 'Deployer', 'Owner'] as const;
@@ -20,15 +23,15 @@ interface Grant { id: string; workspaceId: string; subjectType: 'user' | 'team';
 interface Credential { id: string; workspaceId: string; userId: string; name: string; hash: string; repositoryId: string; missionId?: string; actions: Action[]; expiresAt: number; maxRequests: number; maxExecutions: number; requests: number; executions: number; revoked?: boolean; scope?: 'workspace-read' }
 interface Protection { requiredApprovals: number; requiredChecks: string[]; preventSelfApproval: boolean }
 interface Audit { id: string; workspaceId: string; actorId: string; action: string; timestamp: string; resourceId?: string }
-export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; AUTH_ENCRYPTION_KEY?: string }
+export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string }
 interface MfaRecord { id: string; encryptedSecret: string; enabled: boolean; lastStep: number; recoveryHashes: string[] }
 interface AuthChallenge { id: string; userId: string; kind: 'setup' | 'enroll' | 'login'; workspaceId?: string; expiresAt: number; used?: boolean }
 interface Installation { workspaceName?: string; workspaceId?: string; pendingUser?: User; challengeId?: string }
 interface MachineRegistration { id: string; requestHash: string; response: string; workspaceId: string; userId: string; claimHash: string; expiresAt: number; claimedBy?: string }
 export interface MfaChallengeResult { mfaRequired: true; challengeId: string; expiresAt: number; enrollmentRequired: boolean; secret?: string; otpauthUri?: string }
-interface State { mfa: MfaRecord[]; challenges: AuthChallenge[]; installations: Record<string, Installation>; machines: MachineRegistration[]; users: User[]; members: Member[]; sessions: Session[]; workspaces: WorkspaceRecord[]; invitations: Invitation[]; teams: Team[]; grants: Grant[]; credentials: Credential[]; audit: Audit[]; protections: Record<string, Protection>; approvals: Record<string, string[]>; limits: Record<string, { count: number; until: number }> }
+interface State { cloudflareConnections: Record<string, CloudflareConnection>; cloudflareStates: Record<string, CloudflareOAuthState>; cloudflareProjects: Record<string, {mapping: ProjectMapping | null; plans: MigrationPlan[]}>; mfa: MfaRecord[]; challenges: AuthChallenge[]; installations: Record<string, Installation>; machines: MachineRegistration[]; users: User[]; members: Member[]; sessions: Session[]; workspaces: WorkspaceRecord[]; invitations: Invitation[]; teams: Team[]; grants: Grant[]; credentials: Credential[]; audit: Audit[]; protections: Record<string, Protection>; approvals: Record<string, string[]>; limits: Record<string, { count: number; until: number }> }
 export interface Principal { userId: string; workspaceId: string; role: Role; sessionId?: string; credentialId?: string; bootstrap?: boolean }
-const initial = (): State => ({ mfa: [], challenges: [], installations: {}, machines: [], users: [], members: [], sessions: [], workspaces: [{ id: 'legacy', name: 'Gitflare workspace' }], invitations: [], teams: [], grants: [], credentials: [], audit: [], protections: {}, approvals: {}, limits: {} });
+const initial = (): State => ({ cloudflareConnections: {}, cloudflareStates: {}, cloudflareProjects: {}, mfa: [], challenges: [], installations: {}, machines: [], users: [], members: [], sessions: [], workspaces: [{ id: 'legacy', name: 'Gitflare workspace' }], invitations: [], teams: [], grants: [], credentials: [], audit: [], protections: {}, approvals: {}, limits: {} });
 const encode = new TextEncoder();
 export async function hashToken(value: string): Promise<string> { return hex(await crypto.subtle.digest('SHA-256', encode.encode(value))); }
 function hex(value: ArrayBuffer): string { return Array.from(new Uint8Array(value), b => b.toString(16).padStart(2, '0')).join(''); }
@@ -67,6 +70,90 @@ export class SecurityService {
       for (const key of existing.keys()) if (!next.has(key)) await txn.delete(key);
       await txn.delete('security');
       return result;
+    });
+  }
+  async connectionStore(p: Principal | null, operation: 'get' | 'put' | 'delete' | 'state-put' | 'state-consume', body: Record<string, unknown> = {}): Promise<unknown> {
+    return this.mutate(state => {
+      for (const [id, value] of Object.entries(state.cloudflareStates)) if (value.expiresAt <= Date.now()) delete state.cloudflareStates[id];
+      if (operation === 'state-consume') {
+        const value = state.cloudflareStates[String(body.id)];
+        if (!value || value.browserHash !== body.browserHash || value.expiresAt <= Date.now()) throw new ApiError(400, 'CLOUDFLARE_STATE_INVALID', 'The connection request has expired. Start again.');
+        this.validate(state, value.principal);
+        if (value.principal.role !== 'Owner' || !value.principal.sessionId || value.principal.credentialId) fail();
+        delete state.cloudflareStates[value.id];
+        return value;
+      }
+      if (!p) fail();
+      this.validate(state, p);
+      if (p.credentialId) fail();
+      if (operation === 'get') {
+        const authorization = body.authorization as {action: Action; resourceType: string; resourceId: string} | undefined;
+        if (p.role !== 'Owner' && (!authorization || !this.authorityAllows(state, p, authorization.action, authorization.resourceType, authorization.resourceId))) fail();
+        const connection = state.cloudflareConnections[p.workspaceId] ?? null;
+        if (connection?.issuer) this.validate(state, { ...connection.issuer, sessionId: undefined });
+        return connection;
+      }
+      if (p.role !== 'Owner') fail();
+      if (operation === 'state-put') {
+        const value = body.value as CloudflareOAuthState;
+        if (!p.sessionId || value.principal.userId !== p.userId || value.principal.workspaceId !== p.workspaceId || value.principal.sessionId !== p.sessionId || value.principal.role !== 'Owner' || value.principal.credentialId || value.expiresAt > Date.now() + 600000 || value.expiresAt <= Date.now()) fail();
+        state.cloudflareStates[value.id] = value;
+        return { ok: true };
+      }
+      const existing = state.cloudflareConnections[p.workspaceId] ?? null;
+      if (operation === 'put') {
+        if ((existing?.version ?? null) !== body.expectedVersion) throw new ApiError(409, 'CLOUDFLARE_CONNECTION_CHANGED', 'The Cloudflare connection changed. Refresh and try again.');
+        const value = body.value as CloudflareConnection;
+        if (value.issuer?.workspaceId !== p.workspaceId || value.issuer.role !== 'Owner' || value.issuer.credentialId) fail();
+        this.validate(state, { ...value.issuer, sessionId: undefined });
+        state.cloudflareConnections[p.workspaceId] = value;
+      } else if (operation === 'delete') {
+        delete state.cloudflareConnections[p.workspaceId];
+        for (const [id, value] of Object.entries(state.cloudflareStates)) if (value.principal.workspaceId === p.workspaceId) delete state.cloudflareStates[id];
+      }
+      state.audit.push({ id: crypto.randomUUID(), workspaceId: p.workspaceId, actorId: p.userId, action: `cloudflare:${operation}`, timestamp: new Date().toISOString() });
+      return operation === 'delete' ? existing : { ok: true };
+    });
+  }
+  async projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}): Promise<unknown> {
+    return this.mutate(state => {
+      this.validate(state, p);
+      if (p.credentialId || !this.authorityAllows(state, p, 'read', 'repository', repositoryId)) fail();
+      const key = `${p.workspaceId}/${repositoryId}`;
+      const current = state.cloudflareProjects[key] ?? { mapping: null, plans: [] };
+      if (operation === 'get') return current;
+      if (operation === 'set') {
+        if (p.role !== 'Owner') fail();
+        const mapping = body.mapping as ProjectMapping;
+        if (mapping.workspaceId !== p.workspaceId || mapping.repositoryId !== repositoryId) fail();
+        current.mapping = mapping;
+        current.plans = current.plans.map(plan => plan.status === 'pending' ? { ...plan, status: 'failed' as const, error: 'Project resources changed. Create a new plan.' } : plan);
+      } else {
+        const mapping = current.mapping;
+        if (!mapping?.d1DatabaseId || !this.authorityAllows(state, p, 'migrate', 'database', mapping.d1DatabaseId)) fail();
+        if (operation === 'plan') {
+          const plan = body.plan as MigrationPlan;
+          if (plan.workspaceId !== p.workspaceId || plan.repositoryId !== repositoryId || plan.mappingVersion !== mapping.version || plan.accountId !== mapping.accountId || plan.databaseId !== mapping.d1DatabaseId || plan.status !== 'pending') fail();
+          if (current.plans.some(item => item.id === plan.id || item.checksum === plan.checksum && item.databaseId === plan.databaseId && ['pending','executing','succeeded','unknown'].includes(item.status))) throw new ApiError(409, 'MIGRATION_EXISTS', 'This migration already has a plan or recorded execution.');
+          if (current.plans.length >= 500) throw new ApiError(409, 'MIGRATION_HISTORY_LIMIT', 'This project has reached its migration history limit.');
+          current.plans.push(plan);
+        } else {
+          const plan = current.plans.find(item => item.id === body.planId);
+          if (!plan) throw new ApiError(404, 'MIGRATION_NOT_FOUND', 'This migration plan could not be found.');
+          if (operation === 'consume') {
+            if (plan.status !== 'pending' || plan.checksum !== body.checksum || plan.mappingVersion !== mapping.version || plan.accountId !== mapping.accountId || plan.databaseId !== mapping.d1DatabaseId) throw new ApiError(409, 'MIGRATION_STALE', 'This migration has changed or already started. Create a new plan.');
+            plan.status = 'executing';
+          } else {
+            if (plan.status !== 'executing' || !['succeeded','failed','unknown'].includes(String(body.status))) throw new ApiError(409, 'MIGRATION_STATE_INVALID', 'This migration cannot change state.');
+            plan.status = body.status as MigrationPlan['status'];
+            if (typeof body.error === 'string') plan.error = body.error.slice(0, 500);
+          }
+        }
+      }
+      state.cloudflareProjects[key] = current;
+      state.audit.push({ id: crypto.randomUUID(), workspaceId: p.workspaceId, actorId: p.userId, action: `cloudflare:project:${operation}`, resourceId: repositoryId, timestamp: new Date().toISOString() });
+      if (operation === 'consume') return current.plans.find(item => item.id === body.planId);
+      return current;
     });
   }
   async rateLimit(key: string, max = 15, windowMs = 900000): Promise<void> {
@@ -159,7 +246,22 @@ export class SecurityService {
     });
   }
   async authConfig() {
-    return this.mutate(state => ({ edition: this.options.EDITION ?? 'hosted', setupRequired: this.options.EDITION === 'self-hosted' && !state.installations.self?.workspaceId, publicSignup: this.options.EDITION !== 'self-hosted', mfaRequired: this.options.EDITION === 'self-hosted' }));
+    return this.mutate(state => ({ edition: this.options.EDITION ?? 'hosted', setupRequired: this.options.EDITION === 'self-hosted' && !state.installations.self?.workspaceId, publicSignup: this.options.EDITION !== 'self-hosted', mfaRequired: this.options.EDITION === 'self-hosted', ...(this.options.EDITION === 'self-hosted' ? { setupMode: this.setupMode() } : {}) }));
+  }
+  private setupMode(): 'admin-credentials' | 'setup-token' | 'unconfigured' {
+    if (this.options.ADMIN_EMAIL !== undefined || this.options.ADMIN_PASSWORD !== undefined) {
+      const email = this.options.ADMIN_EMAIL?.trim(); const password = this.options.ADMIN_PASSWORD?.trim();
+      return email && email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && password && password.length >= 12 && password.length <= 256 ? 'admin-credentials' : 'unconfigured';
+    }
+    return this.options.SETUP_TOKEN && this.options.SETUP_TOKEN.length >= 32 ? 'setup-token' : 'unconfigured';
+  }
+  private async setupCredentialsMatch(email: string, password: string): Promise<boolean> {
+    const [actualEmail, expectedEmail, actualPassword, expectedPassword] = await Promise.all([
+      hashToken(email), hashToken(this.options.ADMIN_EMAIL!.trim().toLowerCase()), hashToken(password), hashToken(this.options.ADMIN_PASSWORD!.trim()),
+    ]);
+    const emailMatches = timingSafeEqual(encode.encode(actualEmail), encode.encode(expectedEmail));
+    const passwordMatches = timingSafeEqual(encode.encode(actualPassword), encode.encode(expectedPassword));
+    return emailMatches && passwordMatches;
   }
   private accountInput(body: Record<string, unknown>) {
     const name = requireString(body.name, 'Name', 100); const email = requireString(body.email, 'Email', 254).toLowerCase();
@@ -172,9 +274,15 @@ export class SecurityService {
   }
   async startSetup(body: Record<string, unknown>): Promise<MfaChallengeResult> {
     if (this.options.EDITION !== 'self-hosted') fail('SETUP_DISABLED');
-    const supplied = requireString(body.setupToken, 'Setup token', 1024, 32);
-    if (!this.options.SETUP_TOKEN || this.options.SETUP_TOKEN.length < 32 || await hashToken(supplied) !== await hashToken(this.options.SETUP_TOKEN)) fail('INVALID_SETUP_TOKEN', 'The installation setup token was not accepted.');
+    const mode = this.setupMode();
+    if (mode === 'unconfigured') throw new ApiError(503, 'SETUP_NOT_CONFIGURED', 'Configure the administrator email and a password of at least 12 characters in the deployment settings.');
+    if (mode === 'setup-token') {
+      const supplied = requireString(body.setupToken, 'Setup token', 1024, 32);
+      const [actual, expected] = await Promise.all([hashToken(supplied), hashToken(this.options.SETUP_TOKEN!)]);
+      if (!timingSafeEqual(encode.encode(actual), encode.encode(expected))) fail('INVALID_SETUP_TOKEN', 'The installation setup token was not accepted.');
+    }
     const input = this.accountInput(body); const workspaceName = requireString(body.workspaceName, 'Workspace name', 100);
+    if (mode === 'admin-credentials' && !await this.setupCredentialsMatch(input.email, input.password)) fail('SETUP_CREDENTIALS_REJECTED', 'Use the administrator email and password supplied during deployment.');
     const userId = crypto.randomUUID(); const salt = token(); const hash = await passwordHash(input.password, salt);
     const secret = mfaSecret(); const encryptedSecret = await encryptAuth(secret, this.options.AUTH_ENCRYPTION_KEY, `mfa:${userId}`);
     const challengeId = token(); const challengeHash = await hashToken(challengeId); const expiresAt = Date.now() + 300000;
@@ -304,6 +412,8 @@ export class SecurityService {
 export class GitflareSecurity extends DurableObject<AppEnv> {
   private service: SecurityService;
   constructor(ctx: DurableObjectState, env: AppEnv) { super(ctx, env); this.service = new SecurityService(ctx.storage, env as AppEnv & SecurityOptions); }
+  connectionStore(p: Principal | null, operation: 'get' | 'put' | 'delete' | 'state-put' | 'state-consume', body: Record<string, unknown> = {}) { return this.service.connectionStore(p, operation, body); }
+  projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}) { return this.service.projectStore(p, repositoryId, operation, body); }
   authConfig() { return this.service.authConfig(); }
   startSetup(body: Record<string, unknown>) { return this.service.startSetup(body); }
   verifyMfa(body: Record<string, unknown>, setupOnly?: boolean) { return this.service.verifyMfa(body, setupOnly); }

@@ -52,6 +52,7 @@ import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { type AuthConfig } from "./AuthScreen";
 import Documentation from "./Documentation";
+import CloudflareConnection from "./CloudflareConnection";
 import McpConnections from "./McpConnections";
 import Homepage from "./SelfHostedHome";
 import AccessSettings from "./AccessSettings";
@@ -391,6 +392,7 @@ export default function App() {
             <GearSixIcon size={17} />
             Settings
           </button>
+          <button className={`nav-item ${route === "settings/cloudflare" ? "active" : ""}`} aria-current={route === "settings/cloudflare" ? "page" : undefined} onClick={() => navigate("settings/cloudflare")}><CloudIcon size={17} />Cloudflare</button>
           <button className={`nav-item ${page === "docs" ? "active" : ""}`} onClick={() => navigate("docs/how-it-works")} aria-current={page === "docs" ? "page" : undefined}>
             <BookOpenIcon size={17} />
             Documentation
@@ -464,7 +466,7 @@ export default function App() {
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
           <>
-            {page === "connect" ? <McpConnections /> : page === "docs" ? (
+            {route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : route.startsWith("repository/") && route.endsWith("/cloudflare") ? <CloudflareConnection canManage={permissions.includes("manage")} repository={workspace.repositories.find((repo) => repo.id === route.split("/")[1])} repositoryId={route.split("/")[1]} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (
               <MissionDetail
@@ -931,6 +933,7 @@ export default function App() {
                 )}
                 {page === "settings" && (
                   <>
+                    <a className="text-link" href="#settings/cloudflare">Cloudflare account and resources</a>
                     <AccessSettings selfHosted={authConfig.edition === "self-hosted"} repositories={workspace.repositories} onWorkspaceChanged={load} />
 
                     <section className="panel">
@@ -1154,6 +1157,7 @@ function RepositoryDetail({
           Create mission
         </Button>
       </div>
+      <a className="text-link" href={`#repository/${repository.id}/cloudflare`}>Cloudflare resources and usage</a>
       <div className="page-tabs">
         <Tabs
           variant="underline"
