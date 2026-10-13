@@ -57,7 +57,7 @@
         "description": "Strong unique initial administrator password of at least 12 characters. Kept as a Worker secret. No setup token is required."
       },
       "AI_GATEWAY_ID": {
-        "description": "Deployment creates or reuses gateway gitflare. Build credentials need AI Gateway Read/Write and Artifacts Read/Edit. Add your OpenAI BYOK inside Cloudflare dashboard before running agents."
+        "description": "Deployment creates or reuses gateway gitflare. Build credentials need AI Gateway Read/Write and Artifacts Read/Edit. Configure provider BYOK or Unified Billing in Cloudflare dashboard, then enable compatible models in workspace AI models settings."
       }
     }
   }

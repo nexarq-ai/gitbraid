@@ -286,7 +286,7 @@ export default function MissionDetail({
           <h1>{mission.title}</h1>
           <div className="detail-meta">
             <Status status={mission.status} />
-            <span>Proposal · Mission</span>
+            <span>Proposal</span>
             <span>
               <GitBranchIcon size={13} />
               {repository?.name ?? "Repository"}
@@ -324,7 +324,7 @@ export default function MissionDetail({
               onClick={() => void act("start")}
             >
               {mission.status === "draft"
-                ? "Start mission"
+                ? "Start agents"
                 : mission.status === "needs_review"
                   ? "Rerun on latest base"
                   : "Retry mission"}
@@ -390,11 +390,12 @@ export default function MissionDetail({
           <ArrowSquareOutIcon size={17} />
           <div className="alert-text">
             <strong>
-              Preview ready for{" "}
+              Cloudflare preview ready for{" "}
               <code>{currentPreview.candidateSha.slice(0, 12)}</code>.
             </strong>{" "}
             Available until{" "}
             {new Date(currentPreview.expiresAt).toLocaleTimeString()}.
+            <small className="candidate-preview-provider">Isolated Container · {new URL(currentPreview.previewUrl).hostname}</small>
           </div>
           <a
             href={currentPreview.previewUrl}
@@ -462,7 +463,7 @@ export default function MissionDetail({
         <div className="alert info">
           <RobotIcon size={17} />
           <div className="alert-text">
-            This mission is a draft. Starting it checks your connections before
+            This proposal is a draft. Starting it checks your connections before
             dispatching agent work.
           </div>
         </div>
@@ -483,7 +484,7 @@ export default function MissionDetail({
         <span>Attempt {mission.epoch}</span>
         <span>
           {mission.runs.length}{" "}
-          {mission.epoch === 0 ? "planned agent tasks" : "isolated agent tasks"}
+          {mission.skillChange ? "trusted skill edit" : `${mission.epoch === 0 ? "planned" : "isolated"} agent ${mission.runs.length === 1 ? "task" : "tasks"}`}
         </span>
       </div>
       <div className="page-tabs">
@@ -517,7 +518,7 @@ export default function MissionDetail({
             <div className="detail-summary">
               <section className="panel">
                 <div className="panel-header">
-                  <h2>Mission brief</h2>
+                  <h2>Proposal brief</h2>
                   <CodeIcon size={16} color="#8b99ab" />
                 </div>
                 <div className="panel-body">
@@ -608,7 +609,7 @@ export default function MissionDetail({
                 )
                 .map((run) => (
                   <article
-                    className="agent-card"
+                    className={tab === "agents" ? "agent-card agent-card-with-footer" : "agent-card"}
                     id={`run-${run.id}`}
                     key={run.id}
                   >
@@ -636,6 +637,13 @@ export default function MissionDetail({
                         <p style={{ marginTop: 12, color: "#b55c45" }}>
                           {run.error}
                         </p>
+                      )}
+                      {run.skills !== undefined && (
+                        <details className="agent-skill-evidence">
+                          <summary>{run.skills.length} repository {run.skills.length === 1 ? "skill" : "skills"} loaded</summary>
+                          {run.skills.length ? <ul>{run.skills.map(skill => <li key={skill.path}><strong>{skill.name}</strong><code>{skill.path}</code><small>Source {skill.commitSha.slice(0, 12)} · SHA-256 {skill.sha256.slice(0, 12)}</small></li>)}</ul> : <p>No skills were available at the starting revision.</p>}
+                          {run.skillWarnings?.map((warning, index) => <p className="agent-skill-warning" key={index}>{warning}</p>)}
+                        </details>
                       )}
                       <dl>
                         <dt>Branch</dt>
@@ -678,12 +686,6 @@ export default function MissionDetail({
                           {!mission.events.some(
                             (event) => event.runId === run.id,
                           ) && <p>No run events recorded.</p>}
-                          <button
-                            className="text-link"
-                            onClick={() => onTabChange("changes")}
-                          >
-                            Inspect saved changes →
-                          </button>
                         </>
                       )}
                       {run.changedFiles.length > 0 && (
@@ -694,6 +696,7 @@ export default function MissionDetail({
                         </div>
                       )}
                     </div>
+                    {tab === "agents" && <footer className="agent-card-footer"><Button variant="secondary" size="base" icon={FileCodeIcon} onClick={() => onTabChange("changes")}>Inspect saved changes</Button></footer>}
                   </article>
                 ))}
             </div>
@@ -999,7 +1002,7 @@ export default function MissionDetail({
       {tab === "activity" && (
         <section className="panel">
           <div className="panel-header">
-            <h2>Mission history</h2>
+            <h2>Proposal history</h2>
             <span className="number-tag">{mission.events.length} events</span>
           </div>
           <div className="panel-body">
