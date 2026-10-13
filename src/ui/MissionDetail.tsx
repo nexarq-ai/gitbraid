@@ -26,6 +26,10 @@ import AttemptHistory from "./AttemptHistory";
 
 type Props = {
   id: string;
+  initialTab: string;
+  selectedRunId?: string;
+  currentUserId: string;
+  onTabChange: (tab: string) => void;
   permissions: string[];
   workspace: Workspace;
   onBack: () => void;
@@ -34,6 +38,10 @@ type Props = {
 
 export default function MissionDetail({
   id,
+  initialTab,
+  selectedRunId,
+  currentUserId,
+  onTabChange,
   permissions,
   workspace,
   onBack,
@@ -42,7 +50,18 @@ export default function MissionDetail({
   const [mission, setMission] = useState<Mission | undefined>(() =>
     workspace.missions.find((item) => item.id === id),
   );
-  const [tab, setTab] = useState("overview");
+  const tab = [
+    "overview",
+    "changes",
+    "checks",
+    "agents",
+    "discussion",
+    "activity",
+    "attempts",
+  ].includes(initialTab)
+    ? initialTab
+    : "overview";
+  const [reviewBody, setReviewBody] = useState("");
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
@@ -124,6 +143,43 @@ export default function MissionDetail({
     }
   }
 
+  async function review(
+    action: "comment" | "request_changes" | "resolve",
+    reviewId?: string,
+  ) {
+    if (!mission || busy) return;
+    const body = {
+      action,
+      body: action === "resolve" ? undefined : reviewBody,
+      reviewId,
+      epoch: mission.epoch,
+      candidateSha: mission.candidateSha,
+      baseSha: mission.baseSha,
+    };
+    const signature = JSON.stringify({ id, action: "review", body });
+    if (mutation.current?.signature !== signature)
+      mutation.current = { signature, key: crypto.randomUUID() };
+    setBusy(action);
+    setError("");
+    try {
+      const result = await request<Mission>(
+        `/api/missions/${encodeURIComponent(id)}/review`,
+        body,
+        mutation.current.key,
+      );
+      setMission(result);
+      setReviewBody("");
+      mutation.current = null;
+      onUpdate();
+    } catch (failure) {
+      setError(
+        failure instanceof Error ? failure.message : "Could not save review.",
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function preparePreview() {
     if (!mission?.candidateSha || busy) return;
     setBusy("preview");
@@ -172,7 +228,7 @@ export default function MissionDetail({
       <>
         <button className="header-back" onClick={onBack}>
           <ArrowLeftIcon size={13} />
-          All missions
+          Repository proposals
         </button>
         {loadError ? (
           <ErrorNotice message={loadError} />
@@ -183,7 +239,20 @@ export default function MissionDetail({
     );
   const active = ["queued", "running", "checking"].includes(mission.status);
   const overlap = mission.changes.filter((change) => change.runIds.length > 1);
+  const unresolvedRequests = (mission.reviews ?? []).filter(
+    (review) =>
+      review.kind === "request_changes" &&
+      !review.resolvedAt &&
+      review.epoch === mission.epoch &&
+      review.candidateSha === mission.candidateSha &&
+      review.baseSha === mission.baseSha,
+  );
+  const canDiscuss =
+    ["needs_review", "approved"].includes(mission.status) &&
+    !!mission.candidateSha &&
+    !!mission.baseSha;
   const readyForReview =
+    unresolvedRequests.length === 0 &&
     mission.status === "needs_review" &&
     !!mission.candidateSha &&
     !!mission.baseSha &&
@@ -210,13 +279,14 @@ export default function MissionDetail({
     <>
       <button className="header-back" onClick={onBack}>
         <ArrowLeftIcon size={13} />
-        All missions
+        Repository proposals
       </button>
       <div className="page-heading detail-heading">
         <div>
           <h1>{mission.title}</h1>
           <div className="detail-meta">
             <Status status={mission.status} />
+            <span>Proposal · Mission</span>
             <span>
               <GitBranchIcon size={13} />
               {repository?.name ?? "Repository"}
@@ -289,7 +359,11 @@ export default function MissionDetail({
               size="base"
               icon={GitMergeIcon}
               loading={busy === "integrate"}
-              disabled={!!busy || !permissions.includes("land")}
+              disabled={
+                !!busy ||
+                !permissions.includes("land") ||
+                unresolvedRequests.length > 0
+              }
               onClick={() => void act("integrate")}
             >
               {mission.status === "integrating"
@@ -337,6 +411,21 @@ export default function MissionDetail({
       {mission.error && mission.error !== error && (
         <ErrorNotice message={mission.error} />
       )}
+      {unresolvedRequests.length > 0 && (
+        <div className="alert">
+          <WarningCircleIcon size={17} />
+          <div className="alert-text">
+            {unresolvedRequests.length} unresolved review requests block
+            approval and landing for this revision.{" "}
+            <button
+              className="text-link"
+              onClick={() => onTabChange("discussion")}
+            >
+              View discussion
+            </button>
+          </div>
+        </div>
+      )}
       {overlap.length > 0 && (
         <div className="alert">
           <WarningCircleIcon size={17} />
@@ -378,11 +467,30 @@ export default function MissionDetail({
           </div>
         </div>
       )}
+      <div className="repository-work-meta">
+        <span>
+          Base{" "}
+          <code title={mission.baseSha ?? undefined}>
+            {mission.baseSha?.slice(0, 12) || "Assigned at start"}
+          </code>
+        </span>
+        <span>
+          Candidate{" "}
+          <code title={mission.candidateSha ?? undefined}>
+            {mission.candidateSha?.slice(0, 12) || "No candidate yet"}
+          </code>
+        </span>
+        <span>Attempt {mission.epoch}</span>
+        <span>
+          {mission.runs.length}{" "}
+          {mission.epoch === 0 ? "planned agent tasks" : "isolated agent tasks"}
+        </span>
+      </div>
       <div className="page-tabs">
         <Tabs
           variant="underline"
           value={tab}
-          onValueChange={setTab}
+          onValueChange={onTabChange}
           tabs={[
             { value: "overview", label: "Overview" },
             {
@@ -393,70 +501,92 @@ export default function MissionDetail({
               value: "checks",
               label: `Checks${mission.checks.length ? ` (${passed}/${mission.checks.length})` : ""}`,
             },
+            { value: "agents", label: `Agents (${mission.runs.length})` },
+            {
+              value: "discussion",
+              label: `Discussion (${(mission.reviews ?? []).length})`,
+            },
             { value: "activity", label: "Activity" },
             { value: "attempts", label: "Attempt history" },
           ]}
         />
       </div>
-      {tab === "overview" && (
+      {(tab === "overview" || tab === "agents") && (
         <>
-          <div className="detail-summary">
-            <section className="panel">
-              <div className="panel-header">
-                <h2>Mission brief</h2>
-                <CodeIcon size={16} color="#8b99ab" />
-              </div>
-              <div className="panel-body">
-                <p className="mission-prompt">{mission.prompt}</p>
-                {!!mission.acceptanceCriteria?.length && (
-                  <div style={{ marginTop: 19 }}>
-                    <h3 style={{ fontSize: 13 }}>Acceptance criteria</h3>
-                    <ul className="acceptance-list">
-                      {mission.acceptanceCriteria.map((criterion, index) => (
-                        <li key={index}>{criterion}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <div className="summary-grid">
-                  <div>
-                    <span>Base revision</span>
-                    <strong>
-                      <code>
-                        {mission.baseSha?.slice(0, 12) ??
-                          "Assigned when work starts"}
-                      </code>
-                    </strong>
-                  </div>
-                  <div>
-                    <span>Candidate revision</span>
-                    <strong>
-                      <code>
-                        {mission.candidateSha?.slice(0, 12) ??
-                          "Waiting for agent work"}
-                      </code>
-                    </strong>
+          {tab === "overview" && (
+            <div className="detail-summary">
+              <section className="panel">
+                <div className="panel-header">
+                  <h2>Mission brief</h2>
+                  <CodeIcon size={16} color="#8b99ab" />
+                </div>
+                <div className="panel-body">
+                  <p className="mission-prompt">{mission.prompt}</p>
+                  {!!mission.acceptanceCriteria?.length && (
+                    <div style={{ marginTop: 19 }}>
+                      <h3 style={{ fontSize: 13 }}>Acceptance criteria</h3>
+                      <ul className="acceptance-list">
+                        {mission.acceptanceCriteria.map((criterion, index) => (
+                          <li key={index}>{criterion}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <div className="summary-grid">
+                    <div>
+                      <span>Base revision</span>
+                      <strong>
+                        <code>
+                          {mission.baseSha?.slice(0, 12) ??
+                            "Assigned when work starts"}
+                        </code>
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Candidate revision</span>
+                      <strong>
+                        <code>
+                          {mission.candidateSha?.slice(0, 12) ??
+                            "Waiting for agent work"}
+                        </code>
+                      </strong>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </section>
-            <aside className="panel summary-aside">
-              <div className="panel-header">
-                <h2>Review policy</h2>
-                <ShieldCheckIcon size={16} color="#8b99ab" />
-              </div>
-              <div className="panel-body">
-                <p className="mission-prompt" style={{ fontSize: 13 }}>
-                  Each agent works in its own fork. Review applies to the exact
-                  candidate and base revisions.
-                </p>
-                <p className="security-note">
-                  <GitCommitIcon size={14} />A changed candidate needs a new
-                  review.
-                </p>
-              </div>
-            </aside>
-          </div>
+              </section>
+              <aside className="panel summary-aside">
+                <div className="panel-header">
+                  <h2>Review policy</h2>
+                  <ShieldCheckIcon size={16} color="#8b99ab" />
+                </div>
+                <div className="panel-body">
+                  <p className="mission-prompt" style={{ fontSize: 13 }}>
+                    Each agent works in its own fork. Review applies to the
+                    exact candidate and base revisions.
+                  </p>
+                  <p className="security-note">
+                    <GitCommitIcon size={14} />A changed candidate needs a new
+                    review.
+                  </p>
+                </div>
+              </aside>
+            </div>
+          )}
+          {tab === "agents" && selectedRunId && (
+            <p className="mission-prompt">
+              <button
+                className="text-link"
+                onClick={() => onTabChange("agents")}
+              >
+                ← All agent runs
+              </button>
+            </p>
+          )}
+          {tab === "agents" &&
+            selectedRunId &&
+            !mission.runs.some((run) => run.id === selectedRunId) && (
+              <ErrorNotice message="This run was not found in the current attempt. Check Attempt history for earlier runs." />
+            )}
           <div className="section-heading">
             <h2>
               Agent work{" "}
@@ -469,59 +599,103 @@ export default function MissionDetail({
           </div>
           {mission.runs.length ? (
             <div className="agent-grid">
-              {mission.runs.map((run) => (
-                <article className="agent-card" key={run.id}>
-                  <div className="agent-top">
-                    <div className="agent-icon">
-                      <RobotIcon size={22} />
-                    </div>
-                    <div>
-                      <h3>{run.name}</h3>
-                      <small>
-                        {run.role}
-                        {run.model ? ` / ${run.model}` : ""}
-                      </small>
-                    </div>
-                    <Status status={run.status} />
-                  </div>
-                  <div className="agent-body">
-                    <AgentAssignment run={run} mission={mission} />
-                    {run.summary && (
-                      <p style={{ marginTop: 12 }}>{run.summary}</p>
-                    )}
-                    {run.error && (
-                      <p style={{ marginTop: 12, color: "#b55c45" }}>
-                        {run.error}
-                      </p>
-                    )}
-                    <dl>
-                      <dt>Fork</dt>
-                      <dd>
-                        <code>{run.forkName ?? "Not allocated"}</code>
-                      </dd>
-                      <dt>Revision</dt>
-                      <dd>
-                        <code>
-                          {run.commitSha?.slice(0, 12) ?? "No revision yet"}
-                        </code>
-                      </dd>
-                      <dt>Started</dt>
-                      <dd>
-                        {run.startedAt
-                          ? new Date(run.startedAt).toLocaleTimeString()
-                          : "Waiting"}
-                      </dd>
-                    </dl>
-                    {run.changedFiles.length > 0 && (
-                      <div className="file-tags">
-                        {run.changedFiles.map((file) => (
-                          <code key={file}>{file}</code>
-                        ))}
+              {mission.runs
+                .filter(
+                  (run) =>
+                    tab !== "agents" ||
+                    !selectedRunId ||
+                    run.id === selectedRunId,
+                )
+                .map((run) => (
+                  <article
+                    className="agent-card"
+                    id={`run-${run.id}`}
+                    key={run.id}
+                  >
+                    <div className="agent-top">
+                      <div className="agent-icon">
+                        <RobotIcon size={22} />
                       </div>
-                    )}
-                  </div>
-                </article>
-              ))}
+                      <div>
+                        <h3>{run.name}</h3>
+                        <small>
+                          {run.role}
+                          {run.model ? ` / ${run.model}` : ""}
+                        </small>
+                      </div>
+                      <Status
+                        status={mission.epoch === 0 ? "draft" : run.status}
+                      />
+                    </div>
+                    <div className="agent-body">
+                      <AgentAssignment run={run} mission={mission} />
+                      {run.summary && (
+                        <p style={{ marginTop: 12 }}>{run.summary}</p>
+                      )}
+                      {run.error && (
+                        <p style={{ marginTop: 12, color: "#b55c45" }}>
+                          {run.error}
+                        </p>
+                      )}
+                      <dl>
+                        <dt>Branch</dt>
+                        <dd>
+                          <code>{run.branch ?? "Not allocated"}</code>
+                        </dd>
+                        <dt>Fork</dt>
+                        <dd>
+                          <code>{run.forkName ?? "Not allocated"}</code>
+                        </dd>
+                        <dt>Revision</dt>
+                        <dd>
+                          <code>
+                            {run.commitSha?.slice(0, 12) ?? "No revision yet"}
+                          </code>
+                        </dd>
+                        <dt>Started</dt>
+                        <dd>
+                          {run.startedAt
+                            ? new Date(run.startedAt).toLocaleTimeString()
+                            : "Waiting"}
+                        </dd>
+                      </dl>
+                      {tab === "agents" && (
+                        <>
+                          <h3>Recorded run activity</h3>
+                          <ol className="timeline">
+                            {mission.events
+                              .filter((event) => event.runId === run.id)
+                              .map((event) => (
+                                <li key={event.id}>
+                                  <span className="timeline-marker" />
+                                  <p>{event.message}</p>
+                                  <small>
+                                    {new Date(event.timestamp).toLocaleString()}
+                                  </small>
+                                </li>
+                              ))}
+                          </ol>
+                          {!mission.events.some(
+                            (event) => event.runId === run.id,
+                          ) && <p>No run events recorded.</p>}
+                          <button
+                            className="text-link"
+                            onClick={() => onTabChange("changes")}
+                          >
+                            Inspect saved changes →
+                          </button>
+                        </>
+                      )}
+                      {run.changedFiles.length > 0 && (
+                        <div className="file-tags">
+                          {run.changedFiles.map((file) => (
+                            <code key={file}>{file}</code>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                ))}
             </div>
           ) : (
             <div className="panel">
@@ -532,21 +706,39 @@ export default function MissionDetail({
               />
             </div>
           )}
-          <section className="panel" style={{ marginTop: 24 }}>
-            <div className="panel-header">
-              <h2>Latest activity</h2>
-              <button className="text-link" onClick={() => setTab("activity")}>
-                View all activity <ArrowSquareOutIcon size={12} />
-              </button>
-            </div>
-            <div className="panel-body">
-              <EventTimeline mission={mission} limit={4} />
-            </div>
-          </section>
+          {tab === "overview" && (
+            <section className="panel" style={{ marginTop: 24 }}>
+              <div className="panel-header">
+                <h2>Latest activity</h2>
+                <button
+                  className="text-link"
+                  onClick={() => onTabChange("activity")}
+                >
+                  View all activity <ArrowSquareOutIcon size={12} />
+                </button>
+              </div>
+              <div className="panel-body">
+                <EventTimeline mission={mission} limit={4} />
+              </div>
+            </section>
+          )}
         </>
       )}
       {tab === "changes" && (
         <>
+          <p className="mission-prompt">
+            {mission.changes.length} changed files · +
+            {mission.changes.reduce(
+              (count, change) => count + change.additions,
+              0,
+            )}{" "}
+            / −
+            {mission.changes.reduce(
+              (count, change) => count + change.deletions,
+              0,
+            )}{" "}
+            · {overlap.length} overlapping paths
+          </p>
           {mission.changes.length ? (
             mission.changes.map((change) => (
               <section className="panel" key={change.path}>
@@ -563,6 +755,26 @@ export default function MissionDetail({
                       −{change.deletions}
                     </span>
                   </span>
+                </div>
+                <div
+                  className="repository-work-meta"
+                  style={{ padding: "0 20px" }}
+                >
+                  {change.runIds.map((runId) => (
+                    <button
+                      key={runId}
+                      className="text-link"
+                      onClick={() => {
+                        window.location.hash = `mission/${mission.id}/agents/${runId}`;
+                      }}
+                    >
+                      {mission.runs.find((run) => run.id === runId)?.name ??
+                        runId.slice(0, 8)}
+                    </button>
+                  ))}
+                  {change.runIds.length > 1 && (
+                    <strong>Overlapping agent changes</strong>
+                  )}
                 </div>
                 <pre className="code-output diff-output">
                   {change.patch
@@ -591,6 +803,11 @@ export default function MissionDetail({
       )}
       {tab === "checks" && (
         <>
+          <p className="mission-prompt">
+            Individual agent checks verify each isolated revision. Combined
+            checks verify the candidate that will land. Passing individual
+            checks alone does not establish a passing combined candidate.
+          </p>
           <div className="panel">
             {mission.checks.length ? (
               mission.checks.map((check) => (
@@ -604,6 +821,17 @@ export default function MissionDetail({
                   )}
                   <div>
                     <h3>{check.name}</h3>
+                    <p>
+                      {check.candidateSha === mission.candidateSha &&
+                      mission.candidateSha
+                        ? "Combined candidate"
+                        : check.candidateSha &&
+                            mission.runs.some(
+                              (run) => run.commitSha === check.candidateSha,
+                            )
+                          ? "Individual agent revision"
+                          : "Combination check"}
+                    </p>
                     {check.candidateSha && (
                       <p>
                         Revision <code>{check.candidateSha.slice(0, 12)}</code>
@@ -612,12 +840,15 @@ export default function MissionDetail({
                       </p>
                     )}
                     {check.output && (
-                      <pre
-                        className="code-output"
-                        style={{ marginTop: 10, padding: 12, fontSize: 13 }}
-                      >
-                        {check.output}
-                      </pre>
+                      <details open={check.status === "failed"}>
+                        <summary>View check output</summary>
+                        <pre
+                          className="code-output"
+                          style={{ marginTop: 10, padding: 12, fontSize: 13 }}
+                        >
+                          {check.output}
+                        </pre>
+                      </details>
                     )}
                   </div>
                   <Status status={check.status} />
@@ -643,6 +874,127 @@ export default function MissionDetail({
             </div>
           )}
         </>
+      )}
+      {tab === "discussion" && (
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Proposal discussion</h2>
+            <span className="number-tag">
+              {unresolvedRequests.length} unresolved requests on this revision
+            </span>
+          </div>
+          {(mission.reviews ?? []).length ? (
+            (mission.reviews ?? []).map((item) => {
+              const current =
+                item.epoch === mission.epoch &&
+                item.candidateSha === mission.candidateSha &&
+                item.baseSha === mission.baseSha;
+              return (
+                <article className="repository-work-item" key={item.id}>
+                  <div className="repository-work-title">
+                    <strong>
+                      {item.kind === "request_changes"
+                        ? "Changes requested"
+                        : "Comment"}
+                      {item.resolvedAt ? " · Resolved" : ""}
+                    </strong>
+                    <small>{new Date(item.createdAt).toLocaleString()}</small>
+                  </div>
+                  <p className="proposal-review-revision">
+                    Reviewer {item.authorId} · Attempt {item.epoch} · Candidate{" "}
+                    {item.candidateSha.slice(0, 12)} · Base{" "}
+                    {item.baseSha.slice(0, 12)}
+                    {!current ? " · Previous revision" : ""}
+                  </p>
+                  <p style={{ whiteSpace: "pre-wrap" }}>{item.body}</p>
+                  {item.kind === "request_changes" &&
+                    !item.resolvedAt &&
+                    current &&
+                    canDiscuss &&
+                    item.authorId === currentUserId &&
+                    permissions.includes("review") && (
+                      <Button
+                        variant="secondary"
+                        disabled={!!busy}
+                        onClick={() => void review("resolve", item.id)}
+                      >
+                        Resolve request
+                      </Button>
+                    )}
+                  {item.resolvedAt && (
+                    <small>
+                      Resolved by {item.resolvedBy} ·{" "}
+                      {new Date(item.resolvedAt).toLocaleString()}
+                    </small>
+                  )}
+                </article>
+              );
+            })
+          ) : (
+            <EmptyState
+              icon={<ShieldCheckIcon size={25} />}
+              title="No review discussion yet"
+              description="Comments and requests for changes are recorded against an exact candidate and base revision."
+            />
+          )}
+          {canDiscuss &&
+          (permissions.includes("contribute") ||
+            permissions.includes("review")) ? (
+            <form
+              className="proposal-review-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void review("comment");
+              }}
+            >
+              <label htmlFor="proposal-review-body">Review this revision</label>
+              <textarea
+                id="proposal-review-body"
+                required
+                maxLength={8000}
+                value={reviewBody}
+                onChange={(event) => setReviewBody(event.target.value)}
+                placeholder="Discuss the changes or describe what needs to be addressed…"
+              />
+              <p className="proposal-review-revision">
+                Candidate {mission.candidateSha?.slice(0, 12)} · Base{" "}
+                {mission.baseSha?.slice(0, 12)} · Attempt {mission.epoch}
+              </p>
+              <div className="proposal-review-actions">
+                <Button
+                  type="submit"
+                  variant="primary"
+                  disabled={
+                    !!busy ||
+                    !reviewBody.trim() ||
+                    !(
+                      permissions.includes("contribute") ||
+                      permissions.includes("review")
+                    )
+                  }
+                >
+                  Add comment
+                </Button>
+                {permissions.includes("review") && (
+                  <Button
+                    variant="secondary"
+                    disabled={!!busy || !reviewBody.trim()}
+                    onClick={() => void review("request_changes")}
+                  >
+                    Request changes
+                  </Button>
+                )}
+              </div>
+            </form>
+          ) : (
+            <div className="panel-body">
+              <p className="mission-prompt">
+                Review discussion opens when a candidate is ready for review.
+                Earlier revision comments remain in the record.
+              </p>
+            </div>
+          )}
+        </section>
       )}
       {tab === "activity" && (
         <section className="panel">

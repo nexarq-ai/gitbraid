@@ -1,13 +1,10 @@
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Button } from "@cloudflare/kumo/components/button";
-import { Input } from "@cloudflare/kumo/components/input";
 import {
   ArrowLeftIcon,
-  ArrowRightIcon,
   CaretRightIcon,
-  FileCodeIcon,
+  FileIcon,
   FolderSimpleIcon,
   GitBranchIcon,
   GitCommitIcon,
@@ -19,6 +16,7 @@ import type {
 } from "../shared/types";
 import { request } from "./api";
 import { EmptyState, ErrorNotice } from "./components";
+import "./repository-browser.css";
 
 type Selection = { path: string; kind: "directory" | "file" };
 
@@ -117,7 +115,7 @@ export default function RepositoryBrowser({
   const segments = selection.path.split("/").filter(Boolean);
   const parentPath = segments.slice(0, -1).join("/");
   return (
-    <>
+    <div className="repository-browser">
       <div className="source-toolbar">
         <form
           className="ref-picker"
@@ -128,23 +126,15 @@ export default function RepositoryBrowser({
           }}
         >
           <GitBranchIcon size={15} />
-          <Input
+          <input
             aria-label="Stream or revision"
             placeholder="Stream or revision"
-            size="base"
             value={inputRef}
             onChange={(event) => setInputRef(event.target.value)}
           />
-          <Button
-            variant="secondary"
-            size="base"
-            shape="square"
-            aria-label="Browse this reference"
-            icon={ArrowRightIcon}
-            type="submit"
-          />
+          <button type="submit" aria-label="Browse this reference">Browse</button>
         </form>
-        <div className="source-breadcrumbs">
+        <nav className="source-breadcrumbs" aria-label="Repository path">
           <button onClick={() => setSelection({ path: "", kind: "directory" })}>
             {repository.name}
           </button>
@@ -166,7 +156,7 @@ export default function RepositoryBrowser({
               </button>
             </span>
           ))}
-        </div>
+        </nav>
       </div>
       {error && (
         <ErrorNotice
@@ -174,18 +164,19 @@ export default function RepositoryBrowser({
           onRetry={() => setAttempt((value) => value + 1)}
         />
       )}
-      <section className="panel">
-        <div className="panel-header">
-          <h2 style={{ display: "flex", gap: 7, alignItems: "center" }}>
+      <section className="panel source-panel" aria-busy={busy}>
+        <div className="source-revision-bar">
+          <span className="source-selection">
             {selection.kind === "file" ? (
-              <FileCodeIcon size={16} />
+              <FileIcon size={16} />
             ) : (
               <FolderSimpleIcon size={16} />
             )}{" "}
             {selection.kind === "file"
               ? segments[segments.length - 1]
-              : "Files"}
-          </h2>
+              : reference}
+          </span>
+          {tree && !busy && <span className="source-entry-count">{tree.entries.length} {tree.entries.length === 1 ? "item" : "items"}</span>}
           <span className="status-strip">
             <GitCommitIcon size={13} />
             <code>
@@ -236,18 +227,17 @@ export default function RepositoryBrowser({
           </>
         ) : tree ? (
           <div className="table-scroll">
-            <table className="resource-table source-table">
-              <thead>
+            <table className="source-table">
+              <thead className="source-visually-hidden">
                 <tr>
                   <th>Name</th>
-                  <th>Type</th>
                   <th>Size</th>
                 </tr>
               </thead>
               <tbody>
                 {selection.path && (
                   <tr>
-                    <td colSpan={3}>
+                    <td colSpan={2}>
                       <button
                         className="text-link"
                         onClick={() =>
@@ -255,7 +245,7 @@ export default function RepositoryBrowser({
                         }
                       >
                         <ArrowLeftIcon size={13} />
-                        ..
+                        Parent directory
                       </button>
                     </td>
                   </tr>
@@ -270,26 +260,22 @@ export default function RepositoryBrowser({
                   .map((entry) => (
                     <tr key={entry.path}>
                       <td>
-                        <div className="resource-name">
+                        <button
+                          className="source-entry"
+                          onClick={() =>
+                            setSelection({
+                              path: entry.path,
+                              kind: entry.type,
+                            })
+                          }
+                        >
                           {entry.type === "directory" ? (
-                            <FolderSimpleIcon size={17} />
+                            <FolderSimpleIcon size={18} weight="fill" />
                           ) : (
-                            <FileCodeIcon size={17} />
+                            <FileIcon size={18} />
                           )}
-                          <button
-                            onClick={() =>
-                              setSelection({
-                                path: entry.path,
-                                kind: entry.type,
-                              })
-                            }
-                          >
-                            {entry.name}
-                          </button>
-                        </div>
-                      </td>
-                      <td>
-                        {entry.type === "directory" ? "Directory" : "File"}
+                          <span>{entry.name}</span>
+                        </button>
                       </td>
                       <td>
                         {entry.size === undefined
@@ -321,6 +307,6 @@ export default function RepositoryBrowser({
         )}
       </section>
       {readme && <section className="panel"><div className="panel-header"><h2>README</h2><code>{readme.commitSha.slice(0, 10)}</code></div><div className="panel-body documentation-markdown"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt || "Image"}</span>, a: ({ href, children }) => href && /^https?:\/\//i.test(href) ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span> }}>{readme.content}</Markdown></div></section>}
-    </>
+    </div>
   );
 }

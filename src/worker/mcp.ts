@@ -1,3 +1,4 @@
+import type { RepositorySkills } from './repository-skills';
 import { McpServer, type CallToolResult } from '@modelcontextprotocol/server';
 import { createMcpHandler } from 'agents/mcp/server';
 import { z } from 'zod';
@@ -7,10 +8,10 @@ import type { DocMetadata, ProductDoc } from './docs';
 
 export type McpApi = (request: Request) => Promise<Response>;
 export const mcpToolNames = [
-  'gitflare_list_repositories', 'gitflare_browse_repository', 'gitflare_read_file',
+  'gitflare_list_repositories', 'gitflare_browse_repository', 'gitflare_read_file', 'gitflare_list_repository_skills',
   'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_list_missions',
   'gitflare_inspect_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
-  'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
+  'gitflare_review_mission', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
   'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
 ] as const;
@@ -23,7 +24,7 @@ const repositoryInput = { initializeReadme: z.boolean().optional(), gitignore: z
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const mutation = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const commit = z.string().regex(/^[a-f0-9]{40}$/).describe('Exact full commit SHA observed in the current mission evidence.');
-const evidenceInput = { view: z.enum(['summary', 'context', 'runs', 'changes', 'checks', 'events']).default('summary'), offset, limit: z.number().int().min(1).max(20).default(5), detail_offset: offset, detail_limit: z.number().int().min(1).max(8000).default(3000) };
+const evidenceInput = { view: z.enum(['summary', 'context', 'runs', 'changes', 'checks', 'events', 'reviews']).default('summary'), offset, limit: z.number().int().min(1).max(20).default(5), detail_offset: offset, detail_limit: z.number().int().min(1).max(8000).default(3000) };
 
 function excerpt(value: string, start = 0, limit = 4000) {
   const text = value.slice(start, start + limit);
@@ -44,17 +45,18 @@ function missionSummary(mission: Mission) {
     acceptanceCriteria: mission.acceptanceCriteria ?? [], prompt: excerpt(mission.prompt, 0, 1600),
     runs: mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, status: run.status, commitSha: run.commitSha, forkName: run.forkName, startedAt: run.startedAt, completedAt: run.completedAt, task: excerpt(run.task, 0, 800), summary: excerpt(run.summary ?? '', 0, 1000), error: run.error, model: run.model })),
     checkCount: mission.checks.length, changeCount: mission.changes.length, eventCount: mission.events.length,
+    reviewCount: mission.reviews?.length ?? 0,
     approvedAt: mission.approvedAt, approvedBy: mission.approvedBy,
     review: 'Owner UI and authenticated owner MCP clients share exact-candidate approval and integration checks.',
   };
 }
 
-function missionEvidence(mission: Mission, input: { view: 'summary' | 'context' | 'runs' | 'changes' | 'checks' | 'events'; offset: number; limit: number; detail_offset: number; detail_limit: number }): Record<string, unknown> {
+function missionEvidence(mission: Mission, input: { view: 'summary' | 'context' | 'runs' | 'changes' | 'checks' | 'events' | 'reviews'; offset: number; limit: number; detail_offset: number; detail_limit: number }): Record<string, unknown> {
   if (input.view === 'summary') return missionSummary(mission);
   const detail = (value: string) => excerpt(value, input.detail_offset, input.detail_limit);
   const reference = { missionId: mission.id, status: mission.status, candidateSha: mission.candidateSha, baseSha: mission.baseSha, epoch: mission.epoch, view: input.view };
   if (input.view === 'context') return { ...reference, title: mission.title, prompt: detail(mission.prompt), acceptanceCriteria: mission.acceptanceCriteria ?? [] };
-  const values: Record<string, unknown>[] = input.view === 'changes' ? mission.changes.map(({ patch, ...change }) => ({ ...change, patch: detail(patch) })) : input.view === 'checks' ? mission.checks.map(({ output, ...check }) => ({ ...check, output: detail(output ?? '') })) : input.view === 'runs' ? mission.runs.map(({ task, assignment, summary, ...run }) => ({ ...run, task: detail(task), assignment: detail(assignment ?? ''), summary: detail(summary ?? '') })) : mission.events.map((event) => ({ ...event, message: detail(event.message) }));
+  const values: Record<string, unknown>[] = input.view === 'reviews' ? (mission.reviews ?? []).map(({ body, ...review }) => ({ ...review, body: detail(body) })) : input.view === 'changes' ? mission.changes.map(({ patch, ...change }) => ({ ...change, patch: detail(patch) })) : input.view === 'checks' ? mission.checks.map(({ output, ...check }) => ({ ...check, output: detail(output ?? '') })) : input.view === 'runs' ? mission.runs.map(({ task, assignment, summary, ...run }) => ({ ...run, task: detail(task), assignment: detail(assignment ?? ''), summary: detail(summary ?? '') })) : mission.events.map((event) => ({ ...event, message: detail(event.message) }));
   return { ...reference, ...page(values, input.offset, input.limit) };
 }
 
@@ -104,8 +106,8 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     return call<Record<string, unknown>>(`/api/cloudflare/${input.action}`, ['select-account','disconnect'].includes(input.action) ? { accountId: input.accountId } : undefined);
   }));
   server.registerTool('gitflare_cloudflare_project', {
-    title: 'Manage project Cloudflare resources', description: 'Read or map this repository’s Worker, D1 database and Durable Object namespace; read project-only usage; prepare a pinned SQL migration for review and explicitly apply its exact checksum. A migration can alter database data and schema. Uncertain executions cannot be retried. Worker Builds and Durable Object migrations are not implemented.',
-    inputSchema: z.object({ repositoryId: identifier, action: z.enum(['get','map','usage','migration-plan','migration-execute']), workerName: z.string().max(64).optional(), d1DatabaseId: z.string().max(36).optional(), durableObjectNamespaceId: z.string().max(36).optional(), commitSha: commit.optional(), path: z.string().max(500).optional(), planId: z.string().uuid().optional(), checksum: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict(), annotations: { ...mutation, destructiveHint: true },
+    title: 'Manage project Cloudflare resources', description: 'Read or map this repository’s Workers, D1 databases, Durable Object namespaces, Container applications and Workflows; read project-only usage; prepare a pinned SQL migration for review and explicitly apply its exact checksum. A migration can alter database data and schema. Uncertain executions cannot be retried. Worker Builds and Durable Object migrations are not implemented.',
+    inputSchema: z.object({ repositoryId: identifier, action: z.enum(['get','map','usage','migration-plan','migration-execute']), resources: z.array(z.object({ type: z.enum(['worker','d1','durable_object','container','workflow']), id: z.string().min(1).max(128), name: z.string().max(200), environment: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/) }).strict()).max(100).optional(), databaseId: z.string().uuid().optional(), workerName: z.string().max(64).optional(), d1DatabaseId: z.string().max(36).optional(), durableObjectNamespaceId: z.string().max(36).optional(), commitSha: commit.optional(), path: z.string().max(500).optional(), planId: z.string().uuid().optional(), checksum: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict(), annotations: { ...mutation, destructiveHint: true },
   }, ({repositoryId, action, ...fields}) => guarded(async () => {
     const path = `/api/repositories/${repositoryId}/cloudflare`;
     return call<Record<string, unknown>>(action === 'get' ? path : action === 'usage' ? `${path}/usage` : `${path}/action`, ['get','usage'].includes(action) ? undefined : { action, ...Object.fromEntries(Object.entries(fields).filter(([,value]) => value !== undefined)) });
@@ -160,6 +162,15 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     const tree = await call<RepositoryTree>(`/api/repositories/${input.repository_id}/tree?${query}`);
     return { ref: tree.ref, commitSha: tree.commitSha, ...page(tree.entries, input.offset, input.limit) };
   }));
+  server.registerTool('gitflare_list_repository_skills', {
+    title: 'List repository skills', description: 'Discover repository SKILL.md files under .agents/skills, .claude/skills, skills, and docs/skills. Returns names, descriptions and paths pinned to one immutable commit. Use gitflare_read_file with that commitSha to read instructions. This does not install or execute skills. Traversal is bounded and reports truncated/skipped files.',
+    inputSchema: z.object({ repository_id: identifier, ref: z.string().max(200).optional(), offset, limit: pageLimit }).strict(), annotations: readOnly,
+  }, (input) => guarded(async () => {
+    const query = new URLSearchParams(input.ref ? { ref: repositoryRef(input.ref) } : {});
+    const result = await call<RepositorySkills>(`/api/repositories/${input.repository_id}/skills?${query}`);
+    const { skills, ...metadata } = result;
+    return { ...metadata, ...page(skills, input.offset, input.limit) };
+  }));
   server.registerTool('gitflare_read_file', {
     title: 'Read a source file', description: 'Read a bounded UTF-8 file excerpt at a resolved commit. Character offsets support long files without overwhelming context. Returns content, commit SHA, totalCharacters, and nextOffset. Binary files and files over 512 KB are rejected.',
     inputSchema: z.object({ repository_id: identifier, ref: z.string().max(200).default('main'), path: z.string().min(1).max(2000), offset, limit: z.number().int().min(1).max(12_000).default(6000) }).strict(), annotations: readOnly,
@@ -185,7 +196,7 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     return page(missions, input.offset, input.limit);
   }));
   server.registerTool('gitflare_inspect_mission', {
-    title: 'Inspect mission evidence', description: 'Inspect summary, full context, assigned runs, changes, checks, or events. Lists are paginated; detail_offset/detail_limit paginate each prompt, assignment, patch, or check log. A summary or agent explanation is not proof of passing tests. Returns exact commit references when available.',
+    title: 'Inspect mission evidence', description: 'Inspect summary, full context, assigned runs, changes, checks, reviews, or events. Lists are paginated; detail_offset/detail_limit paginate each prompt, assignment, patch, or check log. A summary or agent explanation is not proof of passing tests. Returns exact commit references when available.',
     inputSchema: z.object({ mission_id: identifier, ...evidenceInput }).strict(), annotations: readOnly,
   }, (input) => guarded(async () => {
     const mission = await call<Mission>(`/api/missions/${input.mission_id}`);
@@ -202,6 +213,10 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
       inputSchema: z.object({ mission_id: identifier, idempotency_key: requestKey }).strict(), annotations: { ...mutation, destructiveHint: action === 'cancel' },
     }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${action}`, {}, input.idempotency_key))));
   }
+  server.registerTool('gitflare_review_mission', {
+    title: 'Discuss or request changes to a proposal revision', description: 'Comment on an exact candidate, request changes that block approval and landing, or resolve your own reviewer request. Comments require contribution or review access; requests and resolution require review access. Only the original reviewer can resolve a request. All actions are pinned to the exact candidate, base, and execution epoch.',
+    inputSchema: z.object({ mission_id: identifier, action: z.enum(['comment', 'request_changes', 'resolve']), epoch: z.number().int().min(1), candidate_sha: commit, base_sha: commit, body: z.string().min(1).max(8000).optional(), review_id: identifier.optional(), idempotency_key: requestKey }).strict(), annotations: mutation,
+  }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/review`, { action: input.action, epoch: input.epoch, candidateSha: input.candidate_sha, baseSha: input.base_sha, body: input.body, reviewId: input.review_id }, input.idempotency_key))));
   for (const action of ['approve', 'integrate', 'revoke'] as const) {
     const name = action === 'revoke' ? 'gitflare_revoke_approval' : `gitflare_${action}_mission`;
     server.registerTool(name, {

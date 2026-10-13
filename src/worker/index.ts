@@ -1,3 +1,5 @@
+import { listRepositorySkills } from './repository-skills';
+import { assertReviewClear, currentReviewRequests, reviewMissionInput } from './proposal-review';
 import { timingSafeEqual } from 'node:crypto';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
@@ -238,14 +240,15 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
     });
     return Response.json(await dispatchCloudflareProject(principal, { ...repository, workspaceId: principal.workspaceId }, operation, body, dependencies));
   }
-  const repositoryMatch = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/(tree|file)$/.exec(url.pathname);
+  const repositoryMatch = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/(tree|file|skills)$/.exec(url.pathname);
   if (request.method === 'GET' && repositoryMatch) {
     const repository = await catalog.getRepository(repositoryMatch[1]);
     if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
     await access.authorize(principal, 'read', 'repository', repository.id);
+    if (repositoryMatch[2] === 'skills') return Response.json(await listRepositorySkills(env.ARTIFACTS, repository, url.searchParams.get('ref') ?? undefined));
     return browseRepository(env, repository, repositoryMatch[2], url);
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts))?$/.exec(url.pathname);
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -318,8 +321,18 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
   if (match?.[2] && match[2] !== 'attempts') {
     const { mission, repository } = await findMission(env, match[1], principal.workspaceId);
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
-    const action: Action = match[2] === 'start' ? 'execute' : ['approve', 'revoke'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
-    await access.authorize(principal, action, 'repository', repository.id, mission.id);
+    const reviewInput = match[2] === 'review' ? reviewMissionInput(body) : undefined;
+    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' ? 'execute' : ['approve', 'revoke'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
+    try { await access.authorize(principal, action, 'repository', repository.id, mission.id); }
+    catch (error) {
+      if (reviewInput?.action !== 'comment' || publicError(error).code !== 'FORBIDDEN') throw error;
+      await access.authorize(principal, 'review', 'repository', repository.id, mission.id);
+    }
+    if (reviewInput) {
+      const reviewed = await coordinator.reviewMission(key, mission.id, reviewInput, principal.userId);
+      if (reviewInput.action === 'request_changes' && currentReviewRequests(reviewed).length) await access.clearApprovals(principal, mission.id);
+      return Response.json(reviewed);
+    }
     if (match[2] === 'cancel') return Response.json(await coordinator.cancelMission(key, mission.id));
     if (match[2] === 'preview') {
       if (!env.PREVIEW_ORIGIN || !env.SANDBOX || !env.ARTIFACTS) throw new ApiError(503, 'PREVIEW_NOT_CONFIGURED', 'Configure the isolated preview service before creating a preview.');
@@ -401,6 +414,7 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
         throw new ApiError(503, 'INTEGRATION_UNCONFIRMED', 'The canonical branch could not be confirmed at the approved commit. The repository remains locked for reconciliation.');
       }
     }
+    assertReviewClear(mission);
     const approval = await access.recordApproval(principal, mission.id, candidateSha, baseSha, mission.epoch, mission.checks, mission.authorization?.creatorId);
     if (!approval.ready) return Response.json({ ...mission, approval });
     return Response.json(await coordinator.approveMission(key, mission.id, candidateSha, baseSha, principal.userId));

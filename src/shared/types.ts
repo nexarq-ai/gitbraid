@@ -58,6 +58,28 @@ export interface FileChange {
   runIds: string[];
 }
 
+export interface ProposalReview {
+  id: string;
+  kind: 'comment' | 'request_changes';
+  body: string;
+  authorId: string;
+  createdAt: string;
+  epoch: number;
+  candidateSha: string;
+  baseSha: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+}
+
+export interface ReviewMissionInput {
+  action: 'comment' | 'request_changes' | 'resolve';
+  epoch: number;
+  candidateSha: string;
+  baseSha: string;
+  body?: string;
+  reviewId?: string;
+}
+
 export interface Mission {
   authorization?: { principal: import('../worker/security').Principal; workspaceId: string; creatorId: string };
   id: string;
@@ -74,6 +96,7 @@ export interface Mission {
   checks: Check[];
   events: MissionEvent[];
   changes: FileChange[];
+  reviews?: ProposalReview[];
   createdAt: string;
   updatedAt: string;
   approvedAt?: string;
@@ -115,3 +138,10 @@ export interface RepositoryFile { path: string; content: string; commitSha: stri
 
 export type AccessSnapshot = Awaited<ReturnType<import('../worker/security').SecurityService['snapshot']>>;
 export type WorkspaceRole = import('../worker/security').Role;
+
+export interface ProjectResource {
+  type: 'worker' | 'd1' | 'durable_object' | 'container' | 'workflow';
+  id: string;
+  name: string;
+  environment: string;
+}

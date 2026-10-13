@@ -1,0 +1,102 @@
+.repository-navigation {
+  display: flex;
+  gap: 22px;
+  border-bottom: 1px solid #dfe3e8;
+  margin-bottom: 24px;
+  overflow-x: auto;
+}
+.repository-navigation > button,
+.repository-navigation > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 12px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: #555d68;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+}
+.repository-navigation > button[aria-current] {
+  color: #222;
+  border-bottom-color: #f6821f;
+  font-weight: 600;
+}
+.repository-browser .source-toolbar {
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.repository-browser .ref-picker {
+  gap: 7px;
+  padding: 0 0 0 10px;
+  border: 1px solid #d7dce2;
+  border-radius: 6px;
+  background: #f8f9fb;
+  min-width: 0;
+  max-width: 100%;
+}
+.repository-browser .ref-picker input {
+  width: 132px;
+  min-width: 0;
+  height: 33px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #343b45;
+  font-size: 12px;
+}
+.repository-browser .ref-picker > button {
+  padding: 8px 10px;
+  border: 0;
+  border-left: 1px solid #d7dce2;
+  border-radius: 0 5px 5px 0;
+  background: #fff;
+  color: #59616c;
+  font-size: 12px;
+  cursor: pointer;
+}
+.repository-browser .source-breadcrumbs { min-width: 0; font-size: 12px; }
+.repository-browser .source-breadcrumbs button { overflow-wrap: anywhere; cursor: pointer; }
+.repository-browser .source-panel { border-color: #dfe3e8; border-radius: 7px; overflow: hidden; }
+.source-revision-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #f7f9fb;
+  border-bottom: 1px solid #dfe3e8;
+  font-size: 12px;
+  color: #59616c;
+}
+.source-selection { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.source-selection > svg { flex-shrink: 0; }
+.source-entry-count { margin-left: auto; white-space: nowrap; color: #717b86; font-size: 11px; }
+.source-revision-bar .status-strip { margin-left: auto; font-size: 11px; white-space: nowrap; }
+.source-entry-count + .status-strip { margin-left: 0; }
+.repository-browser .source-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.repository-browser .source-table td { padding: 10px 16px; border-bottom: 1px solid #edf0f3; font-size: 12px; }
+.repository-browser .source-table tr:last-child td { border-bottom: 0; }
+.repository-browser .source-table tbody tr:hover { background: #f8f9fb; }
+.repository-browser .source-table td:last-child:not(:first-child) { width: 100px; text-align: right; color: #717b86; font-size: 11px; }
+.source-entry { display: inline-flex; align-items: center; gap: 9px; max-width: 100%; border: 0; padding: 0; background: none; color: #303842; cursor: pointer; font: inherit; text-align: left; }
+.source-entry > svg { flex-shrink: 0; color: #7b8b9f; }
+.source-entry > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-entry:hover { color: #005fbd; text-decoration: underline; }
+.source-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.repository-browser button:focus-visible,
+.repository-browser input:focus-visible,
+.repository-navigation > button:focus-visible,
+.repository-navigation > a:focus-visible { outline: 2px solid #005fbd; outline-offset: 3px; }
+.repository-browser > .panel + .panel { margin-top: 24px; }
+@media (max-width: 600px) {
+  .repository-navigation { gap: 18px; }
+  .repository-browser .source-breadcrumbs { width: 100%; }
+  .source-revision-bar { padding: 11px 12px; gap: 8px; flex-wrap: wrap; }
+  .source-entry-count { display: none; }
+  .source-entry-count + .status-strip { margin-left: auto; }
+  .repository-browser .source-table td { padding: 11px 12px; }
+  .repository-browser .source-table td:last-child:not(:first-child) { width: 80px; }
+}

@@ -55,31 +55,49 @@ export class BootstrapOutbound extends WorkerEntrypoint {
 }
 
 export class AgentSandbox extends DurableObject<RunnerEnv> {
+  constructor(ctx: DurableObjectState, env: RunnerEnv) {
+    super(ctx, env);
+    const container = ctx.container;
+    if (container?.running) void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(600_000));
+  }
+
   async prepare(repositories: GitPermission[]): Promise<void> {
     const container = this.ctx.container;
     if (!container) throw new Error('Container binding is not configured');
     if (container.running) await container.destroy();
     const image = container.images?.tools ?? this.env.RUNNER_IMAGE ?? 'cloudflare/debian-trixie';
-    container.start({ image, instance: 'lite', entrypoint: ['sleep', 'infinity'], enableInternet: false });
+    container.start({ image, instance: 'standard-1', entrypoint: ['sleep', 'infinity'], enableInternet: false });
+    let stage = 'container startup';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stopped = container.monitor().then(() => { throw new Error('Container stopped before runner preparation completed'); });
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Runner preparation exceeded its execution deadline')), image === 'cloudflare/debian-trixie' ? 600_000 : 120_000);
+    });
     try {
-      if (image === 'cloudflare/debian-trixie') {
-        const bootstrap = this.ctx.exports.BootstrapOutbound;
-        await container.interceptAllOutboundHttp(bootstrap);
-        await container.interceptOutboundHttps('*', bootstrap);
-        const aptOptions = '-o Dir::Etc::sourcelist=/tmp/gitflare-sources.list -o Dir::Etc::sourceparts=- -o Acquire::Retries=0 -o Acquire::https::Timeout=15 -o Acquire::https::CaInfo=/etc/cloudflare/certs/cloudflare-containers-ca.crt';
-        await this.#bootstrapCommand('package index', `printf '%s\n' 'deb https://deb.debian.org/debian trixie main' 'deb https://deb.debian.org/debian trixie-updates main' 'deb https://deb.debian.org/debian-security trixie-security main' > /tmp/gitflare-sources.list; apt-get ${aptOptions} -o APT::Update::Error-Mode=any update`);
-        await this.#bootstrapCommand('package installation', `DEBIAN_FRONTEND=noninteractive apt-get ${aptOptions} install -y --no-install-recommends git ca-certificates ripgrep coreutils && mkdir -p /workspace`, 300_000);
-      }
-      const outbound = this.ctx.exports.GitOutbound({ props: { repositories } });
-      await container.interceptAllOutboundHttp(outbound);
-      await container.interceptOutboundHttps('*', outbound);
-      const readiness = await this.#executeCommand(['/bin/sh', '-c', 'mkdir -p /workspace && command -v node && command -v git && command -v bash && command -v timeout && test -r /etc/cloudflare/certs/cloudflare-containers-ca.crt'], '/', 15_000, 15_000);
-      if (readiness.exitCode !== 0) throw new Error(`Runner tools or interception certificate are unavailable (exit ${readiness.exitCode})`);
-      await container.setInactivityTimeout(600_000);
+      await Promise.race([(async () => {
+        await container.setInactivityTimeout(600_000);
+        if (image === 'cloudflare/debian-trixie') {
+          stage = 'package bootstrap';
+          const bootstrap = this.ctx.exports.BootstrapOutbound;
+          await container.interceptAllOutboundHttp(bootstrap);
+          await container.interceptOutboundHttps('*', bootstrap);
+          const aptOptions = '-o Dir::Etc::sourcelist=/tmp/gitflare-sources.list -o Dir::Etc::sourceparts=- -o Acquire::Retries=0 -o Acquire::https::Timeout=15 -o Acquire::https::CaInfo=/etc/cloudflare/certs/cloudflare-containers-ca.crt';
+          await this.#bootstrapCommand('package index', `printf '%s\n' 'deb https://deb.debian.org/debian trixie main' 'deb https://deb.debian.org/debian trixie-updates main' 'deb https://deb.debian.org/debian-security trixie-security main' > /tmp/gitflare-sources.list; apt-get ${aptOptions} -o APT::Update::Error-Mode=any update`);
+          await this.#bootstrapCommand('package installation', `DEBIAN_FRONTEND=noninteractive apt-get ${aptOptions} install -y --no-install-recommends git ca-certificates ripgrep coreutils && mkdir -p /workspace`, 300_000);
+        }
+        stage = 'Git network isolation';
+        const outbound = this.ctx.exports.GitOutbound({ props: { repositories } });
+        await container.interceptAllOutboundHttp(outbound);
+        await container.interceptOutboundHttps('*', outbound);
+        stage = 'tool and certificate readiness';
+        const readiness = await this.#executeCommand(['/bin/sh', '-c', 'mkdir -p /workspace && command -v node && command -v git && command -v bash && command -v timeout && test -r /etc/cloudflare/certs/cloudflare-containers-ca.crt'], '/', 15_000, 15_000);
+        if (readiness.exitCode !== 0) throw new Error(`Runner tools or interception certificate are unavailable (exit ${readiness.exitCode})`);
+      })(), stopped, deadline]);
     } catch (error) {
-      await container.destroy();
-      throw error;
-    }
+      try { await container.destroy(); } catch { console.error('runner.preparation.cleanup.failed'); }
+      const exitCode = error && typeof error === 'object' && 'exitCode' in error ? ` (exit ${error.exitCode})` : '';
+      throw new Error(`Runner preparation failed during ${stage}${exitCode}: ${error instanceof Error ? error.message : 'Unknown container error'}`);
+    } finally { clearTimeout(timer); }
   }
 
   async #bootstrapCommand(stage: string, script: string, timeoutMs = 120_000): Promise<void> {

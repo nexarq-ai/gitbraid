@@ -1,9 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { CreateMissionInput, Mission, MissionAttempt, MissionEvent, Repository } from '../shared/types';
+import type { CreateMissionInput, Mission, MissionAttempt, MissionEvent, Repository, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
+import { assertReviewClear, reviewMissionInput } from './proposal-review';
 
 interface Receipt<T> { fingerprint: string; result: T }
 interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string }
@@ -345,7 +346,16 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (this.store.get(`dispatch:${id}-${epoch}`)) delete mission.error;
     this.store.delete(`dispatch:${id}-${epoch}`);
     this.store.put(`delivered:${id}-${epoch}`, { confirmedAt: new Date().toISOString() });
-    if (result.runs) mission.runs = result.runs;
+    if (result.runs) {
+      const previousRuns = new Map(mission.runs.map((run) => [run.id, run]));
+      for (const run of result.runs) {
+        const previous = previousRuns.get(run.id);
+        if (!previous || previous.status === run.status && previous.summary === run.summary) continue;
+        const summary = run.summary?.trim().slice(0, 1000);
+        mission.events.push({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), runId: run.id, type: run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : run.status === 'cancelled' ? 'warning' : 'info', message: `Attempt ${epoch} · ${run.name.slice(0, 120)}: ${run.status}${summary ? ` — ${summary}` : ''}` });
+      }
+      mission.runs = result.runs;
+    }
     if (result.checks) mission.checks = result.checks;
     if (result.changes) mission.changes = result.changes;
     if (result.candidateSha !== undefined) mission.candidateSha = result.candidateSha;
@@ -364,10 +374,40 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return this.saveMission(mission);
   }
 
+  reviewMission(key: string, id: string, supplied: ReviewMissionInput, actorId: string): Mission {
+    const input = reviewMissionInput({ ...supplied });
+    return this.mutateMission(key, JSON.stringify(['review', id, actorId, input]), id, () => {
+      const mission = this.requiredMission(id);
+      if (mission.epoch !== input.epoch || mission.candidateSha !== input.candidateSha || mission.baseSha !== input.baseSha) throw new ApiError(409, 'STALE_REVIEW', 'This review belongs to another revision. Refresh the proposal.');
+      if (!['needs_review', 'approved'].includes(mission.status)) throw new ApiError(409, 'REVIEW_LOCKED', 'Only a candidate awaiting review or approval can receive a review.');
+      mission.reviews ??= [];
+      if (input.action === 'resolve') {
+        const review = mission.reviews.find((entry) => entry.id === input.reviewId);
+        if (!review || review.kind !== 'request_changes' || review.epoch !== input.epoch || review.candidateSha !== input.candidateSha || review.baseSha !== input.baseSha) throw new ApiError(404, 'REVIEW_NOT_FOUND', 'This current revision review could not be found.');
+        if (review.authorId !== actorId) throw new ApiError(403, 'REVIEW_AUTHOR_REQUIRED', 'Only the reviewer who requested changes can resolve their request.');
+        if (review.resolvedAt) throw new ApiError(409, 'REVIEW_RESOLVED', 'This review request is already resolved.');
+        review.resolvedAt = new Date().toISOString();
+        review.resolvedBy = actorId;
+      } else {
+        if (mission.reviews.length >= 500) throw new ApiError(409, 'REVIEW_LIMIT', 'This proposal has reached its discussion limit.');
+        mission.reviews.push({ id: crypto.randomUUID(), kind: input.action, body: input.body!, authorId: actorId, createdAt: new Date().toISOString(), epoch: input.epoch, candidateSha: input.candidateSha, baseSha: input.baseSha });
+        if (input.action === 'request_changes' && mission.status === 'approved') {
+          this.archive(mission, 'approved');
+          mission.status = 'needs_review';
+          delete mission.approvedAt;
+          delete mission.approvedBy;
+          this.archive(mission, 'approval_revoked');
+        }
+      }
+      return this.saveMission(mission, input.action === 'resolve' ? `Reviewer ${actorId} resolved their change request.` : input.action === 'request_changes' ? `Reviewer ${actorId} requested changes to this revision.` : `${actorId} added a review comment.`, input.action === 'request_changes' ? 'warning' : 'info');
+    });
+  }
+
   approveMission(key: string, id: string, candidateSha: string, baseSha: string, actorId = 'workspace-owner'): Mission {
     return this.mutateMission(key, JSON.stringify(['approve', id, candidateSha, baseSha]), id, () => {
       const mission = this.requiredMission(id);
       const repository = this.getRepository(mission.repositoryId);
+      assertReviewClear(mission);
       assertApproval({ status: mission.status, candidateSha: mission.candidateSha, baseSha: mission.baseSha, currentHead: repository?.headSha, requestedCandidate: candidateSha, requestedBase: baseSha, checksPassed: mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') });
       mission.status = 'approved';
       mission.approvedAt = new Date().toISOString();
@@ -401,6 +441,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const mission = this.requiredMission(id);
       if (mission.candidateSha !== candidateSha || mission.baseSha !== baseSha || !mission.approvedAt) throw new ApiError(409, 'STALE_APPROVAL', 'Approve this exact candidate and base before integration.');
       if (mission.status === 'integrated') return { mission, claimed: false };
+      assertReviewClear(mission);
       if (!['approved', 'integrating'].includes(mission.status)) throw new ApiError(409, 'APPROVAL_REQUIRED', 'Approve this candidate before integration.');
       const claim = this.store.get<IntegrationClaim>('integration:claim');
       if (claim) {

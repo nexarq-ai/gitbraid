@@ -18,7 +18,7 @@ const tokenEndpoint = 'https://dash.cloudflare.com/oauth2/token';
 const revokeEndpoint = 'https://dash.cloudflare.com/oauth2/revoke';
 const apiOrigin = 'https://api.cloudflare.com/client/v4';
 const cookieName = '__Host-gitflare-cloudflare-state';
-const defaultScopes = 'account-settings.read workers-scripts.metadata_read d1.read d1.write account-analytics.read';
+const defaultScopes = 'account-settings.read workers-scripts.metadata_read d1.read d1.write account-analytics.read containers.read';
 export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string!, $scriptName: string!, $start: Time!, $end: Time!) { viewer { accounts(filter: {accountTag: $accountTag}) { workersInvocationsAdaptive(limit: 100, filter: {scriptName: $scriptName, datetime_geq: $start, datetime_leq: $end}) { dimensions {scriptName} sum {requests errors} quantiles {cpuTimeP50 cpuTimeP99} } } } }';
 export const D1_USAGE_QUERY = 'query GitflareD1Usage($accountTag: string!, $databaseId: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {databaseId: $databaseId, date_geq: $start, date_leq: $end}, orderBy: [date_DESC]) { dimensions {date databaseId} sum {readQueries writeQueries rowsRead rowsWritten} } } } }';
 function service(env: AppEnv): Store { return env.GITFLARE_SECURITY.getByName('security') as unknown as Store; }
@@ -69,10 +69,38 @@ async function load(env: AppEnv, p: Principal, authorization?: CloudflareAuthori
   }
   return {record,vault};
 }
-async function api(env: AppEnv, vault: Vault, path: string, options: CloudflareApiOptions = {}): Promise<unknown> {
+interface CloudflareEnvelope { success?: boolean; result?: unknown; result_info?: { total_pages?: number; total_count?: number; next_page_token?: string } }
+async function apiEnvelope(env: AppEnv, vault: Vault, path: string, options: CloudflareApiOptions = {}): Promise<CloudflareEnvelope> {
   const result = await jsonRequest(`${apiOrigin}${path}`,{method:options.method??'GET',headers:{Authorization:`Bearer ${vault.accessToken}`,...(options.body===undefined?{}:{'Content-Type':'application/json'})},body:options.body===undefined?undefined:JSON.stringify(options.body)}) as {success?:boolean;result?:unknown};
   if (result.success===false) throw new ApiError(502,'CLOUDFLARE_API_REJECTED','Cloudflare could not complete this operation. Check account permissions.');
-  return result.result;
+  return result;
+}
+async function api(env: AppEnv, vault: Vault, path: string, options: CloudflareApiOptions = {}): Promise<unknown> { return (await apiEnvelope(env, vault, path, options)).result; }
+const resourceLists: Record<string, 'all' | 'page' | 'cursor'> = { '/workers/scripts': 'all', '/workers/durable_objects/namespaces': 'page', '/d1/database': 'page', '/workflows': 'page', '/containers/applications': 'cursor' };
+async function listResources(env: AppEnv, vault: Vault, path: string): Promise<unknown[]> {
+  const mode = resourceLists[path];
+  const items: unknown[] = [];
+  let cursor = '';
+  const seen = new Set<string>();
+  for (let page = 1; page <= 50; page++) {
+    const query = mode === 'all' ? '' : `?${new URLSearchParams({ per_page: '100', ...(mode === 'page' ? { page: String(page) } : cursor ? { page_token: cursor } : {}) })}`;
+    const response = await apiEnvelope(env, vault, `/accounts/${vault.account!.id}${path}${query}`);
+    if (!Array.isArray(response.result)) throw new ApiError(502, 'CLOUDFLARE_INVALID_RESPONSE', 'Cloudflare did not return a resource list.');
+    items.push(...response.result);
+    if (mode === 'all') return items;
+    if (mode === 'cursor') {
+      cursor = response.result_info?.next_page_token ?? '';
+      if (!cursor) return items;
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+    } else {
+      const totalPages = response.result_info?.total_pages;
+      const totalCount = response.result_info?.total_count;
+      if (totalPages !== undefined ? page >= totalPages : totalCount !== undefined ? items.length >= totalCount : response.result.length < 100) return items;
+      if (!response.result.length) break;
+    }
+  }
+  throw new ApiError(502, 'CLOUDFLARE_CATALOG_LIMIT', 'Cloudflare returned an incomplete resource catalog. Narrow the account scope before retrying.');
 }
 function status(env: AppEnv, vault?: Vault) { return {configured:configured(env),connected:!!vault,...(vault?{expiresAt:vault.expiresAt,scopes:vault.scopes,account:vault.account}: {})}; }
 function accountsValue(result: unknown): Account[] {
@@ -82,9 +110,10 @@ function accountsValue(result: unknown): Account[] {
 function checkAccount(vault: Vault, expectedAccountId?: string) { if(expectedAccountId && vault.account?.id!==expectedAccountId) throw new ApiError(409,'CLOUDFLARE_ACCOUNT_CHANGED','The selected Cloudflare account changed. Update the project resource mapping before continuing.'); }
 export async function cloudflareAccount(env: AppEnv,p:Principal,authorization?:CloudflareAuthorization):Promise<Account> { const {vault}=await load(env,p,authorization); if(!vault.account) throw new ApiError(409,'ACCOUNT_SELECTION_REQUIRED','Select the Cloudflare account for this workspace first.'); checkAccount(vault,authorization?.expectedAccountId); return vault.account; }
 export async function cloudflareApiRequest(env:AppEnv,p:Principal,path:string,options:CloudflareApiOptions={}):Promise<unknown> {
-  if(!/^\/(?:workers|d1)\//.test(path) || /(?:\.\.|%|[?#\\])/.test(path) || !/^\/[A-Za-z0-9_./-]+$/.test(path)) throw new ApiError(400,'INVALID_CLOUDFLARE_PATH','Use a resource path inside the selected Cloudflare account.');
+  if(!/^\/(?:workers\/|d1\/|workflows(?:\/|$)|containers\/applications(?:\/|$))/.test(path) || /(?:\.\.|%|[?#\\])/.test(path) || !/^\/[A-Za-z0-9_./-]+$/.test(path)) throw new ApiError(400,'INVALID_CLOUDFLARE_PATH','Use a resource path inside the selected Cloudflare account.');
   const {vault}=await load(env,p,options.authorization); if(!vault.account) throw new ApiError(409,'ACCOUNT_SELECTION_REQUIRED','Select the Cloudflare account for this workspace first.');
   checkAccount(vault,options.expectedAccountId??options.authorization?.expectedAccountId);
+  if (resourceLists[path] && (!options.method || options.method === 'GET')) return listResources(env, vault, path);
   return api(env,vault,`/accounts/${vault.account.id}${path}`,options);
 }
 export async function cloudflareAnalyticsRequest(env:AppEnv,p:Principal,body:{query:string;variables:Record<string,unknown>},authorization?:CloudflareAuthorization):Promise<unknown> {
@@ -141,9 +170,24 @@ export async function dispatchCloudflare(env:AppEnv,p:Principal,action:string,bo
   if(action==='accounts') return {accounts:accountsValue(await api(env,vault,'/accounts'))};
   if(action==='select-account') {const accountId=requireString(body.accountId,'Cloudflare account',32,32);const account=accountsValue(await api(env,vault,'/accounts')).find(a=>a.id===accountId);if(!account) throw new ApiError(403,'ACCOUNT_NOT_GRANTED','Select an account granted by this Cloudflare authorization.');await save(env,p,{...vault,account},record.version,record.issuer);return status(env,{...vault,account});}
   if(action==='resources') {
-    const summarize=(value:unknown,kind:string)=>Array.isArray(value)?value.map(r=>({id:String(r.id??r.uuid??r.name??''),name:String(r.name??r.id??r.uuid??''),...(kind==='do'&&r.script?{script:String(r.script)}:{})})):[];
-    const [workers,namespaces,databases]=await Promise.all([cloudflareApiRequest(env,p,'/workers/scripts'),cloudflareApiRequest(env,p,'/workers/durable_objects/namespaces'),cloudflareApiRequest(env,p,'/d1/database')]);
-    return {account:vault.account,workers:summarize(workers,'worker'),durableObjects:summarize(namespaces,'do'),databases:summarize(databases,'d1')};
+    if (!vault.account) throw new ApiError(409, 'ACCOUNT_SELECTION_REQUIRED', 'Select the Cloudflare account for this workspace first.');
+    const kinds = [ ['workers', '/workers/scripts'], ['durableObjects', '/workers/durable_objects/namespaces'], ['databases', '/d1/database'], ['containers', '/containers/applications'], ['workflows', '/workflows'] ] as const;
+    const results = await Promise.allSettled(kinds.map(([, path]) => listResources(env, vault, path)));
+    const catalogs: Record<string, { id: string; name: string; script?: string }[]> = {};
+    const availability: Record<string, { available: boolean; reason?: string }> = {};
+    results.forEach((result, index) => {
+      const [kind] = kinds[index];
+      catalogs[kind] = [];
+      availability[kind] = { available: result.status === 'fulfilled', ...(result.status === 'rejected' ? { reason: result.reason instanceof ApiError ? result.reason.detail : 'This resource catalog is unavailable. Check the connection permissions and try again.' } : {}) };
+      if (result.status === 'fulfilled') catalogs[kind] = result.value.flatMap(value => {
+        if (!value || typeof value !== 'object') return [];
+        const item = value as Record<string, unknown>;
+        const id = kind === 'workflows' ? item.name : item.id ?? item.uuid ?? item.name;
+        const name = item.name ?? item.id ?? item.uuid;
+        return typeof id === 'string' && typeof name === 'string' ? [{ id, name: name.slice(0, 200), ...(typeof item.script === 'string' ? { script: item.script } : typeof item.script_name === 'string' ? { script: item.script_name } : {}) }] : [];
+      });
+    });
+    return { account: vault.account, ...catalogs, availability };
   }
   throw new ApiError(404,'NOT_FOUND','This Cloudflare connection operation is unavailable.');
 }
