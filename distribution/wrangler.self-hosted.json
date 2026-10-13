@@ -11,15 +11,11 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": [
-      "/",
-      "/signin",
-      "/signup",
       "/api/*",
       "/mcp",
       "/oauth/*",
       "/.well-known/*",
-      "/llms.txt",
-      "/git/*"
+      "/llms.txt"
     ]
   },
   "vars": {
@@ -27,10 +23,7 @@
     "EDITION": "self-hosted",
     "WORKSPACE_NAME": "Gitbraid workspace",
     "AI_GATEWAY_ID": "gitflare",
-    "MODEL": "openai/gpt-6-luna",
-    "AI_FEATURES": "enabled",
-    "GITBRAID_INSTALLATION": "gitbraid",
-    "GITBRAID_PRIMARY_WORKER": "gitbraid"
+    "MODEL": "openai/gpt-6-luna"
   },
   "ai": {
     "binding": "AI"

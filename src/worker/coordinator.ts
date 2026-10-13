@@ -1,25 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import type { CreateMissionInput, Mission, MissionAttempt, MissionEvent, Repository } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
-import { assertReviewClear, reviewMissionInput } from './proposal-review';
-import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
-import type { ImportReceipt, ImportResult } from './repository-import';
-import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './releases';
-import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
-import { applyIssueChange, issueFingerprint, listIssues, readIssue, type IssueActor, type IssueChange, type IssueQuery } from './issues';
-import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 
 interface Receipt<T> { fingerprint: string; result: T }
-interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
-const INTEGRATION_PREPARATION_MS = 600_000;
-
-function eligibleRaceRuns(mission: Mission): Mission['runs'] {
-  const checks = mission.raceChecks ?? mission.checks;
-  return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
-}
+interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string }
 export interface PreviewCapability { workspaceId?: string; principal?: import('./security').Principal; repositoryId: string; missionId: string; epoch: number; candidateSha: string; sandboxName: string; expiresAt: number }
 interface PreviewState { claimId: string; epoch: number; candidateSha: string; phase: 'preparing' | 'ready'; expiresAt: number; sandboxName?: string }
 export const PREVIEW_LEASE_MS = 120_000;
@@ -27,9 +14,9 @@ export const PREVIEW_HEARTBEAT_MS = 30_000;
 interface DispatchIntent { workflowId: string; missionId: string; repositoryId: string; epoch: number; attempts: number; nextAttemptAt: number }
 export const DISPATCH_FAST_ATTEMPTS = 8;
 
-export async function startWithDurableDispatch(coordinator: { startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> }, key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> {
+export async function startWithDurableDispatch(coordinator: { startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> }, key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> {
   try {
-    return await coordinator.startMissionWithDispatch(key, id, authorization, models);
+    return await coordinator.startMissionWithDispatch(key, id, authorization);
   } catch (error) {
     if (error instanceof Error && /startMissionWithDispatch/.test(error.message) && /not a function|does not exist|not implemented|does not implement|missing|unknown method/i.test(error.message)) throw new ApiError(503, 'EXECUTION_DEPLOYMENT_PENDING', 'Execution services are updating. Wait briefly and retry; this request has not started a mission.');
     throw error;
@@ -78,190 +65,6 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   saveRepository(repository: Repository): void {
     this.store.put(`repository:${repository.id}`, repository);
-  }
-
-  listIssues(query: IssueQuery): IssueList { return listIssues(this.store, query); }
-
-  getIssue(number: number): IssueDetail | undefined { return readIssue(this.store, number); }
-
-  changeIssue(key: string, change: IssueChange, actor: IssueActor): IssueDetail { return readIssue(this.store, this.mutate(key, issueFingerprint(change, actor), () => applyIssueChange(this.store, change, actor)))!; }
-  getBranchProtection(): StoredBranchProtection | undefined { return this.store.get<StoredBranchProtection>('branch-protection'); }
-
-  setBranchProtection(key: string, rules: unknown, actorId: string): StoredBranchProtection {
-    const normalized = normalizeBranchRules(rules);
-    return this.mutate(key, JSON.stringify(['branch-protection', normalized]), () => {
-      const stored = { rules: normalized, updatedAt: new Date().toISOString(), updatedBy: actorId } satisfies StoredBranchProtection;
-      this.store.put('branch-protection', stored);
-      return stored;
-    });
-  }
-
-  pullRequestAction(key: string, id: string, action: 'update' | 'close' | 'reopen', actorId: string, headSha?: string): Mission {
-    return this.mutateMission(key, JSON.stringify(['pull', id, action, headSha ?? null]), id, () => {
-      const mission = this.requiredMission(id);
-      const change = mission.branchChange;
-      if (!change) throw new ApiError(409, 'NOT_A_PULL_REQUEST', 'Only a pull request can be updated from its branch, closed or reopened.');
-      if (['integrating', 'integrated'].includes(mission.status)) throw new ApiError(409, 'PULL_REQUEST_LANDED', 'This pull request is landing or has landed.');
-      if (action === 'close') {
-        if (change.closedAt) return mission;
-        if (mission.status === 'approved') { this.archive(mission, 'approved'); delete mission.approvedAt; delete mission.approvedBy; this.archive(mission, 'approval_revoked'); }
-        this.store.delete(`dispatch:${mission.id}-${mission.epoch}`);
-        mission.runs = mission.runs.map((run) => ['queued', 'running'].includes(run.status) ? { ...run, status: 'cancelled', completedAt: new Date().toISOString() } : run);
-        mission.status = 'cancelled';
-        mission.branchChange = { ...change, closedAt: new Date().toISOString(), closedBy: actorId };
-        this.saveMission(mission, `${actorId} closed this pull request. Late execution results will be rejected.`, 'warning');
-        this.archive(mission, 'cancelled');
-        return mission;
-      }
-      if (!headSha || !/^[a-f0-9]{40}$/.test(headSha)) throw new ApiError(400, 'INVALID_COMMIT', 'Provide the exact branch head commit.');
-      if (action === 'reopen' && !change.closedAt) throw new ApiError(409, 'PULL_REQUEST_OPEN', 'This pull request is already open.');
-      if (action === 'update' && change.closedAt) throw new ApiError(409, 'PULL_REQUEST_CLOSED', 'Reopen this pull request before updating it from its branch.');
-      if (['queued', 'running', 'checking'].includes(mission.status)) throw new ApiError(409, 'MISSION_ACTIVE', 'Checks are already running for this pull request. Wait or cancel them first.');
-      if (mission.status === 'approved') {
-        this.archive(mission, 'approved');
-        mission.status = 'needs_review';
-        delete mission.approvedAt;
-        delete mission.approvedBy;
-        this.archive(mission, 'approval_revoked');
-      }
-      const { closedAt: _closedAt, closedBy: _closedBy, ...open } = change;
-      mission.branchChange = { ...open, headSha };
-      return this.saveMission(mission, action === 'reopen' ? `${actorId} reopened this pull request at ${headSha.slice(0, 12)}.` : `${actorId} updated this pull request from ${change.branch} at ${headSha.slice(0, 12)}. Earlier approvals no longer apply.`);
-    });
-  }
-
-  getModelConnections(): ModelConnection[] { return this.store.get<ModelConnection[]>('model-connections') ?? defaultModelConnections(); }
-
-  getAiEnabled(): boolean { return this.store.get<boolean>('ai-enabled') ?? true; }
-
-  setAiEnabled(enabled: boolean): boolean { this.store.put('ai-enabled', enabled); return enabled; }
-
-  getModelRequest(key: string, fingerprint: string): { result?: ModelConnection[] } | undefined {
-    const receipt = this.store.get<Receipt<ModelConnection[] | undefined>>(`model-request:${key}`);
-    if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
-    return receipt ? { result: receipt.result } : undefined;
-  }
-
-  claimModelVerification(key: string, fingerprint: string): boolean {
-    return this.ctx.storage.transactionSync(() => {
-      if (this.getModelRequest(key, fingerprint)) return false;
-      this.store.put(`model-request:${key}`, { fingerprint });
-      return true;
-    });
-  }
-
-  changeModelConnections(key: string, fingerprint: string, action: 'add' | 'remove', value: ModelConnection | string): ModelConnection[] {
-    return this.ctx.storage.transactionSync(() => {
-      const receipt = this.getModelRequest(key, fingerprint);
-      if (receipt?.result) return receipt.result;
-      if (receipt) throw new ApiError(409, 'MODEL_REQUEST_PENDING', 'This model request is pending verification.');
-      const models = this.getModelConnections();
-      let updated: ModelConnection[];
-      if (action === 'add') {
-        const model = validateModelConnection(value);
-        if (models.some(existing => existing.id === model.id)) throw new ApiError(409, 'MODEL_ALREADY_CONFIGURED', 'This model is already enabled. Remove it before changing its transport.');
-        if (models.length >= 20) throw new ApiError(400, 'MODEL_LIMIT', 'Enable at most 20 models in a workspace.');
-        updated = [...models, model];
-      } else {
-        if (!models.some(model => model.id === value)) throw new ApiError(404, 'MODEL_NOT_FOUND', 'This model is not enabled.');
-        updated = models.filter(model => model.id !== value);
-      }
-      this.store.put('model-connections', updated);
-      this.store.put(`model-request:${key}`, { fingerprint, result: updated });
-      return updated;
-    });
-  }
-
-  completeModelVerification(key: string, fingerprint: string, verified: ModelConnection): ModelConnection[] {
-    return this.ctx.storage.transactionSync(() => {
-      const receipt = this.getModelRequest(key, fingerprint);
-      if (!receipt) throw new ApiError(409, 'MODEL_REQUEST_PENDING', 'Model verification has no active request.');
-      if (receipt.result) return receipt.result;
-      const models = this.getModelConnections();
-      const current = models.find(model => model.id === verified.id);
-      if (!current || current.source !== verified.source || current.protocol !== verified.protocol) throw new ApiError(409, 'MODEL_CONNECTION_CHANGED', 'The model connection changed while verification was running.');
-      const updated = models.map(model => model.id === verified.id ? { ...model, verification: verified.verification } : model);
-      this.store.put('model-connections', updated);
-      this.store.put(`model-request:${key}`, { fingerprint, result: updated });
-      return updated;
-    });
-  }
-
-  repositoryBootstrapSha(): string | undefined { return this.store.get<string>('repository-bootstrap'); }
-
-  saveRepositoryBootstrapSha(sha: string): void { this.store.put('repository-bootstrap', sha); }
-
-  listReleases(): Release[] { return this.store.list<Release>('release:'); }
-
-  getRelease(id: string): Release | undefined { return this.store.get<Release>(`release:${id}`); }
-
-  getReleaseRequest(key: string, fingerprint: string): ReleaseReceipt | undefined {
-    const receipt = this.store.get<ReleaseReceipt>(`release-request:${key}`);
-    if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
-    return receipt;
-  }
-
-  changeRelease(key: string, fingerprint: string, change: ReleaseChange): { receipt: ReleaseReceipt; fresh: boolean } {
-    return this.ctx.storage.transactionSync(() => {
-      const reserved = new Map(this.store.list<{ tag: string; key: string }>('release-pending:').map(item => [item.tag, item.key]));
-      const outcome = applyReleaseChange(this.listReleases(), reserved, this.getReleaseRequest(key, fingerprint), key, fingerprint, change);
-      if (!outcome.fresh) return { receipt: outcome.receipt, fresh: false };
-      if (outcome.put) this.store.put(`release:${outcome.put.id}`, outcome.put);
-      if (outcome.remove) this.store.delete(`release:${outcome.remove}`);
-      if (outcome.reserve) this.store.put(`release-pending:${outcome.reserve}`, { tag: outcome.reserve, key });
-      if (outcome.unreserve) this.store.delete(`release-pending:${outcome.unreserve}`);
-      this.store.put(`release-request:${key}`, outcome.receipt);
-      return { receipt: outcome.receipt, fresh: true };
-    });
-  }
-
-  getImportRequest(key: string, fingerprint: string): ImportReceipt | undefined {
-    const receipt = this.store.get<ImportReceipt>(`repository-import:${key}`);
-    if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
-    return receipt;
-  }
-
-  claimRepositoryImport(key: string, fingerprint: string): { claimed: boolean; receipt: ImportReceipt } {
-    return this.ctx.storage.transactionSync(() => {
-      const receipt = this.getImportRequest(key, fingerprint);
-      if (receipt) return { claimed: false, receipt };
-      if (this.store.get<string>('repository-import-active')) throw new ApiError(409, 'IMPORT_PENDING', 'A repository import is pending reconciliation. Retry its original request before importing again.');
-      const next = { fingerprint, timestamp: Math.floor(Date.now() / 1000) } satisfies ImportReceipt;
-      this.store.put(`repository-import:${key}`, next);
-      this.store.put('repository-import-active', key);
-      return { claimed: true, receipt: next };
-    });
-  }
-
-  prepareRepositoryImport(key: string, fingerprint: string, candidateSha: string, files: string[], skipped: string[]): void {
-    this.ctx.storage.transactionSync(() => {
-      const receipt = this.getImportRequest(key, fingerprint);
-      if (!receipt || this.store.get<string>('repository-import-active') !== key || receipt.candidateSha) throw new ApiError(409, 'IMPORT_PENDING', 'This import has already been prepared or is no longer active.');
-      this.store.put(`repository-import:${key}`, { ...receipt, candidateSha, files, skipped } satisfies ImportReceipt);
-    });
-  }
-
-  rejectRepositoryImport(key: string, fingerprint: string, rejection: NonNullable<ImportReceipt['rejection']>): void {
-    this.ctx.storage.transactionSync(() => {
-      const receipt = this.getImportRequest(key, fingerprint);
-      if (!receipt || receipt.result || this.store.get<string>('repository-import-active') !== key) throw new ApiError(409, 'IMPORT_PENDING', 'The import is not active.');
-      this.store.put(`repository-import:${key}`, { ...receipt, rejection } satisfies ImportReceipt);
-      this.store.delete('repository-import-active');
-    });
-  }
-
-  completeRepositoryImport(key: string, fingerprint: string, repository: Repository): ImportResult {
-    return this.ctx.storage.transactionSync(() => {
-      const receipt = this.getImportRequest(key, fingerprint);
-      if (!receipt?.candidateSha || repository.headSha !== receipt.candidateSha) throw new ApiError(409, 'IMPORT_UNCONFIRMED', 'The canonical import commit has not been confirmed.');
-      if (receipt.result) return receipt.result;
-      if (this.store.get<string>('repository-import-active') !== key) throw new ApiError(409, 'IMPORT_PENDING', 'This import is no longer active.');
-      const result = { repository, headSha: receipt.candidateSha, files: receipt.files ?? [], skipped: receipt.skipped ?? [] } satisfies ImportResult;
-      this.saveRepository(repository);
-      this.store.put(`repository-import:${key}`, { ...receipt, result } satisfies ImportReceipt);
-      this.store.delete('repository-import-active');
-      return result;
-    });
   }
 
   claimProvision(id: string): boolean {
@@ -379,65 +182,24 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return mission;
   }
 
-  createMission(key: string, input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Mission {
-    return this.mutate(key, JSON.stringify(['mission', input]), () => this.newMission(input, authorization, models));
-  }
-
-  private newMission(input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Mission {
+  createMission(key: string, input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>): Mission {
+    return this.mutate(key, JSON.stringify(['mission', input]), () => {
       const repository = this.getRepository(input.repositoryId);
       if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
-      if (input.expectedBaseSha !== undefined && input.expectedBaseSha !== repository.headSha) throw new ApiError(409, 'STALE_PROPOSAL_BASE', 'The repository changed while you drafted this proposal. Refresh the base and review your assignments before saving.');
       const now = new Date().toISOString();
       const criteria = input.acceptanceCriteria ?? [];
-      const skillChange = input.skillChange ? validateRepositorySkillChange(input.skillChange) : undefined;
-      if (skillChange && repository.headSha !== skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill before proposing this edit.');
-      const revertChange = input.revertChange;
-      if (revertChange && (!/^[a-f0-9]{40}$/.test(revertChange.landedSha) || !/^[a-f0-9]{40}$/.test(revertChange.previousSha))) throw new ApiError(400, 'INVALID_COMMIT', 'A revert needs the exact landed and previous commits.');
-      const branchChange = input.branchChange ? { ...input.branchChange, branch: branchName(input.branchChange.branch), targetBranch: repository.defaultBranch } : undefined;
-      if (branchChange && (!/^[a-f0-9]{40}$/.test(branchChange.headSha) || branchChange.branch === repository.defaultBranch)) throw new ApiError(400, 'INVALID_PULL_REQUEST', 'A pull request needs the exact head commit of a branch other than the default branch.');
-      const race = input.mode === 'race' && !revertChange && !branchChange;
-      const tasks = skillChange ? [{ name: 'Skill editor', role: 'Trusted skill editor', task: `Apply exactly the submitted Markdown to ${skillChange.path}.` }] : branchChange ? [{ name: 'Branch merger', role: 'Trusted branch merger', task: `Merge ${branchChange.branch} at ${branchChange.headSha.slice(0, 12)} into ${branchChange.targetBranch}, fast-forwarding when possible.` }] : revertChange ? [{ name: 'Revert editor', role: 'Trusted revert editor', task: `Undo exactly the change landed by "${revertChange.title}" (${revertChange.previousSha.slice(0, 12)} to ${revertChange.landedSha.slice(0, 12)}) with a new revert commit.` }] : input.tasks ?? (race ? [
-        { name: 'Candidate A', role: 'Independent attempt', task: 'Complete the whole mission with the smallest change that satisfies every criterion.' },
-        { name: 'Candidate B', role: 'Independent attempt', task: 'Complete the whole mission, favouring clarity and explicit error handling.' },
-      ] : [
+      const tasks = input.tasks ?? [
         { name: 'Implementation agent', role: 'Implementation', task: 'Implement the core change. If this mission assigns explicit agent roles, implement only your assigned role.' },
         { name: 'Compatibility agent', role: 'Compatibility', task: 'Improve compatibility and error handling. If this mission assigns explicit agent roles, implement only your assigned role.' },
-      ]);
+      ];
       const mission: Mission = {
         id: crypto.randomUUID(), repositoryId: repository.id, title: input.title, prompt: input.prompt,
-        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(race ? { mode: 'race' as const } : {}),
+        acceptanceCriteria: criteria, authorization,
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
-        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
+        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). Your assigned task: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
       };
-      return this.saveMission(pinMissionModels(mission, models), 'Mission created. Agent execution has not started.');
-  }
-
-  getSkillEditRequest(key: string, repositoryId: string, supplied: RepositorySkillChange): Mission | undefined {
-    const change = validateRepositorySkillChange(supplied);
-    const receipt = this.store.get<Receipt<Mission>>(`request:${key}`);
-    if (!receipt) return undefined;
-    assertReplayFingerprint(receipt.fingerprint, JSON.stringify(['skill-edit', repositoryId, change]));
-    return this.requiredMission(receipt.result.id);
-  }
-
-  async createSkillMissionWithDispatch(key: string, repositoryId: string, supplied: RepositorySkillChange, authorization: NonNullable<Mission['authorization']>): Promise<Mission> {
-    const change = validateRepositorySkillChange(supplied);
-    await this.ensureDispatchAlarm(Date.now() + 1000);
-    return this.ctx.blockConcurrencyWhile(async () => {
-      const existing = this.getSkillEditRequest(key, repositoryId, change);
-      if (existing) return existing;
-      if (!this.env.GITFLARE_SECURITY) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', 'The security service is not configured.');
-      const access = this.env.GITFLARE_SECURITY.getByName('security');
-      await access.authorize(authorization.principal, 'contribute', 'repository', repositoryId);
-      await access.authorize(authorization.principal, 'execute', 'repository', repositoryId);
-      return this.mutate(key, JSON.stringify(['skill-edit', repositoryId, change]), () => {
-        const mission = this.newMission(skillMissionInput(repositoryId, change), authorization);
-        mission.status = 'queued';
-        mission.epoch = 1;
-        this.queueDispatch(mission);
-        return this.saveMission(mission, 'Skill edit queued for exact-content execution and repository checks.');
-      });
+      return this.saveMission(mission, 'Mission created. Agent execution has not started.');
     });
   }
 
@@ -455,15 +217,13 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return this.store.list<DispatchIntent>('dispatch:');
   }
 
-  async startMission(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
+  async startMission(key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> {
     await this.ensureDispatchAlarm(Date.now() + 1000);
     const started = this.mutateMission(key, JSON.stringify(['start', id]), id, () => {
-      const mission = pinMissionModels(this.requiredMission(id), models);
+      const mission = this.requiredMission(id);
       if (!['draft', 'failed', 'cancelled', 'needs_review'].includes(mission.status)) throw new ApiError(409, 'MISSION_ACTIVE', 'Cancel the active attempt or revoke its approval before starting again.');
-      const repository = this.getRepository(mission.repositoryId);
-      if (mission.skillChange && repository?.headSha !== mission.skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill and submit a new edit proposal.');
-      if (mission.branchChange?.closedAt) throw new ApiError(409, 'PULL_REQUEST_CLOSED', 'Reopen this pull request before running its checks.');
       if (mission.epoch > 0) this.archive(mission, 'retry');
+      const repository = this.getRepository(mission.repositoryId);
       if (authorization) mission.authorization = { ...authorization, creatorId: mission.authorization?.creatorId ?? authorization.creatorId };
       mission.status = 'queued';
       mission.epoch += 1;
@@ -475,10 +235,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.approvedAt;
       delete mission.approvedBy;
       delete mission.integrationForkName;
-      delete mission.selectedRunId;
-      delete mission.raceChecks;
-      delete mission.raceChanges;
-      mission.runs = mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, status: 'queued', changedFiles: [] }));
+      mission.runs = mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, status: 'queued', changedFiles: [] }));
       this.queueDispatch(mission);
       return this.saveMission(mission, `Execution attempt ${mission.epoch} queued.`);
     });
@@ -487,8 +244,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return started;
   }
 
-  async startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
-    return this.startMission(key, id, authorization, models);
+  async startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> {
+    return this.startMission(key, id, authorization);
   }
 
   private failDispatch(id: string, epoch: number): Mission {
@@ -588,30 +345,18 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (this.store.get(`dispatch:${id}-${epoch}`)) delete mission.error;
     this.store.delete(`dispatch:${id}-${epoch}`);
     this.store.put(`delivered:${id}-${epoch}`, { confirmedAt: new Date().toISOString() });
-    if (result.runs) {
-      const previousRuns = new Map(mission.runs.map((run) => [run.id, run]));
-      for (const run of result.runs) {
-        const previous = previousRuns.get(run.id);
-        if (!previous || previous.status === run.status && previous.summary === run.summary) continue;
-        const summary = run.summary?.trim().slice(0, 1000);
-        mission.events.push({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), runId: run.id, type: run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : run.status === 'cancelled' ? 'warning' : 'info', message: `Attempt ${epoch} · ${run.name.slice(0, 120)}: ${run.status}${summary ? ` — ${summary}` : ''}` });
-      }
-      mission.runs = result.runs;
-    }
+    if (result.runs) mission.runs = result.runs;
     if (result.checks) mission.checks = result.checks;
     if (result.changes) mission.changes = result.changes;
     if (result.candidateSha !== undefined) mission.candidateSha = result.candidateSha;
     if (result.integrationForkName !== undefined) mission.integrationForkName = result.integrationForkName;
     mission.status = 'running';
     if (complete) {
-      const race = mission.mode === 'race';
-      const passed = race
-        ? eligibleRaceRuns(mission).length > 0
-        : !!mission.candidateSha && mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') && mission.runs.every((run) => run.status === 'completed');
+      const passed = !!mission.candidateSha && mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') && mission.runs.every((run) => run.status === 'completed');
       mission.status = passed && !result.error ? 'needs_review' : 'failed';
       mission.error = result.error;
       return this.ctx.storage.transactionSync(() => {
-        this.saveMission(mission, passed && !result.error ? (race ? `${eligibleRaceRuns(mission).length} candidate(s) passed. Compare them and select one to review.` : 'Candidate checks passed. Review the exact commit before approval.') : 'Execution finished without a passing integration candidate.', passed && !result.error ? 'success' : 'error');
+        this.saveMission(mission, passed && !result.error ? 'Candidate checks passed. Review the exact commit before approval.' : 'Execution finished without a passing integration candidate.', passed && !result.error ? 'success' : 'error');
         this.archive(mission, 'completed');
         return mission;
       });
@@ -619,59 +364,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return this.saveMission(mission);
   }
 
-  reviewMission(key: string, id: string, supplied: ReviewMissionInput, actorId: string): Mission {
-    const input = reviewMissionInput({ ...supplied });
-    return this.mutateMission(key, JSON.stringify(['review', id, actorId, input]), id, () => {
-      const mission = this.requiredMission(id);
-      if (mission.epoch !== input.epoch || mission.candidateSha !== input.candidateSha || mission.baseSha !== input.baseSha) throw new ApiError(409, 'STALE_REVIEW', 'This review belongs to another revision. Refresh the proposal.');
-      if (!['needs_review', 'approved'].includes(mission.status)) throw new ApiError(409, 'REVIEW_LOCKED', 'Only a candidate awaiting review or approval can receive a review.');
-      mission.reviews ??= [];
-      if (input.action === 'resolve') {
-        const review = mission.reviews.find((entry) => entry.id === input.reviewId);
-        if (!review || review.kind !== 'request_changes' || review.epoch !== input.epoch || review.candidateSha !== input.candidateSha || review.baseSha !== input.baseSha) throw new ApiError(404, 'REVIEW_NOT_FOUND', 'This current revision review could not be found.');
-        if (review.authorId !== actorId) throw new ApiError(403, 'REVIEW_AUTHOR_REQUIRED', 'Only the reviewer who requested changes can resolve their request.');
-        if (review.resolvedAt) throw new ApiError(409, 'REVIEW_RESOLVED', 'This review request is already resolved.');
-        review.resolvedAt = new Date().toISOString();
-        review.resolvedBy = actorId;
-      } else {
-        if (mission.reviews.length >= 500) throw new ApiError(409, 'REVIEW_LIMIT', 'This proposal has reached its discussion limit.');
-        mission.reviews.push({ id: crypto.randomUUID(), kind: input.action, body: input.body!, authorId: actorId, createdAt: new Date().toISOString(), epoch: input.epoch, candidateSha: input.candidateSha, baseSha: input.baseSha });
-        if (input.action === 'request_changes' && mission.status === 'approved') {
-          this.archive(mission, 'approved');
-          mission.status = 'needs_review';
-          delete mission.approvedAt;
-          delete mission.approvedBy;
-          this.archive(mission, 'approval_revoked');
-        }
-      }
-      return this.saveMission(mission, input.action === 'resolve' ? `Reviewer ${actorId} resolved their change request.` : input.action === 'request_changes' ? `Reviewer ${actorId} requested changes to this revision.` : `${actorId} added a review comment.`, input.action === 'request_changes' ? 'warning' : 'info');
-    });
-  }
-
-  selectCandidate(key: string, id: string, runId: string, epoch: number, actorId = 'workspace-owner'): Mission {
-    return this.mutateMission(key, JSON.stringify(['select', id, runId, epoch]), id, () => {
-      const mission = this.requiredMission(id);
-      if (mission.mode !== 'race') throw new ApiError(409, 'NOT_A_RACE', 'Only a race mission has candidates to choose between.');
-      if (mission.epoch !== epoch) throw new ApiError(409, 'STALE_SELECTION', 'This selection belongs to another attempt. Refresh the mission.');
-      if (mission.status !== 'needs_review') throw new ApiError(409, 'SELECTION_LOCKED', 'A candidate can be selected only while the race awaits review. Revoke approval to choose again.');
-      const run = eligibleRaceRuns(mission).find((entry) => entry.id === runId);
-      if (!run) throw new ApiError(409, 'CANDIDATE_NOT_ELIGIBLE', 'Select an agent whose candidate passed its checks.');
-      mission.raceChecks ??= mission.checks;
-      mission.raceChanges ??= mission.changes;
-      mission.selectedRunId = run.id;
-      mission.candidateSha = run.commitSha!;
-      mission.integrationForkName = run.forkName;
-      mission.checks = mission.raceChecks.filter((check) => check.runId === run.id);
-      mission.changes = mission.raceChanges.filter((change) => change.runIds.includes(run.id));
-      return this.saveMission(mission, `${actorId} selected ${run.name.slice(0, 120)}'s candidate ${run.commitSha!.slice(0, 12)} for review.`);
-    });
-  }
-
   approveMission(key: string, id: string, candidateSha: string, baseSha: string, actorId = 'workspace-owner'): Mission {
     return this.mutateMission(key, JSON.stringify(['approve', id, candidateSha, baseSha]), id, () => {
       const mission = this.requiredMission(id);
       const repository = this.getRepository(mission.repositoryId);
-      assertReviewClear(mission);
       assertApproval({ status: mission.status, candidateSha: mission.candidateSha, baseSha: mission.baseSha, currentHead: repository?.headSha, requestedCandidate: candidateSha, requestedBase: baseSha, checksPassed: mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') });
       mission.status = 'approved';
       mission.approvedAt = new Date().toISOString();
@@ -705,7 +401,6 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const mission = this.requiredMission(id);
       if (mission.candidateSha !== candidateSha || mission.baseSha !== baseSha || !mission.approvedAt) throw new ApiError(409, 'STALE_APPROVAL', 'Approve this exact candidate and base before integration.');
       if (mission.status === 'integrated') return { mission, claimed: false };
-      assertReviewClear(mission);
       if (!['approved', 'integrating'].includes(mission.status)) throw new ApiError(409, 'APPROVAL_REQUIRED', 'Approve this candidate before integration.');
       const claim = this.store.get<IntegrationClaim>('integration:claim');
       if (claim) {
@@ -719,7 +414,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (this.getRepository(mission.repositoryId)?.headSha !== baseSha) throw new ApiError(409, 'STALE_APPROVAL', 'The repository changed after approval. Run and review the change again.');
       if (!mission.integrationForkName || !mission.checks.some((check) => check.candidateSha === candidateSha && check.status === 'passed') || mission.checks.some((check) => check.status !== 'passed')) throw new ApiError(409, 'CHECKS_REQUIRED', 'The exact candidate must have passing verification and an integration fork.');
       const claimId = crypto.randomUUID();
-      this.store.put('integration:claim', { claimId, missionId: id, epoch: mission.epoch, candidateSha, baseSha, claimedAt: Date.now(), phase: 'preparing' });
+      this.store.put('integration:claim', { claimId, missionId: id, epoch: mission.epoch, candidateSha, baseSha });
       this.store.put(`request:${key}`, { fingerprint, result: true });
       mission.status = 'integrating';
       delete mission.error;
@@ -745,32 +440,6 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
-  claimIntegrationPush(id: string, epoch: number, claimId: string): void {
-    this.ctx.storage.transactionSync(() => {
-      const mission = this.requiredMission(id);
-      const claim = this.store.get<IntegrationClaim>('integration:claim');
-      if (!claim || claim.claimId !== claimId || claim.missionId !== id || claim.epoch !== epoch || mission.epoch !== epoch || mission.status !== 'integrating' || claim.phase !== 'preparing') throw new ApiError(409, 'STALE_EXECUTION', 'This integration no longer owns a preparation claim.');
-      if (claim.claimedAt === undefined || Date.now() - claim.claimedAt >= INTEGRATION_PREPARATION_MS) throw new ApiError(409, 'INTEGRATION_DEADLINE', 'Landing preparation expired before the canonical push.');
-      claim.phase = 'pushing';
-      this.store.put('integration:claim', claim);
-    });
-  }
-
-  releaseStaleIntegration(id: string, claimId: string): Mission | null {
-    return this.ctx.storage.transactionSync(() => {
-      const mission = this.requiredMission(id);
-      const claim = this.store.get<IntegrationClaim>('integration:claim');
-      if (!claim || claim.claimId !== claimId || claim.missionId !== id || claim.epoch !== mission.epoch || mission.status !== 'integrating') return null;
-      if (claim.phase !== 'preparing' || claim.claimedAt === undefined || Date.now() - claim.claimedAt < INTEGRATION_PREPARATION_MS) return null;
-      this.store.delete('integration:claim');
-      mission.status = 'approved';
-      mission.error = 'Landing preparation expired before permission to push. Its fenced repository claim was released; retry landing.';
-      this.saveMission(mission, mission.error, 'warning');
-      this.archive(mission, 'integration_failed');
-      return mission;
-    });
-  }
-
   integrationFailed(id: string, epoch: number, claimId: string, outcome: 'not_pushed' | 'unknown'): Mission {
     return this.ctx.storage.transactionSync(() => {
       const mission = this.requiredMission(id);
@@ -780,11 +449,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         this.store.delete('integration:claim');
         mission.status = 'approved';
         mission.error = 'Integration stopped before attempting a canonical push. Retry integration, or revoke approval to rerun this mission.';
-      } else {
-        claim.phase = 'pushing';
-        this.store.put('integration:claim', claim);
-        mission.error = 'Integration could not be confirmed. Recheck the canonical commit before retrying; other integrations remain blocked.';
-      }
+      } else mission.error = 'Integration could not be confirmed. Recheck the canonical commit before retrying; other integrations remain blocked.';
       this.saveMission(mission, mission.error, 'warning');
       this.archive(mission, outcome === 'not_pushed' ? 'integration_failed' : 'integration_uncertain');
       return mission;

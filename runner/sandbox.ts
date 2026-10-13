@@ -7,8 +7,6 @@ interface RunnerEnv { ARTIFACTS: ArtifactsBinding; RUNNER_IMAGE?: string }
 interface OutboundProps { repositories: GitPermission[] }
 
 const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
-// Vite-based dev and preview servers reject any Host other than localhost
-const PREVIEW_HOST = 'http://localhost:8080';
 
 export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
   async fetch(request: Request): Promise<Response> {
@@ -56,93 +54,32 @@ export class BootstrapOutbound extends WorkerEntrypoint {
   }
 }
 
-export function isRegistryRequest(request: Request): boolean {
-  const url = new URL(request.url);
-  return (request.method === 'GET' || request.method === 'HEAD') && url.protocol === 'https:' && url.hostname === 'registry.npmjs.org' && !url.username && !url.password;
-}
-
-export class RegistryOutbound extends WorkerEntrypoint {
-  async fetch(request: Request): Promise<Response> {
-    if (!isRegistryRequest(request)) return new Response('Install destination is not allowed', { status: 403 });
-    const headers = new Headers(request.headers);
-    headers.delete('authorization');
-    headers.delete('cookie');
-    const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      return new Response('Install upstream redirects are not allowed', { status: 502 });
-    }
-    return response;
-  }
-}
-
 export class AgentSandbox extends DurableObject<RunnerEnv> {
-  #repositories: GitPermission[] | undefined;
-
-  constructor(ctx: DurableObjectState, env: RunnerEnv) {
-    super(ctx, env);
-    const container = ctx.container;
-    if (container?.running) void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(600_000));
-  }
-
   async prepare(repositories: GitPermission[]): Promise<void> {
     const container = this.ctx.container;
     if (!container) throw new Error('Container binding is not configured');
     if (container.running) await container.destroy();
     const image = container.images?.tools ?? this.env.RUNNER_IMAGE ?? 'cloudflare/debian-trixie';
-    container.start({ image, instance: 'standard-1', entrypoint: ['sleep', 'infinity'], enableInternet: false });
-    let stage = 'container startup';
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const stopped = container.monitor().then(() => { throw new Error('Container stopped before runner preparation completed'); });
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Runner preparation exceeded its execution deadline')), image === 'cloudflare/debian-trixie' ? 600_000 : 120_000);
-    });
+    container.start({ image, instance: 'lite', entrypoint: ['sleep', 'infinity'], enableInternet: false });
     try {
-      await Promise.race([(async () => {
-        await container.setInactivityTimeout(600_000);
-        if (image === 'cloudflare/debian-trixie') {
-          stage = 'package bootstrap';
-          const bootstrap = this.ctx.exports.BootstrapOutbound;
-          await container.interceptAllOutboundHttp(bootstrap);
-          await container.interceptOutboundHttps('*', bootstrap);
-          const aptOptions = '-o Dir::Etc::sourcelist=/tmp/gitflare-sources.list -o Dir::Etc::sourceparts=- -o Acquire::Retries=0 -o Acquire::https::Timeout=15 -o Acquire::https::CaInfo=/etc/cloudflare/certs/cloudflare-containers-ca.crt';
-          await this.#bootstrapCommand('package index', `printf '%s\n' 'deb https://deb.debian.org/debian trixie main' 'deb https://deb.debian.org/debian trixie-updates main' 'deb https://deb.debian.org/debian-security trixie-security main' > /tmp/gitflare-sources.list; apt-get ${aptOptions} -o APT::Update::Error-Mode=any update`);
-          await this.#bootstrapCommand('package installation', `DEBIAN_FRONTEND=noninteractive apt-get ${aptOptions} install -y --no-install-recommends git ca-certificates ripgrep coreutils && mkdir -p /workspace`, 300_000);
-        }
-        stage = 'Git network isolation';
-        await this.#restrictToGit(repositories);
-        this.#repositories = repositories;
-        stage = 'tool and certificate readiness';
-        const readiness = await this.#executeCommand(['/bin/sh', '-c', 'mkdir -p /workspace && command -v node && command -v git && command -v bash && command -v timeout && test -r /etc/cloudflare/certs/cloudflare-containers-ca.crt'], '/', 15_000, 15_000);
-        if (readiness.exitCode !== 0) throw new Error(`Runner tools or interception certificate are unavailable (exit ${readiness.exitCode})`);
-      })(), stopped, deadline]);
+      if (image === 'cloudflare/debian-trixie') {
+        const bootstrap = this.ctx.exports.BootstrapOutbound;
+        await container.interceptAllOutboundHttp(bootstrap);
+        await container.interceptOutboundHttps('*', bootstrap);
+        const aptOptions = '-o Dir::Etc::sourcelist=/tmp/gitflare-sources.list -o Dir::Etc::sourceparts=- -o Acquire::Retries=0 -o Acquire::https::Timeout=15 -o Acquire::https::CaInfo=/etc/cloudflare/certs/cloudflare-containers-ca.crt';
+        await this.#bootstrapCommand('package index', `printf '%s\n' 'deb https://deb.debian.org/debian trixie main' 'deb https://deb.debian.org/debian trixie-updates main' 'deb https://deb.debian.org/debian-security trixie-security main' > /tmp/gitflare-sources.list; apt-get ${aptOptions} -o APT::Update::Error-Mode=any update`);
+        await this.#bootstrapCommand('package installation', `DEBIAN_FRONTEND=noninteractive apt-get ${aptOptions} install -y --no-install-recommends git ca-certificates ripgrep coreutils && mkdir -p /workspace`, 300_000);
+      }
+      const outbound = this.ctx.exports.GitOutbound({ props: { repositories } });
+      await container.interceptAllOutboundHttp(outbound);
+      await container.interceptOutboundHttps('*', outbound);
+      const readiness = await this.#executeCommand(['/bin/sh', '-c', 'mkdir -p /workspace && command -v node && command -v git && command -v bash && command -v timeout && test -r /etc/cloudflare/certs/cloudflare-containers-ca.crt'], '/', 15_000, 15_000);
+      if (readiness.exitCode !== 0) throw new Error(`Runner tools or interception certificate are unavailable (exit ${readiness.exitCode})`);
+      await container.setInactivityTimeout(600_000);
     } catch (error) {
-      try { await container.destroy(); } catch { console.error('runner.preparation.cleanup.failed'); }
-      const exitCode = error && typeof error === 'object' && 'exitCode' in error ? ` (exit ${error.exitCode})` : '';
-      throw new Error(`Runner preparation failed during ${stage}${exitCode}: ${error instanceof Error ? error.message : 'Unknown container error'}`);
-    } finally { clearTimeout(timer); }
-  }
-
-  async #restrictToGit(repositories: GitPermission[]): Promise<void> {
-    const container = this.ctx.container!;
-    const outbound = this.ctx.exports.GitOutbound({ props: { repositories } });
-    await container.interceptAllOutboundHttp(outbound);
-    await container.interceptOutboundHttps('*', outbound);
-  }
-
-  async install(mode: 'ci' | 'install' = 'ci'): Promise<CommandResult> {
-    const container = this.ctx.container;
-    const repositories = this.#repositories;
-    if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
-    const excluded = await this.#executeCommand(['/bin/sh', '-c', "printf '\\nnode_modules/\\n' >> .git/info/exclude"], '/workspace/repo', 15_000, 15_000);
-    if (excluded.exitCode !== 0) throw new Error('Installed dependencies could not be excluded from candidate commits');
-    const registry = this.ctx.exports.RegistryOutbound;
-    await container.interceptAllOutboundHttp(registry);
-    await container.interceptOutboundHttps('*', registry);
-    try {
-      // --ignore-scripts: package lifecycle scripts must not run while the registry is reachable
-      return await this.#executeCommand(['npm', mode, '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
-    } finally { await this.#restrictToGit(repositories); }
+      await container.destroy();
+      throw error;
+    }
   }
 
   async #bootstrapCommand(stage: string, script: string, timeoutMs = 120_000): Promise<void> {
@@ -154,10 +91,6 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
 
   async command(argv: string[], cwd = '/workspace', timeoutMs = 60_000): Promise<CommandResult> {
     return this.#executeCommand(argv, cwd, timeoutMs, 120_000);
-  }
-
-  async check(script: string, timeoutMs: number): Promise<CommandResult> {
-    return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, 300_000);
   }
 
   async #executeCommand(argv: string[], cwd: string, timeoutMs: number, maximumMs: number): Promise<CommandResult> {
@@ -191,7 +124,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const execution = (async () => {
       const process = await container.exec(['timeout', '--kill-after=2s', `${seconds}s`, ...argv], {
         cwd,
-        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', CI: 'true' },
+        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
       });
       const [stdout, stderr, exitCode] = await Promise.all([collect(process.stdout), collect(process.stderr), process.exitCode]);
       return { stdout, stderr, exitCode };
@@ -200,7 +133,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     finally { clearTimeout(timer); }
   }
 
-  async startPreview(command: string | string[] = 'node src/preview.mjs', readinessMs = 15_000): Promise<void> {
+  async startPreview(): Promise<void> {
     const container = this.ctx.container;
     if (!container?.running) throw new Error('Preview container is not running');
     const controller = new AbortController();
@@ -209,25 +142,25 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         controller.abort();
-        reject(new Error(`Preview did not answer HTTP on port 8080 within ${Math.round(readinessMs / 1000)} seconds`));
-      }, readinessMs);
+        reject(new Error('Preview did not become HTTP-ready within 15 seconds'));
+      }, 15_000);
     });
     try {
       const process = await Promise.race([
-        container.exec(Array.isArray(command) ? command : ['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
+        container.exec(['node', 'src/preview.mjs'], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
         timeout,
       ]);
       const exited = process.exitCode.then((code) => { throw new Error(`Preview process exited before readiness (exit ${code})`); });
       const port = container.getTcpPort(8080);
       for (;;) {
         const response = await Promise.race([
-          port.fetch(new Request(`${PREVIEW_HOST}/`, { signal: controller.signal, redirect: 'manual' })).catch(() => null),
+          port.fetch(new Request('http://preview.internal/', { signal: controller.signal, redirect: 'manual' })).catch(() => null),
           exited,
           timeout,
         ]);
         if (response) {
           await Promise.race([response.body?.cancel(), exited, timeout]);
-          if (response.status < 500) return;
+          if (response.ok) return;
         }
         await Promise.race([new Promise((resolve) => { retryTimer = setTimeout(resolve, 250); }), exited, timeout]);
       }
@@ -245,8 +178,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const headers = new Headers(request.headers);
     headers.delete('authorization');
     headers.delete('cookie');
-    headers.delete('host');
-    return container.getTcpPort(8080).fetch(new Request(`${PREVIEW_HOST}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
+    return container.getTcpPort(8080).fetch(new Request(`http://preview.internal${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
   }
 
   async destroy(): Promise<void> {

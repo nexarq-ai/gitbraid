@@ -58,8 +58,8 @@ export function buildInitializationPack(files: Record<string, string>, date = ne
   return { pack: new Uint8Array(Buffer.concat([body, createHash('sha1').update(body).digest()])), commitSha: commit.hash.toString('hex') };
 }
 
-export function packet(line: string): Buffer { const payload = Buffer.from(line); const length = payload.length + 4; if (length > 65520) throw new Error('Git packet is too large'); return Buffer.concat([Buffer.from(length.toString(16).padStart(4, '0')), payload]); }
-export function parsePackets(bytes: Uint8Array): string[] {
+function packet(line: string): Buffer { const payload = Buffer.from(line); const length = payload.length + 4; if (length > 65520) throw new Error('Git packet is too large'); return Buffer.concat([Buffer.from(length.toString(16).padStart(4, '0')), payload]); }
+function parsePackets(bytes: Uint8Array): string[] {
   const buffer = Buffer.from(bytes); const lines: string[] = []; let offset = 0;
   while (offset < buffer.length) {
     if (offset + 4 > buffer.length) throw new ApiError(502, 'INITIALIZATION_PROTOCOL', 'Git returned a truncated packet.');
@@ -72,14 +72,14 @@ export function parsePackets(bytes: Uint8Array): string[] {
   }
   return lines;
 }
-export async function boundedBody(response: Response): Promise<Uint8Array> {
+async function boundedBody(response: Response): Promise<Uint8Array> {
   if (!response.body) throw new ApiError(502, 'INITIALIZATION_PROTOCOL', 'Git returned an empty response.');
   const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
   try { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 65536) throw new ApiError(502, 'INITIALIZATION_PROTOCOL', 'Git response exceeds the initialization limit.'); chunks.push(value); } }
   finally { await reader.cancel().catch(() => {}); }
   return new Uint8Array(Buffer.concat(chunks));
 }
-export function requireGitResponse(response: Response, expectedType: string) {
+function requireGitResponse(response: Response, expectedType: string) {
   if (!response.ok || response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== expectedType) throw new ApiError(502, 'INITIALIZATION_PROTOCOL', 'Git initialization was rejected or returned an unexpected response.');
 }
 

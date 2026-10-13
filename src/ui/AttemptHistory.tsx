@@ -5,7 +5,6 @@ import type { Mission, MissionAttempt } from "../shared/types";
 import { request } from "./api";
 import { EmptyState, ErrorNotice, Status } from "./components";
 import AgentAssignment from "./AgentAssignment";
-import { RouteProgress } from "./WorkspaceLoader";
 
 const reasonLabels: Record<MissionAttempt["reason"], string> = {
   completed: "Execution finished",
@@ -77,7 +76,7 @@ export default function AttemptHistory({ mission }: { mission: Mission }) {
           />
         )}
         {!attempts && !error && (
-          <RouteProgress />
+          <div className="loading-state">Loading saved attempts…</div>
         )}
         {attempts?.length === 0 && (
           <EmptyState

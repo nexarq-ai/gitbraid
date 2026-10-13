@@ -45,8 +45,7 @@
 .wiki-page .documentation-article-footer button { margin-left: auto; color: #005fbd; background: transparent; border: 0; padding: 6px; cursor: pointer; }
 .wiki-page button:focus-visible, .wiki-page a:focus-visible, .wiki-page summary:focus-visible { outline: 2px solid #005fbd; outline-offset: 3px; }
 @media (max-width: 1320px) and (min-width: 761px) {
-  .wiki-page .documentation-layout { grid-template-columns: 158px minmax(0, 1fr); grid-template-rows: auto 1fr; gap: 24px; }
-  .wiki-page .documentation-navigation { grid-column: 1; grid-row: 1 / span 2; }
+  .wiki-page .documentation-layout { grid-template-columns: 158px minmax(0, 1fr); gap: 24px; }
   .wiki-page .documentation-toc { position: static; grid-column: 2; grid-row: 1; padding: 0 24px; }
   .wiki-page .documentation-toc-details { border-bottom: 1px solid #dfe2e6; padding-bottom: 16px; }
   .wiki-page .documentation-toc-details > div { display: flex; flex-wrap: wrap; gap: 0 16px; }
