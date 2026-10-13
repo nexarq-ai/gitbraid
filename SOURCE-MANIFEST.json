@@ -20,8 +20,8 @@
     },
     {
       "path": "docs/public/admin.md",
-      "size": 5658,
-      "sha256": "0ed4d90a9f35fd148f54a1117be603b5ead21700164b36ab59d3be4f5ea18b1f"
+      "size": 5601,
+      "sha256": "a1cb0d168af8606c899f32a1590071058eddc9fa99326aec44717bbd1a8b3ecb"
     },
     {
       "path": "docs/public/agents.md",
@@ -35,18 +35,18 @@
     },
     {
       "path": "docs/public/mcp.md",
-      "size": 4616,
-      "sha256": "641bea1b3ac18b2b3f973bcc7843569757757868a127b4e7a4519743ba7203f2"
+      "size": 4634,
+      "sha256": "284baeb3b1b8f04d9830a14b5d6c9efb2669e9ae6602ebb2bf016b87bfb14acd"
     },
     {
       "path": "docs/public/overview.md",
-      "size": 4382,
-      "sha256": "0f65937fca489e60c87b3ebd3e87221b7dcc624bde4d047e5fa2e0c7f1ca3d89"
+      "size": 4397,
+      "sha256": "64d4e6cd6d30d66f61dc306cde8940e6bfbbf0235a28bf312a96d713cec3f541"
     },
     {
       "path": "docs/public/repositories.md",
-      "size": 4559,
-      "sha256": "04571913258de9ba8652b0788021b1a6187601a8f2219930aaf21d60e8e2048d"
+      "size": 4585,
+      "sha256": "70e01a08a74af05497eec72efc0977788536a97b275b7dfa9d7fc5de31fb80d8"
     },
     {
       "path": "index.html",
