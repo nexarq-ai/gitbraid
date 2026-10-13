@@ -1,7 +1,8 @@
+import { anthropicInput, anthropicOutput } from './anthropic-adapter';
 import type { ModelConnection } from '../shared/types';
 
 export interface ModelEnv {
-  AI?: { run(model: string, input: Record<string, unknown>, options?: { gateway: { id: string }; signal?: AbortSignal }): Promise<unknown> };
+  AI?: { run(model: string, input: Record<string, unknown>, options?: { gateway: { id: string }; extraHeaders?: Record<string, string>; signal?: AbortSignal }): Promise<unknown> };
   AI_GATEWAY_ID?: string;
 }
 export type InputItem = Record<string, unknown>;
@@ -69,6 +70,10 @@ export function workersAIMessages(input: InputItem[]): InputItem[] {
 
 export function normalizeModelMessage(body: unknown, protocol: ModelConnection['protocol']): ModelMessage {
   const raw = object(body);
+  if (protocol === 'anthropic') {
+    try { return anthropicOutput(raw); }
+    catch { throw new ModelResponseError('invalid_shape', 'Model returned invalid or incomplete Anthropic output'); }
+  }
   if (raw.error) throw new ModelResponseError('provider_error', 'Model returned no usable completed response');
   const calls: ToolCall[] = [];
   const texts: string[] = [];
@@ -121,9 +126,10 @@ export function normalizeModelMessage(body: unknown, protocol: ModelConnection['
 export async function inferenceMessage(env: ModelEnv, model: ModelConnection, input: InputItem[], tools: InputItem[], timeoutMs: number, maxTokens = 4096): Promise<ModelMessage> {
   if (!env.AI || !env.AI_GATEWAY_ID) throw new Error('AI Gateway connection is not configured');
   let parameters: Record<string, unknown>;
-  if (model.protocol === 'responses') parameters = { input, ...(tools.length ? { tools } : {}), max_output_tokens: maxTokens, ...(model.id === 'openai/gpt-6-luna' || model.id === 'openai/gpt-6.1-sol' ? { reasoning: { effort: 'low' }, include: ['reasoning.encrypted_content'] } : {}), store: false };
+  if (model.protocol === 'anthropic') parameters = anthropicInput(input, tools, maxTokens);
+  else if (model.protocol === 'responses') parameters = { input, ...(tools.length ? { tools } : {}), max_output_tokens: maxTokens, ...(model.id === 'openai/gpt-6-luna' || model.id === 'openai/gpt-6.1-sol' ? { reasoning: { effort: 'low' }, include: ['reasoning.encrypted_content'] } : {}), store: false };
   else parameters = { messages: model.protocol === 'workers-ai' ? workersAIMessages(input) : chatMessages(input), ...(tools.length ? { tools: tools.map(tool => model.protocol === 'workers-ai' ? { name: tool.name, description: tool.description, parameters: tool.parameters } : { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }) } : {}), max_tokens: maxTokens, stream: false };
-  const body = await env.AI.run(model.id, parameters, { gateway: { id: env.AI_GATEWAY_ID }, signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
+  const body = await env.AI.run(model.id, parameters, { gateway: { id: env.AI_GATEWAY_ID }, ...(model.source === 'gateway' ? { extraHeaders: { 'cf-aig-no-wholesale': 'true' } } : {}), signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
   try { return normalizeModelMessage(body, model.protocol); }
   catch (error) {
     console.error(JSON.stringify({ event: 'model_output_rejected', ...classifyModelFailure(error), ...modelOutputShape(body) }));
