@@ -2918,3 +2918,25 @@ a svg {
 .agent-card-with-footer { display: flex; flex-direction: column; }
 .agent-card-with-footer .agent-body { flex: 1; }
 .agent-card-footer { display: flex; align-items: center; padding: 16px 19px; border-top: 1px solid #e8edf3; background: #f8f9fb; }
+
+.mission-mode { border: 0; padding: 0; margin: 0 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mission-mode legend { font-size: 13px; font-weight: 550; margin-bottom: 8px; padding: 0; }
+.mission-mode label { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid #d9dde2; border-radius: 8px; cursor: pointer; font-size: 12px; line-height: 1.45; color: #59616c; }
+.mission-mode label.selected { border-color: #f6821f; background: #fff8f2; }
+.mission-mode label strong { display: block; color: #181b20; font-size: 13px; }
+.mission-mode input { margin-top: 3px; accent-color: #f6821f; }
+.agent-count { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 14px; font-size: 12px; color: #59616c; }
+.agent-count small { margin-left: auto; }
+.overlap-list { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.overlap-list code { font-size: 12px; }
+.agent-note { margin: 6px 0 0; font-size: 12px; color: #59616c; }
+.touched-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.touched-files code { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #f2f4f6; color: #343a43; }
+.touched-files code.shared { background: #fff0e6; color: #a64000; }
+.race-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.race-card { border: 1px solid #d9dde2; border-radius: 8px; padding: 14px; background: white; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #59616c; }
+.race-card.selected { border-color: #f6821f; box-shadow: 0 0 0 1px #f6821f; }
+.race-card h3 { margin: 0; font-size: 14px; color: #181b20; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.race-card p { margin: 0; }
+.race-card .race-stats { display: flex; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 640px) { .mission-mode { grid-template-columns: 1fr; } }

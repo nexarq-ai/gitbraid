@@ -1,5 +1,6 @@
 export type MissionStatus = 'draft' | 'queued' | 'running' | 'checking' | 'needs_review' | 'approved' | 'integrating' | 'integrated' | 'failed' | 'cancelled';
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type MissionMode = 'combine' | 'race';
 export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 
 export interface Repository {
@@ -28,6 +29,8 @@ export interface AgentRun {
   startedAt?: string;
   completedAt?: string;
   changedFiles: string[];
+  touchedFiles?: string[];
+  note?: string;
   summary?: string;
   error?: string;
   model?: string;
@@ -39,6 +42,7 @@ export interface AgentRun {
 export interface Check {
   id: string;
   name: string;
+  runId?: string;
   status: CheckStatus;
   candidateSha?: string;
   output?: string;
@@ -93,6 +97,10 @@ export interface Mission {
   status: MissionStatus;
   baseSha: string | null;
   candidateSha: string | null;
+  mode?: MissionMode;
+  selectedRunId?: string;
+  raceChecks?: Check[];
+  raceChanges?: FileChange[];
   acceptanceCriteria?: string[];
   integrationForkName?: string;
   epoch: number;
@@ -133,7 +141,7 @@ export interface Workspace {
 
 export interface AgentTask { name: string; role: string; task: string; model?: string }
 export interface RepositorySkillChange { action: 'create' | 'update'; path: string; content: string; baseSha: string }
-export interface CreateMissionInput { title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; expectedBaseSha?: string }
+export interface CreateMissionInput { title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; expectedBaseSha?: string; mode?: MissionMode }
 export interface CreateRepositoryInput { name: string; description?: string }
 export interface ApproveMissionInput { candidateSha: string; baseSha: string }
 export interface ApiError { error: { code: string; message: string } }

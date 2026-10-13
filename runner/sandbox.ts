@@ -54,7 +54,29 @@ export class BootstrapOutbound extends WorkerEntrypoint {
   }
 }
 
+export function isRegistryRequest(request: Request): boolean {
+  const url = new URL(request.url);
+  return (request.method === 'GET' || request.method === 'HEAD') && url.protocol === 'https:' && url.hostname === 'registry.npmjs.org' && !url.username && !url.password;
+}
+
+export class RegistryOutbound extends WorkerEntrypoint {
+  async fetch(request: Request): Promise<Response> {
+    if (!isRegistryRequest(request)) return new Response('Install destination is not allowed', { status: 403 });
+    const headers = new Headers(request.headers);
+    headers.delete('authorization');
+    headers.delete('cookie');
+    const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      return new Response('Install upstream redirects are not allowed', { status: 502 });
+    }
+    return response;
+  }
+}
+
 export class AgentSandbox extends DurableObject<RunnerEnv> {
+  #repositories: GitPermission[] | undefined;
+
   constructor(ctx: DurableObjectState, env: RunnerEnv) {
     super(ctx, env);
     const container = ctx.container;
@@ -86,9 +108,8 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
           await this.#bootstrapCommand('package installation', `DEBIAN_FRONTEND=noninteractive apt-get ${aptOptions} install -y --no-install-recommends git ca-certificates ripgrep coreutils && mkdir -p /workspace`, 300_000);
         }
         stage = 'Git network isolation';
-        const outbound = this.ctx.exports.GitOutbound({ props: { repositories } });
-        await container.interceptAllOutboundHttp(outbound);
-        await container.interceptOutboundHttps('*', outbound);
+        await this.#restrictToGit(repositories);
+        this.#repositories = repositories;
         stage = 'tool and certificate readiness';
         const readiness = await this.#executeCommand(['/bin/sh', '-c', 'mkdir -p /workspace && command -v node && command -v git && command -v bash && command -v timeout && test -r /etc/cloudflare/certs/cloudflare-containers-ca.crt'], '/', 15_000, 15_000);
         if (readiness.exitCode !== 0) throw new Error(`Runner tools or interception certificate are unavailable (exit ${readiness.exitCode})`);
@@ -98,6 +119,28 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
       const exitCode = error && typeof error === 'object' && 'exitCode' in error ? ` (exit ${error.exitCode})` : '';
       throw new Error(`Runner preparation failed during ${stage}${exitCode}: ${error instanceof Error ? error.message : 'Unknown container error'}`);
     } finally { clearTimeout(timer); }
+  }
+
+  async #restrictToGit(repositories: GitPermission[]): Promise<void> {
+    const container = this.ctx.container!;
+    const outbound = this.ctx.exports.GitOutbound({ props: { repositories } });
+    await container.interceptAllOutboundHttp(outbound);
+    await container.interceptOutboundHttps('*', outbound);
+  }
+
+  async install(): Promise<CommandResult> {
+    const container = this.ctx.container;
+    const repositories = this.#repositories;
+    if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
+    const excluded = await this.#executeCommand(['/bin/sh', '-c', "printf '\\nnode_modules/\\n' >> .git/info/exclude"], '/workspace/repo', 15_000, 15_000);
+    if (excluded.exitCode !== 0) throw new Error('Installed dependencies could not be excluded from candidate commits');
+    const registry = this.ctx.exports.RegistryOutbound;
+    await container.interceptAllOutboundHttp(registry);
+    await container.interceptOutboundHttps('*', registry);
+    try {
+      // --ignore-scripts: package lifecycle scripts must not run while the registry is reachable
+      return await this.#executeCommand(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
+    } finally { await this.#restrictToGit(repositories); }
   }
 
   async #bootstrapCommand(stage: string, script: string, timeoutMs = 120_000): Promise<void> {
@@ -151,7 +194,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     finally { clearTimeout(timer); }
   }
 
-  async startPreview(): Promise<void> {
+  async startPreview(command = 'node src/preview.mjs'): Promise<void> {
     const container = this.ctx.container;
     if (!container?.running) throw new Error('Preview container is not running');
     const controller = new AbortController();
@@ -165,7 +208,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     });
     try {
       const process = await Promise.race([
-        container.exec(['node', 'src/preview.mjs'], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
+        container.exec(['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
         timeout,
       ]);
       const exited = process.exitCode.then((code) => { throw new Error(`Preview process exited before readiness (exit ${code})`); });

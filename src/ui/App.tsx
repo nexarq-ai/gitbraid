@@ -50,7 +50,7 @@ import MissionDetail from "./MissionDetail";
 import RepositoryBrowser from "./RepositoryBrowser";
 import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
-import AuthScreen, { type AuthConfig } from "./AuthScreen";
+import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
 import Documentation from "./Documentation";
 import RepositorySkills from "./RepositorySkills";
 import CloudflareConnection from "./CloudflareConnection";
@@ -228,7 +228,7 @@ export default function App() {
   }
 
   function createMission(repositoryId?: string) {
-    if (!permissions.includes("contribute")) { notify("Your role cannot create proposals."); return; }
+    if (!permissions.includes("contribute")) { notify("Your role cannot create missions."); return; }
     navigate(repositoryId ? `repository/${repositoryId}/proposals/new` : "proposals/new");
   }
 
@@ -260,6 +260,7 @@ export default function App() {
   const publicDocs = route.startsWith("docs") && authState !== "authenticated";
   if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="#home" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="#docs/overview">Guides</a><a href="#connect">Connect MCP</a><a href="#signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
   if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError || "Loading installation…"}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
+  if (isAccountRoute(route) && !authConfig.setupRequired) return <AccountScreen key={route} route={route} config={authConfig} authenticated={authState === "authenticated"} onChanged={load}/>;
   if (route.startsWith("invite?")) return <InvitationScreen route={route} config={authConfig} state={authState} error={error} onRetry={load} onSignedIn={load} onFlowChange={(active) => {authFlowActive.current=active;}}/>;
   if (route === "home" && authConfig.edition === "hosted" && !authConfig.setupRequired) return <Homepage authenticated={authState === "authenticated"} />;
 
@@ -284,12 +285,12 @@ export default function App() {
   const proposalRepositoryId = route.startsWith("repository/") && creatingProposal ? route.split("/")[1] : undefined;
   const requestedPage = ["signin", "signup"].includes(route) ? "overview" : route.split("/")[0];
   const page = requestedPage === "access" ? "settings" : requestedPage;
-  const pageName = importingRepository ? "Import code" : creatingProposal ? "Create a proposal" :
+  const pageName = importingRepository ? "Import code" : creatingProposal ? "Create a mission" :
     {
       overview: "Overview",
       repositories: "Repositories",
-      missions: "Proposals",
-      mission: "Proposal",
+      missions: "Missions",
+      mission: "Mission",
       repository: "Repository",
       activity: "Activity",
       settings: "Settings",
@@ -320,7 +321,7 @@ export default function App() {
     { id: "repositories", label: "Repositories", icon: FolderSimpleIcon },
     {
       id: "missions",
-      label: "Proposals",
+      label: "Missions",
       icon: GitBranchIcon,
       count: activeCount,
     },
@@ -404,7 +405,7 @@ export default function App() {
           </button>
           <button className={`nav-item ${route === "settings/models" ? "active" : ""}`} aria-current={route === "settings/models" ? "page" : undefined} onClick={() => navigate("settings/models")}><RobotIcon size={17} />AI models</button>
           <button className={`nav-item ${route === "settings/cloudflare" ? "active" : ""}`} aria-current={route === "settings/cloudflare" ? "page" : undefined} onClick={() => navigate("settings/cloudflare")}><CloudIcon size={17} />Cloudflare</button>
-          <button className={`nav-item ${page === "docs" ? "active" : ""}`} onClick={() => navigate("docs/how-it-works")} aria-current={page === "docs" ? "page" : undefined}>
+          <button className={`nav-item ${page === "docs" ? "active" : ""}`} onClick={() => navigate("docs/overview")} aria-current={page === "docs" ? "page" : undefined}>
             <BookOpenIcon size={17} />
             Documentation
           </button>
@@ -443,7 +444,7 @@ export default function App() {
           </div>
           <div className="utility-actions">
             <a
-              href="#docs/how-it-works"
+              href="#docs/overview"
             >
               Documentation
               <ArrowUpRightIcon size={12} />
@@ -477,7 +478,7 @@ export default function App() {
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
           <>
-            {importingRepository ? importRepository ? <RepositoryImport key={importRepository.id} repository={importRepository} canManage={permissions.includes("manage")} canContribute={permissions.includes("contribute")} onBack={() => navigate(`repository/${importRepository.id}/code`)} onImported={item => setWorkspace(current => ({ ...current, repositories: current.repositories.map(repo => repo.id === item.id ? item : repo) }))} onCreateProposal={() => createMission(importRepository.id)} /> : <ErrorNotice message="This repository could not be found." /> : creatingProposal ? <ProposalCreate key={route} repositories={workspace.repositories} repositoryId={proposalRepositoryId} canContribute={permissions.includes("contribute")} canManage={permissions.includes("manage")} onImportRepository={id => navigate(`repository/${id}/import`)} onBack={() => navigate(proposalRepositoryId ? `repository/${proposalRepositoryId}/proposals` : "missions")} onCreateRepository={() => setModal("repository")} onCreated={async proposal => { await load(); navigate(`mission/${proposal.id}`); notify("Proposal draft created."); }} /> : route === "settings/models" ? <ModelConnections canManage={permissions.includes("manage")} /> : route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
+            {importingRepository ? importRepository ? <RepositoryImport key={importRepository.id} repository={importRepository} canManage={permissions.includes("manage")} canContribute={permissions.includes("contribute")} onBack={() => navigate(`repository/${importRepository.id}/code`)} onImported={item => setWorkspace(current => ({ ...current, repositories: current.repositories.map(repo => repo.id === item.id ? item : repo) }))} onCreateProposal={() => createMission(importRepository.id)} /> : <ErrorNotice message="This repository could not be found." /> : creatingProposal ? <ProposalCreate key={route} repositories={workspace.repositories} repositoryId={proposalRepositoryId} canContribute={permissions.includes("contribute")} canManage={permissions.includes("manage")} onImportRepository={id => navigate(`repository/${id}/import`)} onBack={() => navigate(proposalRepositoryId ? `repository/${proposalRepositoryId}/proposals` : "missions")} onCreateRepository={() => setModal("repository")} onCreated={async proposal => { await load(); navigate(`mission/${proposal.id}`); notify("Mission draft created."); }} /> : route === "settings/models" ? <ModelConnections canManage={permissions.includes("manage")} /> : route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (
               <MissionDetail
@@ -566,7 +567,7 @@ export default function App() {
                           disabled={!permissions.includes("contribute")}
                           onClick={() => createMission()}
                         >
-                          Create proposal
+                          Create mission
                         </Button>
                       )
                     )}
@@ -592,7 +593,7 @@ export default function App() {
                       <div>
                         <div className="section-heading">
                           <h2>
-                            Recent proposals
+                            Recent missions
                             <span className="number-tag">
                               {workspace.missions.length}
                             </span>
@@ -615,7 +616,7 @@ export default function App() {
                           ) : (
                             <EmptyState
                               icon={<GitBranchIcon size={25} />}
-                              title="The next change starts with a proposal"
+                              title="The next change starts with a mission"
                               description="Describe what you want to build. Track each agent's work and review the result in one place."
                               action={
                                 <Button
@@ -625,7 +626,7 @@ export default function App() {
                                   disabled={!permissions.includes("contribute")}
                           onClick={() => createMission()}
                                 >
-                                  Create your first proposal
+                                  Create your first mission
                                 </Button>
                               }
                             />
@@ -775,7 +776,7 @@ export default function App() {
                         value={filter}
                         onValueChange={setFilter}
                         tabs={[
-                          { value: "all", label: "All proposals" },
+                          { value: "all", label: "All missions" },
                           {
                             value: "active",
                             label: `Active (${activeCount})`,
@@ -793,15 +794,15 @@ export default function App() {
                       <div className="search-input">
                         <MagnifyingGlassIcon size={15} />
                         <Input
-                          aria-label="Search proposals"
-                          placeholder="Search proposals…"
+                          aria-label="Search missions"
+                          placeholder="Search missions…"
                           value={search}
                           onChange={(event) => setSearch(event.target.value)}
                         />
                       </div>
                       <span className="status-strip">
                         {missionList.length}{" "}
-                        {missionList.length === 1 ? "proposal" : "proposals"}
+                        {missionList.length === 1 ? "mission" : "missions"}
                       </span>
                     </div>
                     <section className="panel">
@@ -816,8 +817,8 @@ export default function App() {
                           icon={<GitBranchIcon size={25} />}
                           title={
                             search || filter !== "all"
-                              ? "No proposals match this view"
-                              : "Create your first proposal"
+                              ? "No missions match this view"
+                              : "Create your first mission"
                           }
                           description={
                             search || filter !== "all"
@@ -839,7 +840,7 @@ export default function App() {
                             >
                               {search || filter !== "all"
                                 ? "Clear filters"
-                                : "Create proposal"}
+                                : "Create mission"}
                             </Button>
                           }
                         />
@@ -899,7 +900,7 @@ export default function App() {
                                       mission.repositoryId === repo.id,
                                   ).length
                                 }{" "}
-                                proposals
+                                missions
                               </span>
                             </div>
                             <button
@@ -928,7 +929,7 @@ export default function App() {
                           description={
                             search
                               ? "Try searching for another name."
-                              : "Keep your code and its proposal history together."
+                              : "Keep your code and its mission history together."
                           }
                           action={
                             <Button
@@ -997,7 +998,7 @@ export default function App() {
                       </h3>
                       <p>
                         {workspace.mode === "local"
-                          ? "This is a local development workspace. Repository records and proposal drafts are saved locally. Git hosting and agent execution require connected services."
+                          ? "This is a local development workspace. Repository records and mission drafts are saved locally. Git hosting and agent execution require connected services."
                           : "Your account permissions determine what you can access and change. Agent execution is limited to authorized repositories and the services configured for this deployment."}
                       </p>
                       <a
@@ -1107,7 +1108,7 @@ function ActivityView({
         <EmptyState
           icon={<ActivityIcon size={25} />}
           title="Your workspace history starts here"
-          description="Proposal creation, agent execution, checks, and review decisions will appear as they happen."
+          description="Mission creation, agent execution, checks, and review decisions will appear as they happen."
         />
       )}
     </section>
@@ -1168,7 +1169,7 @@ function RepositoryDetail({
           </h1>
           <p>
             {repository.description ||
-              "Your source code and its proposal history."}
+              "Your source code and its mission history."}
           </p>
         </div>
         <Button
@@ -1178,13 +1179,13 @@ function RepositoryDetail({
           disabled={!canContribute}
           onClick={() => onMission(repository.id)}
         >
-          Create proposal
+          Create mission
         </Button>
       </div>
       <nav className="repository-navigation" aria-label="Repository navigation">
         {[
             { value: "code", label: "Code" },
-            { value: "proposals", label: `Proposals (${missions.length})` },
+            { value: "proposals", label: `Missions (${missions.length})` },
             { value: "agents", label: `Agents (${missions.reduce((count, mission) => count + (mission.epoch > 0 ? mission.runs.length : 0), 0)})` },
             { value: "checks", label: `Checks (${missions.reduce((count, mission) => count + mission.checks.length, 0)})` },
             { value: "skills", label: "Skills" },
@@ -1269,7 +1270,7 @@ function RepositoryDetail({
           )}
           <section className="panel" style={{ marginTop: 24 }}>
             <div className="panel-header">
-              <h2>Recent proposals</h2>
+              <h2>Recent missions</h2>
               <button className="text-link" onClick={() => onTabChange("proposals")}>
                 View all
                 <ArrowUpRightIcon size={12} />
@@ -1285,7 +1286,7 @@ function RepositoryDetail({
               <EmptyState
                 icon={<GitBranchIcon size={25} />}
                 title="What should we build next?"
-                description="Start a proposal to give your agents a clear outcome and track their contributions."
+                description="Start a mission to give your agents a clear outcome and track their contributions."
                 action={
                   <Button
                     variant="secondary"
@@ -1293,7 +1294,7 @@ function RepositoryDetail({
                     disabled={!canContribute}
           onClick={() => onMission(repository.id)}
                   >
-                    Create proposal
+                    Create mission
                   </Button>
                 }
               />
@@ -1311,8 +1312,8 @@ function RepositoryDetail({
           ) : (
             <EmptyState
               icon={<GitBranchIcon size={25} />}
-              title="No proposals yet"
-              description="Create your first proposal for this repository."
+              title="No missions yet"
+              description="Create your first mission for this repository."
               action={
                 <Button
                   variant="secondary"
@@ -1320,7 +1321,7 @@ function RepositoryDetail({
                   disabled={!canContribute}
           onClick={() => onMission(repository.id)}
                 >
-                  Create proposal
+                  Create mission
                 </Button>
               }
             />

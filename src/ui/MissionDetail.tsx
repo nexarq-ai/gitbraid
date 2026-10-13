@@ -11,6 +11,7 @@ import {
   GitBranchIcon,
   GitCommitIcon,
   GitMergeIcon,
+  InfoIcon,
   PlayIcon,
   RobotIcon,
   ShieldCheckIcon,
@@ -71,6 +72,8 @@ export default function MissionDetail({
     expiresAt: string;
   } | null>(null);
   const mutation = useRef<{ signature: string; key: string } | null>(null);
+  const revision = useRef(0);
+  const pollSequence = useRef(0);
   const repository = workspace.repositories.find(
     (item) => item.id === mission?.repositoryId,
   );
@@ -78,12 +81,15 @@ export default function MissionDetail({
   useEffect(() => {
     let active = true;
     const load = async () => {
+      const startedAt = revision.current;
+      const sequence = ++pollSequence.current;
       try {
         const result = await request<Mission>(
           `/api/missions/${encodeURIComponent(id)}`,
         );
-        if (active) {
-          setMission(result);
+        if (active && startedAt === revision.current && sequence === pollSequence.current) {
+          revision.current++;
+      setMission(result);
           setLoadError("");
         }
       } catch (failure) {
@@ -109,6 +115,14 @@ export default function MissionDetail({
     action: "start" | "cancel" | "approve" | "integrate" | "revoke",
   ) {
     if (!mission || busy) return;
+    if (
+      action === "integrate" &&
+      mission.status === "approved" &&
+      !window.confirm(
+        `Land commit ${mission.candidateSha} on the default branch of ${repository?.name ?? "this repository"}? This updates the canonical repository and cannot be undone here.`,
+      )
+    )
+      return;
     setBusy(action);
     setError("");
     const body =
@@ -129,6 +143,7 @@ export default function MissionDetail({
         body,
         mutation.current.key,
       );
+      revision.current++;
       setMission(result);
       mutation.current = null;
       onUpdate();
@@ -137,6 +152,35 @@ export default function MissionDetail({
         failure instanceof Error
           ? failure.message
           : "The mission could not be updated.",
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function select(runId: string) {
+    if (!mission || busy) return;
+    setBusy("select");
+    setError("");
+    const body = { runId, epoch: mission.epoch };
+    const signature = JSON.stringify({ id, action: "select", body });
+    if (mutation.current?.signature !== signature)
+      mutation.current = { signature, key: crypto.randomUUID() };
+    try {
+      const result = await request<Mission>(
+        `/api/missions/${encodeURIComponent(id)}/select`,
+        body,
+        mutation.current.key,
+      );
+      revision.current++;
+      setMission(result);
+      mutation.current = null;
+      onUpdate();
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "The candidate could not be selected.",
       );
     } finally {
       setBusy("");
@@ -167,6 +211,7 @@ export default function MissionDetail({
         body,
         mutation.current.key,
       );
+      revision.current++;
       setMission(result);
       setReviewBody("");
       mutation.current = null;
@@ -228,7 +273,7 @@ export default function MissionDetail({
       <>
         <button className="header-back" onClick={onBack}>
           <ArrowLeftIcon size={13} />
-          Repository proposals
+          Repository missions
         </button>
         {loadError ? (
           <ErrorNotice message={loadError} />
@@ -251,6 +296,34 @@ export default function MissionDetail({
     ["needs_review", "approved"].includes(mission.status) &&
     !!mission.candidateSha &&
     !!mission.baseSha;
+  const isRace = mission.mode === "race";
+  const fileOwners = new Map<string, string[]>();
+  if (!isRace)
+    for (const run of mission.runs)
+      for (const path of run.touchedFiles ?? run.changedFiles)
+        fileOwners.set(path, [...(fileOwners.get(path) ?? []), run.name]);
+  const overlaps = [...fileOwners]
+    .filter(([, agents]) => agents.length > 1)
+    .map(([path, agents]) => ({ path, agents }));
+  const overlapPaths = new Set(overlaps.map((entry) => entry.path));
+  const raceChecks = mission.raceChecks ?? mission.checks;
+  const raceChanges = mission.raceChanges ?? mission.changes;
+  const raceCandidates = isRace
+    ? mission.runs
+        .filter((run) => run.commitSha || run.status === "failed")
+        .map((run) => {
+          const check = raceChecks.find((entry) => entry.runId === run.id);
+          const changes = raceChanges.filter((change) => change.runIds.includes(run.id));
+          return {
+            run,
+            check,
+            files: changes.length,
+            additions: changes.reduce((total, change) => total + change.additions, 0),
+            deletions: changes.reduce((total, change) => total + change.deletions, 0),
+            eligible: run.status === "completed" && check?.status === "passed",
+          };
+        })
+    : [];
   const readyForReview =
     unresolvedRequests.length === 0 &&
     mission.status === "needs_review" &&
@@ -279,14 +352,14 @@ export default function MissionDetail({
     <>
       <button className="header-back" onClick={onBack}>
         <ArrowLeftIcon size={13} />
-        Repository proposals
+        Repository missions
       </button>
       <div className="page-heading detail-heading">
         <div>
           <h1>{mission.title}</h1>
           <div className="detail-meta">
             <Status status={mission.status} />
-            <span>Proposal</span>
+            <span>{mission.mode === "race" ? "Race mission" : "Mission"}</span>
             <span>
               <GitBranchIcon size={13} />
               {repository?.name ?? "Repository"}
@@ -444,7 +517,7 @@ export default function MissionDetail({
         <div className="alert info">
           <ShieldCheckIcon size={17} />
           <div className="alert-text">
-            Candidate <code>{mission.candidateSha?.slice(0, 12)}</code> is
+            Candidate <code>{mission.candidateSha}</code> is
             approved. Land it to update the repository after the server verifies
             that the base is unchanged. To run the mission again, revoke this
             approval first. The decision stays in attempt history.
@@ -463,10 +536,76 @@ export default function MissionDetail({
         <div className="alert info">
           <RobotIcon size={17} />
           <div className="alert-text">
-            This proposal is a draft. Starting it checks your connections before
+            This mission is a draft. Starting it checks your connections before
             dispatching agent work.
           </div>
         </div>
+      )}
+      {overlaps.length > 0 && (
+        <div className="alert info" role="status">
+          <InfoIcon size={17} />
+          <div className="alert-text">
+            {overlaps.length === 1 ? "One file is" : `${overlaps.length} files are`} being changed by more than one agent. The combined check decides whether the changes fit together.
+            <ul className="overlap-list">
+              {overlaps.slice(0, 8).map((entry) => (
+                <li key={entry.path}>
+                  <code>{entry.path}</code> — {entry.agents.join(", ")}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+      {isRace && raceCandidates.length > 0 && (
+        <section aria-label="Race candidates">
+          {mission.status === "needs_review" && !mission.selectedRunId && (
+            <div className="alert info">
+              <InfoIcon size={17} />
+              <div className="alert-text">
+                The race is finished. Compare the candidates and select one; only the selected commit can be approved and landed.
+              </div>
+            </div>
+          )}
+          <div className="race-grid">
+            {raceCandidates.map((candidate) => (
+              <article
+                className={`race-card${candidate.run.id === mission.selectedRunId ? " selected" : ""}`}
+                key={candidate.run.id}
+              >
+                <h3>
+                  {candidate.run.name}
+                  <Status status={candidate.check?.status ?? candidate.run.status} />
+                </h3>
+                <p>{candidate.run.assignment ?? candidate.run.role}</p>
+                <div className="race-stats">
+                  <span>
+                    <code>{candidate.run.commitSha?.slice(0, 12) ?? "No commit"}</code>
+                  </span>
+                  <span>{candidate.files} files</span>
+                  <span>
+                    +{candidate.additions} −{candidate.deletions}
+                  </span>
+                  {candidate.check?.durationMs !== undefined && (
+                    <span>tests {Math.round(candidate.check.durationMs / 100) / 10}s</span>
+                  )}
+                </div>
+                {candidate.run.summary && <p>{candidate.run.summary.slice(0, 280)}</p>}
+                {candidate.run.error && <p style={{ color: "#b55c45" }}>{candidate.run.error}</p>}
+                {candidate.eligible && mission.status === "needs_review" && (
+                  <Button
+                    variant={candidate.run.id === mission.selectedRunId ? "secondary" : "primary"}
+                    size="sm"
+                    loading={busy === "select"}
+                    disabled={!!busy || !permissions.includes("review") || candidate.run.id === mission.selectedRunId}
+                    onClick={() => void select(candidate.run.id)}
+                  >
+                    {candidate.run.id === mission.selectedRunId ? "Selected for review" : "Select this candidate"}
+                  </Button>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
       )}
       <div className="repository-work-meta">
         <span>
@@ -478,7 +617,7 @@ export default function MissionDetail({
         <span>
           Candidate{" "}
           <code title={mission.candidateSha ?? undefined}>
-            {mission.candidateSha?.slice(0, 12) || "No candidate yet"}
+            {mission.candidateSha || "No candidate yet"}
           </code>
         </span>
         <span>Attempt {mission.epoch}</span>
@@ -518,7 +657,7 @@ export default function MissionDetail({
             <div className="detail-summary">
               <section className="panel">
                 <div className="panel-header">
-                  <h2>Proposal brief</h2>
+                  <h2>Mission brief</h2>
                   <CodeIcon size={16} color="#8b99ab" />
                 </div>
                 <div className="panel-body">
@@ -547,7 +686,7 @@ export default function MissionDetail({
                       <span>Candidate revision</span>
                       <strong>
                         <code>
-                          {mission.candidateSha?.slice(0, 12) ??
+                          {mission.candidateSha ??
                             "Waiting for agent work"}
                         </code>
                       </strong>
@@ -630,8 +769,18 @@ export default function MissionDetail({
                     </div>
                     <div className="agent-body">
                       <AgentAssignment run={run} mission={mission} />
+                      {run.note && (
+                        <p className="agent-note">Shared with the team: {run.note}</p>
+                      )}
                       {run.summary && (
                         <p style={{ marginTop: 12 }}>{run.summary}</p>
+                      )}
+                      {(run.touchedFiles ?? run.changedFiles).length > 0 && (
+                        <div className="touched-files" aria-label={`Files touched by ${run.name}`}>
+                          {(run.touchedFiles ?? run.changedFiles).slice(0, 24).map((path) => (
+                            <code key={path} className={overlapPaths.has(path) ? "shared" : undefined}>{path}</code>
+                          ))}
+                        </div>
                       )}
                       {run.error && (
                         <p style={{ marginTop: 12, color: "#b55c45" }}>
@@ -881,7 +1030,7 @@ export default function MissionDetail({
       {tab === "discussion" && (
         <section className="panel">
           <div className="panel-header">
-            <h2>Proposal discussion</h2>
+            <h2>Review discussion</h2>
             <span className="number-tag">
               {unresolvedRequests.length} unresolved requests on this revision
             </span>
@@ -960,7 +1109,7 @@ export default function MissionDetail({
                 placeholder="Discuss the changes or describe what needs to be addressed…"
               />
               <p className="proposal-review-revision">
-                Candidate {mission.candidateSha?.slice(0, 12)} · Base{" "}
+                Candidate {mission.candidateSha} · Base{" "}
                 {mission.baseSha?.slice(0, 12)} · Attempt {mission.epoch}
               </p>
               <div className="proposal-review-actions">
@@ -1002,7 +1151,7 @@ export default function MissionDetail({
       {tab === "activity" && (
         <section className="panel">
           <div className="panel-header">
-            <h2>Proposal history</h2>
+            <h2>Mission history</h2>
             <span className="number-tag">{mission.events.length} events</span>
           </div>
           <div className="panel-body">
