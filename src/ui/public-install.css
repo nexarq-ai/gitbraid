@@ -22,3 +22,20 @@
 @media(max-width:600px) { .public-install { padding: 20px 16px 48px; } .public-install-nav { align-items: flex-start; gap: 16px; margin-bottom: 32px; } .public-install-nav > div { gap: 12px; justify-content: flex-end; } }
 
 .public-source-clone code { display: block; margin-top: 8px; padding: 14px; background: #f3f5f7; border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
+
+.public-install-nav { padding: 0 0 18px; min-height: 48px; margin-bottom: 32px; gap: 20px; }
+.public-install-nav > .public-install-wordmark { display: inline-flex; align-items: center; gap: 8px; color: #24272d; font-size: 18px; letter-spacing: -.4px; text-decoration: none; }
+.public-install-nav > div { gap: 22px; font-size: 12px; }
+.public-install-nav > div a { color: #68727e; text-decoration: none; }
+.public-install-nav > div a:last-child { border: 1px solid #d7dce2; border-radius: 5px; padding: 6px 10px; color: #343c46; }
+.installation-page { max-width: 1040px; }
+.installation-heading { padding: 12px 0 30px; border-bottom: 1px solid #e1e3e6; }
+.installation-breadcrumb { display: flex; gap: 9px; color: #808a96; font-size: 12px; margin-bottom: 22px; }
+.installation-breadcrumb a { color: #68727e; }
+.installation-page .installation-heading h1 { font-size: clamp(28px,4vw,36px); letter-spacing: -.8px; margin-bottom: 14px; }
+.installation-page .installation-heading > p { max-width: 580px; font-size: 15px; line-height: 1.75; }
+.installation-page .public-install-actions { gap: 14px 20px; font-size: 12px; }
+.installation-page .deploy-guide { max-width: 760px; margin-top: 8px; }
+.installation-page .deploy-guide h2 { font-size: 17px; }
+.installation-page .deploy-guide p { font-size: 14px; }
+@media(max-width:600px) { .public-install-nav { flex-wrap: wrap; align-items: center; gap: 16px; padding-bottom: 16px; margin-bottom: 24px; } .public-install-nav > div { gap: 14px; width: 100%; justify-content: flex-start; align-items: center; } .public-install-nav > div a:last-child { margin-left: auto; } .installation-heading { padding-top: 4px; } .installation-page .public-install-actions { gap: 14px; } }

@@ -1,0 +1,32 @@
+.cf-connection-page { max-width: 1120px; }
+.cf-connection-page .page-heading h1 { display: flex; align-items: center; gap: 10px; }
+.cf-connection-page .panel { margin: 24px 0; }
+.cf-connection-page .panel-body > p { font-size: 14px; line-height: 1.7; color: #69737e; margin-bottom: 18px; }
+.cf-state { font-size: 12px; color: #69737e; }
+.cf-form-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.cf-form-row label { min-width: 260px; }
+.cf-connection-page label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #454f5b; }
+.cf-connection-page select { min-height: 38px; padding: 8px 10px; border: 1px solid #d7dce2; border-radius: 5px; background: white; width: 100%; font-size: 13px; }
+.cf-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 20px; }
+.cf-actions a { font-size: 12px; color: #005fbd; }
+.cf-resource-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 18px; margin-bottom: 22px; }
+.cf-usage-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 20px; }
+.cf-usage-item h3, .cf-migration-plan h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.cf-usage-item p { font-size: 12px; color: #77818d; line-height: 1.7; }
+.cf-usage-item pre, .cf-migration-plan pre { max-height: 360px; overflow: auto; padding: 14px; font-size: 11px; background: #f7f8fa; margin-top: 12px; }
+.cf-migration-plan { margin-top: 24px; padding: 20px; border: 1px solid #dfe3e8; border-radius: 6px; }
+.cf-migration-plan dl { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 10px; font-size: 12px; }
+.cf-migration-plan dt { color: #7b8591; }
+.cf-migration-plan dd { margin: 0; overflow-wrap: anywhere; }
+.cf-connection-page .cf-confirm { flex-direction: row; align-items: flex-start; line-height: 1.7; margin: 20px 0; }
+.cf-confirm input { margin-top: 5px; flex-shrink: 0; }
+.cf-notice { font-size: 13px; color: #4a6750; }
+@media(max-width:600px) { .cf-form-row label { min-width: 0; width: 100%; } .cf-connection-page .page-heading { flex-direction: column; } .cf-resource-fields, .cf-usage-grid { grid-template-columns: minmax(0,1fr); } .cf-migration-plan { padding: 16px; } .cf-migration-plan dl { grid-template-columns: 1fr; gap: 5px; } .cf-migration-plan dd { margin-bottom: 10px; } }
+
+.cf-usage-item dl { display: grid; gap: 10px; font-size: 12px; margin-top: 16px; }
+.cf-usage-item dl > div { display: flex; justify-content: space-between; gap: 12px; }
+.cf-usage-item dt { color: #77818d; }
+.cf-usage-item dd { margin: 0; font-weight: 600; }
+.cf-plan-history { margin-top: 24px; font-size: 12px; color: #77818d; }
+.cf-plan-history summary { cursor: pointer; }
+.cf-plan-history p { margin-top: 12px; overflow-wrap: anywhere; }

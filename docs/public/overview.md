@@ -8,7 +8,7 @@ Approval and landing are different actions. Approval names both the candidate co
 
 ## Two editions
 
-The self-hosted core is distributed under the MIT License. It is intended to run in one Cloudflare account as one workspace, with the installation owner creating and managing users. The guided installer and protected first-administrator setup are implemented in source; a fresh self-hosted installation has not yet been verified live.
+The self-hosted core is distributed under the MIT License. It is intended to run in one Cloudflare account as one workspace, with the installation owner creating and managing users. The provisioning helper creates or reuses account-owned gateway and Artifacts resources, deploys the main and separate preview Workers, and generates `AUTH_ENCRYPTION_KEY` if absent without replacing an existing key. In the native deployment flow, provide `ADMIN_EMAIL` and `ADMIN_PASSWORD`; at first visit, use those same credentials with a display name and workspace name, then enroll an authenticator. This flow is implemented in source, but a fresh self-hosted installation has not yet been verified live.
 
 Hosted Gitflare is a separately operated service. Its bounded, read-only agent-registration path and human claim flow have passed live checks, including read access, denied mutation, and credential revocation. Hosted platform administration and hosted agent enrollment are not included in the self-hosted archive.
 
@@ -17,6 +17,8 @@ Hosted Gitflare is a separately operated service. Its bounded, read-only agent-r
 ## Evidence and limits
 
 Gitflare uses Cloudflare Workers for the interface, API, and MCP entry point; Durable Objects for coordination and access state; Workflows for durable mission steps; Artifacts for repository storage; and Containers for isolated code execution. Product model calls are routed through the `gitflare` AI Gateway; the configured default is `openai/gpt-6-luna`, and `openai/gpt-6.1-sol` is the only other permitted runtime model when explicitly needed.
+
+Owners can also connect a Cloudflare account and associate existing Workers, D1 databases, or Durable Object namespaces with repositories. Source implements project-scoped usage views and an exact-revision D1 migration plan with checksum review and explicit execution; these integration actions remain unverified live and require a configured Cloudflare OAuth client. Cloudflare account connection is separate from Gitflare sign-in. Workers Builds trigger automation and Durable Object migration execution are not implemented; Cloudflare product SSO is also unavailable.
 
 Some workspace, repository, access, and documentation paths have deployment and live-check evidence. The full sequence of real concurrent model calls, passing combined candidate, exact approval and landing, and working candidate preview remains unverified end to end. A source feature, test double, or successful deployment alone does not establish that workflow.
 
