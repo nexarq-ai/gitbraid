@@ -1,0 +1,79 @@
+.workspace-loading-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 32px 24px;
+  background: #fff;
+}
+
+.workspace-loading-content {
+  text-align: center;
+}
+
+.workspace-loading-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  color: #252525;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -1px;
+}
+
+.workspace-loading-brand svg {
+  color: #d95b0b;
+}
+
+.workspace-loading-trace {
+  display: block;
+  width: 160px;
+  height: 40px;
+  margin: 29px auto 15px;
+  overflow: visible;
+  stroke: #e3e3e3;
+  stroke-width: 1.5;
+}
+
+.workspace-loading-trace circle {
+  fill: #fff;
+}
+
+.workspace-loading-trace .workspace-loading-flow {
+  stroke: #d95b0b;
+  stroke-linecap: round;
+  stroke-dasharray: 13 107;
+  animation: workspace-stream-flow 2.4s linear infinite;
+}
+
+.workspace-loading-trace .workspace-loading-flow-secondary {
+  animation-delay: -1.2s;
+  opacity: 0.5;
+}
+
+.workspace-loading-status p {
+  color: #616161;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.workspace-loading-back {
+  display: inline-block;
+  margin-top: 35px;
+  padding: 8px 4px;
+  color: #666;
+  font-size: 12px;
+}
+
+@keyframes workspace-stream-flow {
+  from { stroke-dashoffset: 120; }
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-loading-trace .workspace-loading-flow {
+    animation: none;
+    stroke-dasharray: none;
+    opacity: 0.4;
+  }
+}

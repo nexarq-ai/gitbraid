@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 430" fill="none" role="img" aria-labelledby="title desc">
+<title id="title">From isolated changes to a tested candidate</title>
+<desc id="desc">A mission pins its base revision and creates two isolated task forks. Individual changes join a combined candidate, whose checks must pass before exact revision approval and trusted canonical landing. Candidate previews use a separate origin and a capability.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="m1 1 6 3-6 3" stroke="#82909f" stroke-width="1.5"/></marker></defs>
+<g stroke="#82909f" stroke-width="1.5" marker-end="url(#arrow)"><path d="M122 75v26H63v31"/><path d="M122 101h183v31"/><path d="M63 190v25h121v25"/><path d="M305 190v25H184"/><path d="M280 270h74"/><path d="M422 301v43"/><path d="M492 371h29"/><path d="M184 301v43"/></g>
+<g font-family="Inter,Arial,sans-serif" text-anchor="middle">
+<g fill="#fff" stroke="#d4dae2"><rect x="27" y="20" width="190" height="55" rx="7"/><rect x="20" y="132" width="170" height="58" rx="7"/><rect x="222" y="132" width="170" height="58" rx="7"/><rect x="354" y="240" width="137" height="61" rx="7"/><rect x="354" y="344" width="137" height="61" rx="7"/><rect x="521" y="344" width="99" height="61" rx="7"/><rect x="85" y="344" width="198" height="61" rx="7"/></g>
+<rect x="85" y="240" width="195" height="61" rx="7" fill="#fff3e8" stroke="#f2a467"/>
+<g fill="#26313d" font-size="16" font-weight="600"><text x="122" y="44">Mission</text><text x="105" y="156">Task fork A</text><text x="307" y="156">Task fork B</text><text x="182" y="266">Combined candidate</text><text x="422" y="266">Checks</text><text x="422" y="370">Approval</text><text x="570" y="370">Landing</text><text x="184" y="370">Isolated preview</text></g>
+<g fill="#667381" font-size="13"><text x="122" y="64">Pinned base + criteria</text><text x="105" y="178">Own change + tests</text><text x="307" y="178">Own change + tests</text><text x="182" y="289">All changes tested together</text><text x="422" y="289">Must pass</text><text x="422" y="393">Exact revision</text><text x="570" y="393">Canonical</text><text x="184" y="393">Separate origin + capability</text></g>
+</g></svg>

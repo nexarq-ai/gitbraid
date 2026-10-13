@@ -1,0 +1,95 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gitbraid",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-10-12",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/mcp",
+      "/oauth/*",
+      "/.well-known/*",
+      "/llms.txt"
+    ]
+  },
+  "vars": {
+    "APP_ENV": "production",
+    "EDITION": "self-hosted",
+    "WORKSPACE_NAME": "Gitbraid workspace",
+    "AI_GATEWAY_ID": "gitflare",
+    "MODEL": "openai/gpt-6-luna"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GITFLARE_COORDINATOR",
+        "class_name": "GitflareCoordinator"
+      },
+      {
+        "name": "SANDBOX",
+        "class_name": "AgentSandbox"
+      },
+      {
+        "name": "GITFLARE_SECURITY",
+        "class_name": "GitflareSecurity"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "GitflareCoordinator",
+        "AgentSandbox"
+      ]
+    },
+    {
+      "tag": "v2-security",
+      "new_sqlite_classes": [
+        "GitflareSecurity"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "name": "gitbraid-missions",
+      "binding": "MISSION_WORKFLOW",
+      "class_name": "MissionWorkflow"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "gitbraid"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV"
+    }
+  ],
+  "containers": [
+    {
+      "name": "gitbraid-runner",
+      "class_name": "AgentSandbox",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "tools": {
+          "dockerfile": "./runner/Dockerfile"
+        }
+      }
+    }
+  ]
+}

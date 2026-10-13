@@ -1,0 +1,145 @@
+import type { CreateMissionInput } from '../shared/types';
+
+export class ApiError extends Error {
+  constructor(public readonly status: number, public readonly code: string, public readonly detail: string) {
+    super(`GITFLARE:${status}:${code}:${detail}`);
+    this.name = 'ApiError';
+  }
+}
+
+export function publicError(error: unknown): { status: number; code: string; message: string } {
+  if (error instanceof ApiError) return { status: error.status, code: error.code, message: error.detail };
+  if (error instanceof Error) {
+    const match = /^GITFLARE:(4\d\d|5\d\d):([A-Z_]+):(.+)$/s.exec(error.message);
+    if (match) return { status: Number(match[1]), code: match[2], message: match[3] };
+  }
+  return { status: 500, code: 'INTERNAL_ERROR', message: 'The request could not be completed. Please try again.' };
+}
+
+export function requireString(value: unknown, field: string, maxLength: number, minLength = 1): string {
+  if (typeof value !== 'string' || value.trim().length < minLength || value.trim().length > maxLength) {
+    throw new ApiError(400, 'INVALID_INPUT', `${field} must contain between ${minLength} and ${maxLength} characters.`);
+  }
+  return value.trim();
+}
+
+export function repositoryName(value: unknown): string {
+  const name = requireString(value, 'Repository name', 64);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) || name.endsWith('.git')) {
+    throw new ApiError(400, 'INVALID_REPOSITORY_NAME', 'Use letters, numbers, dots, hyphens, or underscores. Do not include the .git suffix.');
+  }
+  return name;
+}
+
+export function repositoryPath(value: string, allowRoot = true): string {
+  if ((!value && !allowRoot) || value.length > 2000 || value.split('/').length > 32 || /[\\\u0000-\u001f\u007f]/.test(value) || (value && value.split('/').some((part) => !part || part === '.' || part === '..'))) {
+    throw new ApiError(400, 'INVALID_PATH', 'Use a repository-relative path without empty segments or parent traversal.');
+  }
+  return value;
+}
+
+export function repositoryRef(value: string): string {
+  if (!value || value.length > 200 || !/^[a-zA-Z0-9/_\-.]+$/.test(value) || value.includes('..') || value.startsWith('-')) {
+    throw new ApiError(400, 'INVALID_REF', 'Use a branch name, tag, or full commit SHA.');
+  }
+  return value;
+}
+
+export function missionInput(body: Record<string, unknown>): CreateMissionInput {
+  const input: CreateMissionInput = { title: requireString(body.title, 'Title', 120), prompt: requireString(body.prompt, 'Prompt', 8000, 10), repositoryId: requireString(body.repositoryId, 'Repository', 100) };
+  if (body.acceptanceCriteria !== undefined) {
+    if (!Array.isArray(body.acceptanceCriteria) || body.acceptanceCriteria.length > 12) throw new ApiError(400, 'INVALID_CRITERIA', 'Provide up to 12 acceptance criteria.');
+    input.acceptanceCriteria = body.acceptanceCriteria.map((criterion) => requireString(criterion, 'Acceptance criterion', 500));
+  }
+  if (body.tasks !== undefined) {
+    if (!Array.isArray(body.tasks) || body.tasks.length !== 2) throw new ApiError(400, 'INVALID_TASKS', 'Assign exactly two agent tasks.');
+    input.tasks = body.tasks.map((task: unknown) => {
+      if (!task || typeof task !== 'object' || Array.isArray(task)) throw new ApiError(400, 'INVALID_TASKS', 'Each task must include a name, role, and task description.');
+      const fields = task as Record<string, unknown>;
+      return { name: requireString(fields.name, 'Agent name', 60), role: requireString(fields.role, 'Agent role', 80), task: requireString(fields.task, 'Agent task', 2500, 10) };
+    });
+    if (input.tasks[0].name.toLowerCase() === input.tasks[1].name.toLowerCase()) throw new ApiError(400, 'INVALID_TASKS', 'Give each agent a distinct name.');
+  }
+  return input;
+}
+
+export function requireIdempotencyKey(request: Request): string {
+  const value = request.headers.get('Idempotency-Key');
+  if (!value || !/^[a-zA-Z0-9_-]{16,128}$/.test(value)) {
+    throw new ApiError(400, 'IDEMPOTENCY_KEY_REQUIRED', 'Include an Idempotency-Key containing 16–128 letters, numbers, hyphens, or underscores.');
+  }
+  return value;
+}
+
+export function assertMutationOrigin(request: Request): void {
+  const origin = request.headers.get('Origin');
+  const fetchSite = request.headers.get('Sec-Fetch-Site');
+  if ((origin && origin !== new URL(request.url).origin) || fetchSite === 'cross-site') {
+    throw new ApiError(403, 'ORIGIN_REJECTED', 'Requests must originate from this application.');
+  }
+  if (!request.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) {
+    throw new ApiError(415, 'JSON_REQUIRED', 'Send this request as application/json.');
+  }
+}
+
+export function isLocalRequest(request: Request, appEnv: string | undefined): boolean {
+  return appEnv === 'local' && ['localhost', '127.0.0.1', '[::1]'].includes(new URL(request.url).hostname);
+}
+
+export async function readJson(request: Request): Promise<Record<string, unknown>> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new ApiError(400, 'INVALID_JSON', 'A JSON object is required.');
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > 16_384) {
+      await reader.cancel();
+      throw new ApiError(413, 'REQUEST_TOO_LARGE', 'Requests must be smaller than 16 KB.');
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error();
+    return value as Record<string, unknown>;
+  } catch {
+    throw new ApiError(400, 'INVALID_JSON', 'A valid JSON object is required.');
+  }
+}
+
+export function assertActiveRun(status: string, expectedEpoch: number, epoch: number): void {
+  if (expectedEpoch !== epoch || !['queued', 'running', 'checking'].includes(status)) {
+    throw new ApiError(409, 'STALE_EXECUTION', 'This result belongs to a cancelled or superseded run.');
+  }
+}
+
+export function assertApproval(input: {
+  status: string;
+  candidateSha: string | null | undefined;
+  baseSha: string | null | undefined;
+  currentHead: string | null | undefined;
+  requestedCandidate: string;
+  requestedBase: string;
+  checksPassed: boolean;
+}): void {
+  if (input.status !== 'needs_review') {
+    throw new ApiError(409, 'NOT_READY', 'This mission is not ready for review.');
+  }
+  if (!input.checksPassed) throw new ApiError(409, 'CHECKS_REQUIRED', 'All required checks must pass before approval.');
+  if (!input.candidateSha || !input.baseSha || input.requestedCandidate !== input.candidateSha || input.requestedBase !== input.baseSha || input.currentHead !== input.baseSha) {
+    throw new ApiError(409, 'STALE_APPROVAL', 'The candidate or repository changed. Refresh and review the current commit.');
+  }
+}
+
+export function assertReplayFingerprint(stored: string, incoming: string): void {
+  if (stored !== incoming) throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'This request key has already been used for a different action.');
+}
