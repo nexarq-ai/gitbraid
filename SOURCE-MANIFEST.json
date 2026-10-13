@@ -330,8 +330,8 @@
     },
     {
       "path": "src/worker/anthropic-adapter.ts",
-      "size": 6009,
-      "sha256": "1732f6fef9cc0764c721cd59053f105eca28bb1e628465dd1276bf2da59301bc"
+      "size": 8561,
+      "sha256": "fea666ed398d2fdb0da2a145b75a8c2ab20550ac9054a9f79f44ad09d4a68baa"
     },
     {
       "path": "src/worker/artifacts.ts",
@@ -385,8 +385,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 39104,
-      "sha256": "5fc36c42143193835dfa9a01f84b455520e1a7f95befd0acbb3b83446006380b"
+      "size": 39464,
+      "sha256": "57e51814d80b7811a6f16aace7713f9ba9875f1139efa0a2e3ad7e811dc93e12"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
