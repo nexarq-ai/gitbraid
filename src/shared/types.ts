@@ -16,6 +16,22 @@ export interface Repository {
   updatedAt: string;
 }
 
+export interface ModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+export interface AgentUsage {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  unreportedCalls: number;
+}
+
 export interface AgentRun {
   id: string;
   name: string;
@@ -36,6 +52,7 @@ export interface AgentRun {
   model?: string;
   modelConfig?: ModelConnection;
   skills?: { name: string; path: string; commitSha: string; sha256: string }[];
+  usage?: AgentUsage;
   skillWarnings?: string[];
 }
 
