@@ -52,10 +52,12 @@ import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { type AuthConfig } from "./AuthScreen";
 import Documentation from "./Documentation";
+import RepositorySkills from "./RepositorySkills";
 import CloudflareConnection from "./CloudflareConnection";
 import McpConnections from "./McpConnections";
 import Homepage from "./SelfHostedHome";
 import AccessSettings from "./AccessSettings";
+import RepositoryWork from "./RepositoryWork";
 
 type Modal = "mission" | "repository" | "connect" | "learn" | "session" | null;
 const blankWorkspace: Workspace = {
@@ -73,6 +75,7 @@ export default function App() {
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const authFlowActive = useRef(false);
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [currentUserId, setCurrentUserId] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [authState, setAuthState] = useState<
@@ -99,6 +102,7 @@ export default function App() {
     hasWorkspace.current = false;
     selectWorkspace("");
     setPermissions([]);
+    setCurrentUserId("");
     setWorkspace(blankWorkspace);
     setLoaded(false);
     setAuthState("required");
@@ -117,6 +121,7 @@ export default function App() {
       hasWorkspace.current = true;
       setWorkspace(data);
       setPermissions(access.permissions);
+      setCurrentUserId(access.user.id);
       setLoaded(true);
       setError("");
       setAuthState("authenticated");
@@ -466,26 +471,33 @@ export default function App() {
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
           <>
-            {route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : route.startsWith("repository/") && route.endsWith("/cloudflare") ? <CloudflareConnection canManage={permissions.includes("manage")} repository={workspace.repositories.find((repo) => repo.id === route.split("/")[1])} repositoryId={route.split("/")[1]} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
+            {route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (
               <MissionDetail
-                key={route}
-                id={route.slice("mission/".length)}
+                key={route.split("/")[1]}
+                id={route.split("/")[1]}
+                initialTab={route.split("/")[2] || "overview"}
+                selectedRunId={route.split("/")[3]}
+                currentUserId={currentUserId}
+                onTabChange={(tab) => navigate(`mission/${route.split("/")[1]}/${tab}`)}
                 permissions={permissions}
                 workspace={workspace}
-                onBack={() => navigate("missions")}
+                onBack={() => { const mission = workspace.missions.find(item => item.id === route.split("/")[1]); navigate(mission ? `repository/${mission.repositoryId}/proposals` : "missions"); }}
                 onUpdate={() => void load()}
               />
             ) : page === "repository" ? (
               <RepositoryDetail
                 repository={workspace.repositories.find(
-                  (repo) => repo.id === route.slice("repository/".length),
+                  (repo) => repo.id === route.split("/")[1],
                 )}
                 workspace={workspace}
                 onBack={() => navigate("repositories")}
                 onMission={createMission}
-                onOpenMission={(id) => navigate(`mission/${id}`)}
+                onOpenMission={(id, tab, runId) => navigate(`mission/${id}/${tab || "overview"}${runId ? `/${runId}` : ""}`)}
+                tab={route.split("/")[2] || "code"}
+                onTabChange={(tab) => navigate(`repository/${route.split("/")[1]}/${tab}`)}
+                canManage={permissions.includes("manage")}
                 onNotify={notify}
                 canContribute={permissions.includes("contribute")}
               />
@@ -1107,16 +1119,21 @@ function RepositoryDetail({
   onOpenMission,
   onNotify,
   canContribute,
+  canManage,
+  tab,
+  onTabChange,
 }: {
   repository?: Repository;
   workspace: Workspace;
   onBack: () => void;
   onMission: (id: string) => void;
-  onOpenMission: (id: string) => void;
+  onOpenMission: (id: string, tab?: string, runId?: string) => void;
   onNotify: (message: string) => void;
   canContribute: boolean;
+  canManage: boolean;
+  tab: string;
+  onTabChange: (tab: string) => void;
 }) {
-  const [tab, setTab] = useState("code");
   if (!repository)
     return (
       <>
@@ -1154,18 +1171,21 @@ function RepositoryDetail({
           disabled={!canContribute}
           onClick={() => onMission(repository.id)}
         >
-          Create mission
+          Create proposal
         </Button>
       </div>
       <nav className="repository-navigation" aria-label="Repository navigation">
         {[
             { value: "code", label: "Code" },
+            { value: "proposals", label: `Proposals (${missions.length})` },
+            { value: "agents", label: `Agents (${missions.reduce((count, mission) => count + (mission.epoch > 0 ? mission.runs.length : 0), 0)})` },
+            { value: "checks", label: `Checks (${missions.reduce((count, mission) => count + mission.checks.length, 0)})` },
+            { value: "skills", label: "Skills" },
+            { value: "cloudflare", label: "Cloudflare" },
             { value: "overview", label: "Overview" },
-            { value: "missions", label: `Missions (${missions.length})` },
-          ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => setTab(item.value)}>{item.label}</button>)}
-        <a href={`#repository/${repository.id}/cloudflare`}><CloudIcon size={15} />Cloudflare</a>
+          ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
-      {tab === "code" ? (
+      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
         <RepositoryBrowser repository={repository} />
       ) : tab === "overview" ? (
         <>
@@ -1242,8 +1262,8 @@ function RepositoryDetail({
           )}
           <section className="panel" style={{ marginTop: 24 }}>
             <div className="panel-header">
-              <h2>Recent missions</h2>
-              <button className="text-link" onClick={() => setTab("missions")}>
+              <h2>Recent proposals</h2>
+              <button className="text-link" onClick={() => onTabChange("proposals")}>
                 View all
                 <ArrowUpRightIcon size={12} />
               </button>
@@ -1266,7 +1286,7 @@ function RepositoryDetail({
                     disabled={!canContribute}
           onClick={() => onMission(repository.id)}
                   >
-                    Create mission
+                    Create proposal
                   </Button>
                 }
               />
@@ -1293,7 +1313,7 @@ function RepositoryDetail({
                   disabled={!canContribute}
           onClick={() => onMission(repository.id)}
                 >
-                  Create mission
+                  Create proposal
                 </Button>
               }
             />
@@ -1427,7 +1447,7 @@ function CreationDialog({
   }
 
   const titleText = {
-    mission: "Create a mission",
+    mission: "Create a proposal",
     repository: "Create a repository",
     connect: "Connect an existing repository",
     learn: "From intent to a reviewed change",
@@ -1435,7 +1455,7 @@ function CreationDialog({
   }[modal ?? "mission"];
   const descriptionText = {
     mission:
-      "Define the outcome and give each agent a focused assignment. You can review the draft before starting.",
+      "Create a mission draft for this proposal: define the outcome and each agent task. No agent runs until you choose Start mission.",
     repository: "A home for your code and every agent contribution.",
     connect:
       "Add a repository that already exists in the Artifacts namespace connected to this workspace.",

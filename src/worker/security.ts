@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { ApiError, requireString } from './domain';
 import type { AppEnv } from './env';
 import type { CloudflareConnection, CloudflareOAuthState } from './cloudflare';
-import type { ProjectMapping, MigrationPlan } from './cloudflare-projects';
+import { normalizeProjectMapping, type ProjectMapping, type MigrationPlan } from './cloudflare-projects';
 import { authenticatorUri, decryptAuth, encryptAuth, mfaSecret, randomCapability, verifyTotp } from './mfa';
 
 export const ROLES = ['Viewer', 'Contributor', 'Reviewer', 'Maintainer', 'Deployer', 'Owner'] as const;
@@ -121,27 +121,31 @@ export class SecurityService {
       if (p.credentialId || !this.authorityAllows(state, p, 'read', 'repository', repositoryId)) fail();
       const key = `${p.workspaceId}/${repositoryId}`;
       const current = state.cloudflareProjects[key] ?? { mapping: null, plans: [] };
+      if (current.mapping) current.mapping = normalizeProjectMapping(current.mapping);
       if (operation === 'get') return current;
       if (operation === 'set') {
         if (p.role !== 'Owner') fail();
         const mapping = body.mapping as ProjectMapping;
         if (mapping.workspaceId !== p.workspaceId || mapping.repositoryId !== repositoryId) fail();
-        current.mapping = mapping;
+        current.mapping = normalizeProjectMapping(mapping);
         current.plans = current.plans.map(plan => plan.status === 'pending' ? { ...plan, status: 'failed' as const, error: 'Project resources changed. Create a new plan.' } : plan);
       } else {
         const mapping = current.mapping;
-        if (!mapping?.d1DatabaseId || !this.authorityAllows(state, p, 'migrate', 'database', mapping.d1DatabaseId)) fail();
+        if (!mapping) fail();
+        const databases = normalizeProjectMapping(mapping).resources.filter(resource => resource.type === 'd1');
         if (operation === 'plan') {
           const plan = body.plan as MigrationPlan;
-          if (plan.workspaceId !== p.workspaceId || plan.repositoryId !== repositoryId || plan.mappingVersion !== mapping.version || plan.accountId !== mapping.accountId || plan.databaseId !== mapping.d1DatabaseId || plan.status !== 'pending') fail();
+          if (plan.workspaceId !== p.workspaceId || plan.repositoryId !== repositoryId || plan.mappingVersion !== mapping.version || plan.accountId !== mapping.accountId || !databases.some(resource => resource.id === plan.databaseId) || plan.status !== 'pending') fail();
+          if (!this.authorityAllows(state, p, 'migrate', 'database', plan.databaseId)) fail();
           if (current.plans.some(item => item.id === plan.id || item.checksum === plan.checksum && item.databaseId === plan.databaseId && ['pending','executing','succeeded','unknown'].includes(item.status))) throw new ApiError(409, 'MIGRATION_EXISTS', 'This migration already has a plan or recorded execution.');
           if (current.plans.length >= 500) throw new ApiError(409, 'MIGRATION_HISTORY_LIMIT', 'This project has reached its migration history limit.');
           current.plans.push(plan);
         } else {
           const plan = current.plans.find(item => item.id === body.planId);
           if (!plan) throw new ApiError(404, 'MIGRATION_NOT_FOUND', 'This migration plan could not be found.');
+          if (!this.authorityAllows(state, p, 'migrate', 'database', plan.databaseId)) fail();
           if (operation === 'consume') {
-            if (plan.status !== 'pending' || plan.checksum !== body.checksum || plan.mappingVersion !== mapping.version || plan.accountId !== mapping.accountId || plan.databaseId !== mapping.d1DatabaseId) throw new ApiError(409, 'MIGRATION_STALE', 'This migration has changed or already started. Create a new plan.');
+            if (plan.status !== 'pending' || plan.checksum !== body.checksum || plan.mappingVersion !== mapping.version || plan.accountId !== mapping.accountId || !databases.some(resource => resource.id === plan.databaseId)) throw new ApiError(409, 'MIGRATION_STALE', 'This migration has changed or already started. Create a new plan.');
             plan.status = 'executing';
           } else {
             if (plan.status !== 'executing' || !['succeeded','failed','unknown'].includes(String(body.status))) throw new ApiError(409, 'MIGRATION_STATE_INVALID', 'This migration cannot change state.');
