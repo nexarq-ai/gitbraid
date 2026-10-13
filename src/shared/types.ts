@@ -163,7 +163,7 @@ export interface ModelConnection {
   id: string;
   label: string;
   source: 'gateway' | 'workers-ai';
-  protocol: 'responses' | 'chat' | 'workers-ai';
+  protocol: 'responses' | 'chat' | 'anthropic' | 'workers-ai';
   verification?: { status: 'verified' | 'failed'; checkedAt: string; detail: string };
 }
 

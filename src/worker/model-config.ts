@@ -32,7 +32,7 @@ export function validateModelConnection(value: unknown): ModelConnection {
   if (source === 'workers-ai') {
     if (protocol !== 'workers-ai' || !WORKERS_AI_CATALOG.some(model => model.id === id)) throw new ApiError(400, 'INVALID_MODEL', 'Choose a documented tool-capable Workers AI model from the catalog.');
   } else if (source === 'gateway') {
-    if (id.startsWith('@cf/') || !['responses', 'chat'].includes(String(protocol)) || (protocol === 'responses' && !id.startsWith('openai/'))) throw new ApiError(400, 'INVALID_MODEL', 'Gateway connections support OpenAI Responses or compatible chat. Workers AI uses its own transport.');
+    if (id.startsWith('@cf/') || !['responses', 'chat', 'anthropic'].includes(String(protocol)) || (protocol === 'responses' && !id.startsWith('openai/')) || (protocol === 'anthropic' && !id.startsWith('anthropic/'))) throw new ApiError(400, 'INVALID_MODEL', 'Gateway connections support OpenAI Responses, compatible chat, or native Anthropic Messages. Workers AI uses its own transport.');
   } else throw new ApiError(400, 'INVALID_MODEL', 'Choose AI Gateway or Workers AI.');
   return { id, label, source, protocol: protocol as ModelConnection['protocol'] };
 }

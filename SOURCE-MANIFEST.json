@@ -25,8 +25,8 @@
     },
     {
       "path": "docs/public/agents.md",
-      "size": 8409,
-      "sha256": "d03502c2428a0b11301b7838daf799aee1b8e5cdc777074a29eac7d53919740c"
+      "size": 8764,
+      "sha256": "68feb44cb4f35502a17b66f70a2c15d6d5c40fad8eb6e98436e4ce0a8ffd0ca5"
     },
     {
       "path": "docs/public/install.md",
@@ -35,8 +35,8 @@
     },
     {
       "path": "docs/public/mcp.md",
-      "size": 8916,
-      "sha256": "38be91efff953e0a098eb897dfafb34eaf7277da4c2c9de1c0d8345ad7566d57"
+      "size": 9379,
+      "sha256": "ffa4fad6c8b6ca2d24c23cea1b3a91e5f7b2c7e6eae5ff8715efda790bb5b7d2"
     },
     {
       "path": "docs/public/overview.md",
@@ -105,8 +105,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 5057,
-      "sha256": "3f7fbec6117b59ed8ab6f0eedd9949a41c79ef1614b17096e8c8efef5a6338df"
+      "size": 5071,
+      "sha256": "fc39d6ccbd335448faa37fad4514395be30b832cb19000c7651cff2ebdf9a531"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -255,8 +255,8 @@
     },
     {
       "path": "src/ui/ModelConnections.tsx",
-      "size": 7970,
-      "sha256": "843682a28a09af5736a69e9c7efb88ee2ddcb7d0f2bf677f3decd7511aabab7b"
+      "size": 8106,
+      "sha256": "c0373bb2598c3f20da8ac38bf77a6fa65738325c2fee2e5b595f880825bec1cc"
     },
     {
       "path": "src/ui/proposal-create.css",
@@ -327,6 +327,11 @@
       "path": "src/ui/styles.css",
       "size": 60841,
       "sha256": "090c1bd96589833452d0bdd689993d17b4e6b6d92f2f2fed44fd585b9d89240c"
+    },
+    {
+      "path": "src/worker/anthropic-adapter.ts",
+      "size": 6009,
+      "sha256": "1732f6fef9cc0764c721cd59053f105eca28bb1e628465dd1276bf2da59301bc"
     },
     {
       "path": "src/worker/artifacts.ts",
@@ -400,8 +405,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 39413,
-      "sha256": "fc5b065bf5ee8fddd535b579afcf8e17f6c5374371e181ddf5076505c082b62c"
+      "size": 39426,
+      "sha256": "30a22f316a2beaf077af791ba7e01e6489d9f1a60dd733c115d8e10a1896bd86"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -410,13 +415,13 @@
     },
     {
       "path": "src/worker/model-adapter.ts",
-      "size": 10363,
-      "sha256": "a31cd9fead26d5b53bbb45eac341684d67929d0c42b66cdbaa8ae17a870ccf3e"
+      "size": 10859,
+      "sha256": "7b752e106dbc0a702da57d22f5c7f87c88a70db1bcf0b5be4e3d489953581351"
     },
     {
       "path": "src/worker/model-config.ts",
-      "size": 5656,
-      "sha256": "f4b9c91043ad2e3fc07a4774d0f25d1de0ea8d290506df9527687d955708ecff"
+      "size": 5759,
+      "sha256": "8577b768f22e83b58d82cdaf9760a829760be5a5548cf9899b36479b29504ef4"
     },
     {
       "path": "src/worker/oauth.ts",
