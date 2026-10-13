@@ -1157,19 +1157,14 @@ function RepositoryDetail({
           Create mission
         </Button>
       </div>
-      <a className="text-link" href={`#repository/${repository.id}/cloudflare`}>Cloudflare resources and usage</a>
-      <div className="page-tabs">
-        <Tabs
-          variant="underline"
-          value={tab}
-          onValueChange={setTab}
-          tabs={[
+      <nav className="repository-navigation" aria-label="Repository navigation">
+        {[
             { value: "code", label: "Code" },
             { value: "overview", label: "Overview" },
             { value: "missions", label: `Missions (${missions.length})` },
-          ]}
-        />
-      </div>
+          ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => setTab(item.value)}>{item.label}</button>)}
+        <a href={`#repository/${repository.id}/cloudflare`}><CloudIcon size={15} />Cloudflare</a>
+      </nav>
       {tab === "code" ? (
         <RepositoryBrowser repository={repository} />
       ) : tab === "overview" ? (
