@@ -56,6 +56,8 @@ function boundedAudit<T extends { workspaceId: string; timestamp: string }>(audi
 }
 const RETENTION_MS = 7 * 86_400_000;
 const LOGIN_FAILURE_LIMIT = 10;
+// Account-wide ceiling across all clients, so one client cannot lock everyone else out cheaply
+const ACCOUNT_FAILURE_LIMIT = 100;
 const LOGIN_LOCK_MS = 900_000;
 const LOGIN_FAILURE_WINDOW_MS = 86_400_000;
 const VERIFY_TOKEN_MS = 86_400_000;
@@ -90,9 +92,13 @@ function prune(state: State, now: number): void {
   state.emailTokens = state.emailTokens.filter(item => item.expiresAt > now);
   state.invitations = state.invitations.filter(invitation => invitation.expiresAt + RETENTION_MS > now);
   state.credentials = state.credentials.filter(credential => credential.expiresAt + RETENTION_MS > now);
+  state.machines = state.machines.filter(machine => machine.expiresAt + RETENTION_MS > now);
   for (const [id, limit] of Object.entries(state.limits)) if (limit.until <= now) delete state.limits[id];
   for (const [id, value] of Object.entries(state.cloudflareStates)) if (value.expiresAt <= now) delete state.cloudflareStates[id];
   for (const [id, failures] of Object.entries(state.loginFailures)) if (failures.lockedUntil ? failures.lockedUntil <= now : failures.updatedAt + LOGIN_FAILURE_WINDOW_MS <= now) delete state.loginFailures[id];
+}
+function clearLoginFailures(state: State, userId: string): void {
+  for (const key of Object.keys(state.loginFailures)) if (key === userId || key.startsWith(`${userId}|`)) delete state.loginFailures[key];
 }
 function consumeLimit(state: State, key: string, max: number, windowMs: number): boolean {
   const now = Date.now(); const entry = state.limits[key];
@@ -238,7 +244,7 @@ export class SecurityService {
     if (!accepted) throw new ApiError(429, 'RATE_LIMITED', 'Too many authentication attempts. Try again in 15 minutes.');
   }
   async signup(body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
-  async login(body: Record<string, unknown>) {
+  async login(body: Record<string, unknown>, client = 'unknown') {
     const email = requireString(body.email, 'Email', 254).toLowerCase(); const password = requireString(body.password, 'Password', 256);
     const found = await this.read(state => state.users.find(item => item.email === email));
     const hash = await passwordHash(password, found?.salt ?? 'invalid-account-salt');
@@ -246,12 +252,14 @@ export class SecurityService {
     const user = await this.mutate(state => {
       const current = found && state.users.find(item => item.id === found.id && item.email === email && item.salt === found.salt);
       if (!current || current.machine) return null;
-      const failures = state.loginFailures[current.id]; const now = Date.now();
-      if (failures && failures.lockedUntil > now) return null;
-      if (sameHash(current.hash, hash)) { delete state.loginFailures[current.id]; return current; }
-      const count = (failures?.count ?? 0) + 1;
-      state.loginFailures[current.id] = { count, lockedUntil: count >= LOGIN_FAILURE_LIMIT ? now + LOGIN_LOCK_MS : 0, updatedAt: now };
-      if (count === LOGIN_FAILURE_LIMIT) this.auditAccount(state, current.id, 'account:login-locked');
+      const clientKey = `${current.id}|${client.slice(0, 64)}`; const now = Date.now();
+      if ([clientKey, current.id].some(key => (state.loginFailures[key]?.lockedUntil ?? 0) > now)) return null;
+      if (sameHash(current.hash, hash)) { clearLoginFailures(state, current.id); return current; }
+      for (const [key, limit] of [[clientKey, LOGIN_FAILURE_LIMIT], [current.id, ACCOUNT_FAILURE_LIMIT]] as const) {
+        const count = (state.loginFailures[key]?.count ?? 0) + 1;
+        state.loginFailures[key] = { count, lockedUntil: count >= limit ? now + LOGIN_LOCK_MS : 0, updatedAt: now };
+        if (count === limit) this.auditAccount(state, current.id, 'account:login-locked');
+      }
       return null;
     });
     if (!user) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
@@ -488,7 +496,7 @@ export class SecurityService {
     for (const credential of state.credentials) if (credential.userId === user.id) credential.revoked = true;
     state.challenges = state.challenges.filter(challenge => challenge.userId !== user.id);
     state.emailTokens = state.emailTokens.filter(item => item.userId !== user.id);
-    delete state.loginFailures[user.id];
+    clearLoginFailures(state, user.id);
   }
   private auditAccount(state: State, userId: string, action: string) {
     for (const member of state.members) if (member.userId === userId) state.audit.push({ id: crypto.randomUUID(), workspaceId: member.workspaceId, actorId: userId, action, timestamp: new Date().toISOString() });
@@ -546,7 +554,7 @@ export class SecurityService {
       for (const session of state.sessions) if (session.userId === user.id) session.revoked = true;
       state.challenges = state.challenges.filter(challenge => challenge.userId !== user.id);
       state.emailTokens = state.emailTokens.filter(candidate => candidate.userId !== user.id);
-      delete state.loginFailures[user.id];
+      clearLoginFailures(state, user.id);
       this.auditAccount(state, user.id, 'account:password-reset');
       return { ok: true };
     });
@@ -593,7 +601,7 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   resendVerification(p: Principal) { return this.service.resendVerification(p); }
   requestPasswordReset(body: Record<string, unknown>) { return this.service.requestPasswordReset(body); }
   confirmPasswordReset(body: Record<string, unknown>) { return this.service.confirmPasswordReset(body); }
-  login(body: Record<string, unknown>) { return this.service.login(body); }
+  login(body: Record<string, unknown>, client?: string) { return this.service.login(body, client); }
   legacySession() { return this.service.legacySession(); }
   bootstrap() { return this.service.bootstrap(); }
   authenticate(value: string, workspaceId?: string) { return this.service.authenticate(value, workspaceId); }

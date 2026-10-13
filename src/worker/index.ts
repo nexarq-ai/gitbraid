@@ -153,7 +153,7 @@ async function browseRepository(env: AppEnv, repository: Repository, kind: strin
   return Response.json({ entries, ref, commitSha: commit.hash });
 }
 
-async function api(request: Request, env: AppEnv): Promise<Response> {
+async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const local = env.EDITION !== 'self-hosted' && isLocalRequest(request, env.APP_ENV);
   if (request.method === 'GET' && url.pathname === '/api/public/docs') return Response.json({ items: listPublicDocs() });
@@ -168,13 +168,13 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
   if (url.pathname.startsWith('/api/public/source')) return publicSourceResponse(request, env.ASSETS);
   const cloudflare = await handleCloudflare(request, env, authorize);
   if (cloudflare) return cloudflare;
-  const onboarding = await handleOnboarding(request, env, authorize);
+  const onboarding = await handleOnboarding(request, env, authorize, ctx);
   if (onboarding) return onboarding;
   if (request.method === 'POST' && ['/api/login', '/api/session'].includes(url.pathname)) {
     assertMutationOrigin(request);
     await security(env).rateLimit(`auth:${request.headers.get('CF-Connecting-IP') ?? 'local'}`);
     const body = await readJson(request);
-    if (url.pathname === '/api/login') return sessionResponse(await security(env).login(body));
+    if (url.pathname === '/api/login') return sessionResponse(await security(env).login(body, request.headers.get('CF-Connecting-IP') ?? 'local'));
     const token = requireString(body.token, 'Token', 1024, 32);
     if (env.EDITION === 'self-hosted' || !env.OWNER_TOKEN || !await tokenMatches(token, env.OWNER_TOKEN)) throw new ApiError(401, 'AUTH_REQUIRED', 'The owner token was not accepted.');
     return sessionResponse({ token: await security(env).legacySession(), workspaceId: 'legacy' });
@@ -430,7 +430,7 @@ async function api(request: Request, env: AppEnv): Promise<Response> {
 }
 
 const application = {
-  async fetch(request: Request, env: AppEnv): Promise<Response> {
+  async fetch(request: Request, env: AppEnv, ctx?: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
     const publicGit = await publicGitResponse(request, env);
     if (publicGit) return publicGit;
@@ -447,7 +447,7 @@ const application = {
           const workspace = request.headers.get('X-Gitflare-Workspace'); if (workspace) headers.set('X-Gitflare-Workspace', workspace);
           return api(new Request(internal, { headers }), env);
         });
-      } else response = await api(request, env);
+      } else response = await api(request, env, ctx);
     } catch (error) {
       const failure = publicError(error);
       response = Response.json({ error: { code: failure.code, message: failure.message } }, { status: failure.status });
@@ -470,7 +470,7 @@ export default {
         if (path.startsWith('/oauth/') && request.method === 'POST') await security(env).rateLimit(`oauth:${request.headers.get('CF-Connecting-IP') ?? 'local'}`, 60, 60000);
         return await oauthProvider(new URL(request.url).origin, application, authorize).fetch(request, env, ctx!);
       }
-      return await application.fetch(request, env);
+      return await application.fetch(request, env, ctx);
     } catch (error) { const failure = publicError(error); return Response.json({ error: { code: failure.code, message: failure.message } }, { status: failure.status, headers: { 'Cache-Control': 'no-store' } }); }
   },
 } satisfies ExportedHandler<AppEnv>;

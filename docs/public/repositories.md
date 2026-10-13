@@ -21,3 +21,11 @@ Preview uses a separate origin and an expiring capability tied to the candidate.
 The current execution policy is deliberately narrow: candidate edits are limited to `src/`, `docs/`, and `README.md`, while tests, test configuration, and dependency files remain protected. This is not a general Git host or arbitrary-language build service. One supported fixture candidate completed two concurrent model-backed runs, passed both individual checks and the combined check, opened in a separate-origin preview, received exact-candidate approval, and landed. The canonical branch was verified at the approved commit. A separate proposal passed its individual checks but failed its combined check, so it was not eligible to land. This does not establish arbitrary-repository readiness or deploy production.
 
 See the [AI client and agent guide](agents.md), [MCP connection guide](mcp.md), and [Cloudflare installation guide](install.md) for access and setup boundaries.
+
+## Agent count, race missions and repository policy
+
+A mission runs two to four agents in one of two modes. **Combine** gives each agent one part, shares each agent's assignment, notes and touched files with its peers, then merges and tests the parts together. **Race** has every agent attempt the whole mission; the passing candidates are shown side by side and a reviewer selects the one exact commit that can be approved and landed.
+
+A repository may commit a root `gitflare.json` to set its test command, the paths agents may edit, an npm dependency install, a preview command and a test timeout. It is read from the pinned base commit and agents cannot change it, tests, manifests or lockfiles. Dependency install runs with network access limited to read-only requests to the npm registry and without package install scripts.
+
+These capabilities are covered by automated tests. They have not yet been run end to end on Cloudflare; the live evidence above still describes a two-agent combine mission on the dependency-free fixture.

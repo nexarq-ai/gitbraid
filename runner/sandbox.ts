@@ -152,6 +152,10 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     return this.#executeCommand(argv, cwd, timeoutMs, 120_000);
   }
 
+  async check(script: string, timeoutMs: number): Promise<CommandResult> {
+    return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, 300_000);
+  }
+
   async #executeCommand(argv: string[], cwd: string, timeoutMs: number, maximumMs: number): Promise<CommandResult> {
     const container = this.ctx.container;
     if (!container?.running) throw new Error('Sandbox is not running');

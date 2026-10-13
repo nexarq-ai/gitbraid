@@ -8,6 +8,7 @@ export interface SandboxRunner {
   command(argv: string[], cwd?: string, timeoutMs?: number): Promise<CommandResult>;
   destroy(): Promise<void>;
   install?(): Promise<CommandResult>;
+  check?(script: string, timeoutMs: number): Promise<CommandResult>;
   startPreview?(command?: string): Promise<void>;
   preview?(request: Request): Promise<Response>;
 }
@@ -212,6 +213,10 @@ async function installDependencies(sandbox: SandboxRunner): Promise<void> {
   if (result.exitCode !== 0) throw new Error(`Dependency installation failed (${result.exitCode}): ${result.stderr.slice(-1000)}`);
 }
 
+function runCheck(sandbox: SandboxRunner, policy: RepositoryPolicy): Promise<CommandResult> {
+  return sandbox.check ? sandbox.check(policy.testCommand, policy.testTimeoutMs) : sandbox.command(['/bin/bash', '-lc', policy.testCommand], '/workspace/repo', Math.min(policy.testTimeoutMs, 120_000));
+}
+
 async function touchedFiles(sandbox: SandboxRunner): Promise<string[] | null> {
   const status = await sandbox.command(['git', 'status', '--porcelain', '--untracked-files=all', '--no-renames'], '/workspace/repo', 15_000);
   if (status.exitCode !== 0) return null;
@@ -226,7 +231,7 @@ async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string,
     await clone(sandbox, fork, baseSha);
     // Dependencies and baseline come from the base commit, before any candidate code executes in this sandbox
     if (policy.install) await installDependencies(sandbox);
-    const baseline = policy.evidence === 'tap' ? await sandbox.command(['/bin/bash', '-lc', policy.testCommand], '/workspace/repo', 120_000) : undefined;
+    const baseline = policy.evidence === 'tap' ? await runCheck(sandbox, policy) : undefined;
     await checked(sandbox, ['git', 'checkout', '--detach', sha]);
     await checked(sandbox, ['git', 'merge-base', '--is-ancestor', baseSha, sha]);
     const changedFiles = (await checked(sandbox, ['git', 'diff', '--no-renames', '--name-only', baseSha, sha])).split('\n').filter(Boolean);
@@ -238,7 +243,7 @@ async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string,
     }
     await assertAuthority();
     const start = Date.now();
-    const result = await sandbox.command(['/bin/bash', '-lc', policy.testCommand], '/workspace/repo', 120_000);
+    const result = await runCheck(sandbox, policy);
     return { check: checkFromCommand(key, 'Repository test suite', sha, result, Date.now() - start, baseline, policy.evidence), changes };
   } finally { await sandbox.destroy(); }
 }
