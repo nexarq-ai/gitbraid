@@ -9,14 +9,12 @@ export type CloudflareStoreOperation = 'get' | 'put' | 'delete' | 'state-put' | 
 export interface CloudflareAuthorization { action: Action; resourceType: string; resourceId: string; expectedAccountId?: string }
 export interface CloudflareApiOptions { method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'; body?: unknown; authorization?: CloudflareAuthorization; expectedAccountId?: string }
 interface Store { connectionStore(p: Principal | null, operation: CloudflareStoreOperation, body: Record<string, unknown>): Promise<unknown>; check(p: Principal, action: Action, resourceType?: string, resourceId?: string): Promise<void>; rateLimit(key: string, max?: number, windowMs?: number): Promise<void> }
-interface Identity { subject: string; email?: string }
 interface Account { id: string; name: string }
-interface Vault { accessToken: string; refreshToken?: string; expiresAt: number; identity: Identity; account?: Account; scopes: string[]; clientId: string }
+interface Vault { accessToken: string; refreshToken?: string; expiresAt: number; account?: Account; scopes: string[]; clientId: string }
 interface TokenResponse { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; scope?: unknown; token_type?: unknown }
 interface Pending { verifier: string; redirectUri: string; expectedVersion: string | null }
 const authorizeEndpoint = 'https://dash.cloudflare.com/oauth2/auth';
 const tokenEndpoint = 'https://dash.cloudflare.com/oauth2/token';
-const userinfoEndpoint = 'https://dash.cloudflare.com/oauth2/userinfo';
 const revokeEndpoint = 'https://dash.cloudflare.com/oauth2/revoke';
 const apiOrigin = 'https://api.cloudflare.com/client/v4';
 const cookieName = '__Host-gitflare-cloudflare-state';
@@ -25,7 +23,7 @@ export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string
 export const D1_USAGE_QUERY = 'query GitflareD1Usage($accountTag: string!, $databaseId: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {databaseId: $databaseId, date_geq: $start, date_leq: $end}, orderBy: [date_DESC]) { dimensions {date databaseId} sum {readQueries writeQueries rowsRead rowsWritten} } } } }';
 function service(env: AppEnv): Store { return env.GITFLARE_SECURITY.getByName('security') as unknown as Store; }
 function configured(env: AppEnv): boolean { return Boolean(env.CLOUDFLARE_CLIENT_ID && env.CLOUDFLARE_CLIENT_SECRET && env.AUTH_ENCRYPTION_KEY); }
-function requestedScopes(env: AppEnv): string[] { return [...new Set(['openid','offline_access',...(env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes).split(/\s+/).filter(Boolean)])]; }
+function requestedScopes(env: AppEnv): string[] { return [...new Set(['offline_access',...(env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes).split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
 function requireConfiguration(env: AppEnv) { if (!configured(env)) throw new ApiError(503, 'CLOUDFLARE_NOT_CONFIGURED', 'Configure this installation’s Cloudflare OAuth client before connecting an account.'); }
 function connectionContext(p: Principal): string { return `cloudflare-connection:${p.workspaceId}`; }
 function currentIssuer(p: Principal): Principal { return { userId: p.userId, workspaceId: p.workspaceId, role: p.role, ...(p.bootstrap ? {bootstrap:true} : {}) }; }
@@ -76,7 +74,7 @@ async function api(env: AppEnv, vault: Vault, path: string, options: CloudflareA
   if (result.success===false) throw new ApiError(502,'CLOUDFLARE_API_REJECTED','Cloudflare could not complete this operation. Check account permissions.');
   return result.result;
 }
-function status(env: AppEnv, vault?: Vault) { return {configured:configured(env),connected:!!vault,...(vault?{identity:vault.identity,expiresAt:vault.expiresAt,scopes:vault.scopes,account:vault.account}: {})}; }
+function status(env: AppEnv, vault?: Vault) { return {configured:configured(env),connected:!!vault,...(vault?{expiresAt:vault.expiresAt,scopes:vault.scopes,account:vault.account}: {})}; }
 function accountsValue(result: unknown): Account[] {
   if (!Array.isArray(result)) throw new ApiError(502,'CLOUDFLARE_INVALID_RESPONSE','Cloudflare did not return an account list.');
   return result.filter(a=>a && typeof a.id==='string' && /^[a-f0-9]{32}$/i.test(a.id) && typeof a.name==='string').map(a=>({id:a.id,name:a.name.slice(0,200)}));
@@ -118,9 +116,7 @@ async function callback(request:Request,env:AppEnv):Promise<Response> {
   if(url.searchParams.has('error')) throw new ApiError(400,'CLOUDFLARE_AUTHORIZATION_DENIED','Cloudflare authorization was cancelled or denied.');
   const code=requireString(url.searchParams.get('code'),'Authorization code',4096);
   const response=await tokenRequest(env,new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:pending.redirectUri,code_verifier:pending.verifier})); const values=tokenValues(response);
-  const info=await jsonRequest(userinfoEndpoint,{headers:{Authorization:`Bearer ${values.accessToken}`}}) as {sub?:unknown;email?:unknown};
-  if(typeof info.sub!=='string'||!info.sub||info.sub.length>200) throw new ApiError(502,'CLOUDFLARE_IDENTITY_REQUIRED','Cloudflare did not return a stable account identity.');
-  const vault:Vault={...values,identity:{subject:info.sub,...(typeof info.email==='string'?{email:info.email.slice(0,254)}:{})},scopes:typeof response.scope==='string'?response.scope.split(' '):requestedScopes(env),clientId:env.CLOUDFLARE_CLIENT_ID!};
+  const vault:Vault={...values,scopes:typeof response.scope==='string'?response.scope.split(' '):requestedScopes(env),clientId:env.CLOUDFLARE_CLIENT_ID!};
   await save(env,record.principal,vault,pending.expectedVersion);
   return new Response(null,{status:303,headers:{Location:`${url.origin}/#settings/cloudflare`,'Set-Cookie':`${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'}});
 }

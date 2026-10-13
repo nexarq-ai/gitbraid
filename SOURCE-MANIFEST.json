@@ -285,8 +285,8 @@
     },
     {
       "path": "src/worker/cloudflare.ts",
-      "size": 19970,
-      "sha256": "8cb83e26823449fb16b01a34e9ebb80a3027a8108138a845260e35c1d580e94e"
+      "size": 19400,
+      "sha256": "67f5a4a653486974cb62c33c4b1a52af48dac13b7d50fc1862ee279080041088"
     },
     {
       "path": "src/worker/coordinator.ts",
