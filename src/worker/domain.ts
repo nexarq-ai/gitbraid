@@ -59,6 +59,10 @@ export function missionInput(body: Record<string, unknown>): CreateMissionInput 
     if (!Array.isArray(body.acceptanceCriteria) || body.acceptanceCriteria.length > 12) throw new ApiError(400, 'INVALID_CRITERIA', 'Provide up to 12 acceptance criteria.');
     input.acceptanceCriteria = body.acceptanceCriteria.map((criterion) => requireString(criterion, 'Acceptance criterion', 500));
   }
+  if (body.mode !== undefined) {
+    if (body.mode !== 'combine' && body.mode !== 'race') throw new ApiError(400, 'INVALID_MODE', 'Choose combine or race.');
+    input.mode = body.mode;
+  }
   if (body.tasks !== undefined) {
     if (!Array.isArray(body.tasks) || body.tasks.length < 1 || body.tasks.length > 8) throw new ApiError(400, 'INVALID_TASKS', 'Assign between one and eight agent tasks.');
     input.tasks = body.tasks.map((task: unknown) => {

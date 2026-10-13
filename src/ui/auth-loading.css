@@ -77,3 +77,24 @@
     opacity: 0.4;
   }
 }
+
+.auth-forgot {
+  display: block;
+  margin: -8px 0 20px;
+  font-size: 12px;
+  color: #626b77;
+  text-align: right;
+}
+
+.verify-email-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e3e6ea;
+  border-radius: 5px;
+  background: #f7f8fa;
+  color: #414141;
+  font-size: 12px;
+}

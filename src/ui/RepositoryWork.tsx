@@ -113,7 +113,7 @@ export default function RepositoryWork({
               ? "Agent runs"
               : tab === "checks"
                 ? "Checks"
-                : "Proposals"}
+                : "Missions"}
           </h2>
           <p>
             {tab === "agents"
@@ -179,12 +179,12 @@ export default function RepositoryWork({
                   ? "No agent runs yet"
                   : tab === "checks"
                     ? "No checks recorded"
-                    : "No proposals yet"
+                    : "No missions yet"
             }
             description={
               total
                 ? "Try another search or status filter."
-                : "Create a proposal draft with an outcome and agent tasks. Agents and checks run only after you choose Start."
+                : "Create a mission with an outcome and agent tasks. Agents and checks run only after you choose Start."
             }
             action={
               total ? (
@@ -198,7 +198,7 @@ export default function RepositoryWork({
                 </Button>
               ) : (
                 <Button disabled={!canContribute} onClick={onCreate}>
-                  Create proposal
+                  Create mission
                 </Button>
               )
             }
@@ -318,7 +318,7 @@ export default function RepositoryWork({
             <table className="resource-table">
               <thead>
                 <tr>
-                  <th>Proposal</th>
+                  <th>Mission</th>
                   <th>Status</th>
                   <th>Agents</th>
                   <th>Checks</th>

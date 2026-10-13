@@ -16,7 +16,7 @@ export const mcpToolNames = [
   'gitflare_proposal_base', 'gitflare_repository_import_status', 'gitflare_import_repository_archive',
   'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_list_missions',
   'gitflare_inspect_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
-  'gitflare_review_mission', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
+  'gitflare_review_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
   'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
 ] as const;
@@ -46,9 +46,11 @@ function missionSummary(mission: Mission) {
   return {
     id: mission.id, repositoryId: mission.repositoryId, title: mission.title, status: mission.status,
     baseSha: mission.baseSha, candidateSha: mission.candidateSha, epoch: mission.epoch,
+    mode: mission.mode ?? 'combine', selectedRunId: mission.selectedRunId,
+    raceCandidates: mission.mode === 'race' ? mission.runs.filter((run) => run.commitSha).map((run) => ({ runId: run.id, name: run.name, commitSha: run.commitSha, check: (mission.raceChecks ?? mission.checks).find((check) => check.runId === run.id)?.status ?? 'pending', changedFiles: run.changedFiles })) : undefined,
     createdAt: mission.createdAt, updatedAt: mission.updatedAt, error: mission.error,
     acceptanceCriteria: mission.acceptanceCriteria ?? [], prompt: excerpt(mission.prompt, 0, 1600),
-    runs: mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, status: run.status, commitSha: run.commitSha, forkName: run.forkName, startedAt: run.startedAt, completedAt: run.completedAt, task: excerpt(run.task, 0, 800), summary: excerpt(run.summary ?? '', 0, 1000), error: run.error, model: run.model })),
+    runs: mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, status: run.status, commitSha: run.commitSha, forkName: run.forkName, startedAt: run.startedAt, completedAt: run.completedAt, task: excerpt(run.task, 0, 800), summary: excerpt(run.summary ?? '', 0, 1000), note: run.note, touchedFiles: run.touchedFiles ?? run.changedFiles, error: run.error, model: run.model })),
     checkCount: mission.checks.length, changeCount: mission.changes.length, eventCount: mission.events.length,
     reviewCount: mission.reviews?.length ?? 0,
     skillChange: mission.skillChange ? { action: mission.skillChange.action, path: mission.skillChange.path, baseSha: mission.skillChange.baseSha } : undefined,
@@ -62,7 +64,7 @@ function missionEvidence(mission: Mission, input: { view: 'summary' | 'context' 
   const detail = (value: string) => excerpt(value, input.detail_offset, input.detail_limit);
   const reference = { missionId: mission.id, status: mission.status, candidateSha: mission.candidateSha, baseSha: mission.baseSha, epoch: mission.epoch, view: input.view };
   if (input.view === 'context') return { ...reference, title: mission.title, prompt: detail(mission.prompt), acceptanceCriteria: mission.acceptanceCriteria ?? [], skillChange: mission.skillChange ? { ...mission.skillChange, content: detail(mission.skillChange.content) } : undefined };
-  const values: Record<string, unknown>[] = input.view === 'reviews' ? (mission.reviews ?? []).map(({ body, ...review }) => ({ ...review, body: detail(body) })) : input.view === 'changes' ? mission.changes.map(({ patch, ...change }) => ({ ...change, patch: detail(patch) })) : input.view === 'checks' ? mission.checks.map(({ output, ...check }) => ({ ...check, output: detail(output ?? '') })) : input.view === 'runs' ? mission.runs.map(({ task, assignment, summary, ...run }) => ({ ...run, task: detail(task), assignment: detail(assignment ?? ''), summary: detail(summary ?? '') })) : mission.events.map((event) => ({ ...event, message: detail(event.message) }));
+  const values: Record<string, unknown>[] = input.view === 'reviews' ? (mission.reviews ?? []).map(({ body, ...review }) => ({ ...review, body: detail(body) })) : input.view === 'changes' ? (mission.raceChanges ?? mission.changes).map(({ patch, ...change }) => ({ ...change, patch: detail(patch) })) : input.view === 'checks' ? (mission.raceChecks ?? mission.checks).map(({ output, ...check }) => ({ ...check, output: detail(output ?? '') })) : input.view === 'runs' ? mission.runs.map(({ task, assignment, summary, ...run }) => ({ ...run, task: detail(task), assignment: detail(assignment ?? ''), summary: detail(summary ?? '') })) : mission.events.map((event) => ({ ...event, message: detail(event.message) }));
   return { ...reference, ...page(values, input.offset, input.limit) };
 }
 
@@ -237,12 +239,12 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
   }, input => guarded(async () => call<Record<string, unknown>>(`/api/repositories/${input.repository_id}/proposal-base`)));
   server.registerTool('gitflare_create_mission', {
     title: 'Plan a proposal with agent assignments', description: 'Create a draft mission on the latest default-branch commit with an outcome, acceptance criteria, and one to eight complementary assignments; omitted assignments use two default agents. Optionally supply expected_base_sha to reject a changed draft baseline. Execution start refreshes to the latest repository commit. Does not start execution. Use start_mission only after the user authorizes running it.',
-    inputSchema: z.object({ repository_id: identifier, title: z.string().min(1).max(120), prompt: z.string().min(10).max(8000), expected_base_sha: commit.optional(), acceptance_criteria: z.array(z.string().min(1).max(500)).max(12).default([]), tasks: z.array(z.object({ name: z.string().min(1).max(60), role: z.string().min(1).max(80), task: z.string().min(10).max(2500), model: z.string().min(1).max(200).optional() }).strict()).min(1).max(8).refine(tasks => new Set(tasks.map(task => task.name.trim().toLowerCase())).size === tasks.length, { message: 'Give each agent a distinct name.' }).optional(), idempotency_key: requestKey }).strict(), annotations: mutation,
-  }, (input) => guarded(async () => missionSummary(await call<Mission>('/api/missions', { repositoryId: input.repository_id, title: input.title, prompt: input.prompt, acceptanceCriteria: input.acceptance_criteria, tasks: input.tasks, expectedBaseSha: input.expected_base_sha }, input.idempotency_key))));
+    inputSchema: z.object({ repository_id: identifier, title: z.string().min(1).max(120), prompt: z.string().min(10).max(8000), expected_base_sha: commit.optional(), mode: z.enum(['combine', 'race']).default('combine'), acceptance_criteria: z.array(z.string().min(1).max(500)).max(12).default([]), tasks: z.array(z.object({ name: z.string().min(1).max(60), role: z.string().min(1).max(80), task: z.string().min(10).max(2500), model: z.string().min(1).max(200).optional() }).strict()).min(1).max(8).refine(tasks => new Set(tasks.map(task => task.name.trim().toLowerCase())).size === tasks.length, { message: 'Give each agent a distinct name.' }).optional(), idempotency_key: requestKey }).strict(), annotations: mutation,
+  }, (input) => guarded(async () => missionSummary(await call<Mission>('/api/missions', { repositoryId: input.repository_id, title: input.title, prompt: input.prompt, acceptanceCriteria: input.acceptance_criteria, tasks: input.tasks, mode: input.mode, expectedBaseSha: input.expected_base_sha }, input.idempotency_key))));
   for (const action of ['start', 'cancel'] as const) {
     server.registerTool(`gitflare_${action}_mission`, {
       title: `${action === 'start' ? 'Start' : 'Cancel'} a mission`,
-      description: action === 'start' ? 'Start or retry an authorized mission using two isolated coding agents. Consumes model and cloud resources. Returns queued state, never a fabricated completion. Inspect the mission later for actual results.' : 'Cancel an unapproved mission and invalidate late execution reports. Cancellation is checked between execution steps and does not imply an in-flight process stopped immediately. Approved or integrated changes cannot be cancelled.',
+      description: action === 'start' ? 'Start or retry an authorized mission using its isolated coding agents. Consumes model and cloud resources. Returns queued state, never a fabricated completion. Inspect the mission later for actual results.' : 'Cancel an unapproved mission and invalidate late execution reports. Cancellation is checked between execution steps and does not imply an in-flight process stopped immediately. Approved or integrated changes cannot be cancelled.',
       inputSchema: z.object({ mission_id: identifier, idempotency_key: requestKey }).strict(), annotations: { ...mutation, destructiveHint: action === 'cancel' },
     }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${action}`, {}, input.idempotency_key))));
   }
@@ -250,6 +252,10 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     title: 'Discuss or request changes to a proposal revision', description: 'Comment on an exact candidate, request changes that block approval and landing, or resolve your own reviewer request. Comments require contribution or review access; requests and resolution require review access. Only the original reviewer can resolve a request. All actions are pinned to the exact candidate, base, and execution epoch.',
     inputSchema: z.object({ mission_id: identifier, action: z.enum(['comment', 'request_changes', 'resolve']), epoch: z.number().int().min(1), candidate_sha: commit, base_sha: commit, body: z.string().min(1).max(8000).optional(), review_id: identifier.optional(), idempotency_key: requestKey }).strict(), annotations: mutation,
   }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/review`, { action: input.action, epoch: input.epoch, candidateSha: input.candidate_sha, baseSha: input.base_sha, body: input.body, reviewId: input.review_id }, input.idempotency_key))));
+  server.registerTool('gitflare_select_candidate', {
+    title: 'Select a race candidate for review', description: 'In a race mission, choose which agent\'s passing candidate becomes the exact revision under review. Compare raceCandidates, changes, and checks first. Requires review access and the current attempt epoch. Selection clears recorded approvals and can be changed until the candidate is approved.',
+    inputSchema: z.object({ mission_id: identifier, run_id: identifier, epoch: z.number().int().min(1), idempotency_key: requestKey }).strict(), annotations: mutation,
+  }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/select`, { runId: input.run_id, epoch: input.epoch }, input.idempotency_key))));
   for (const action of ['approve', 'integrate', 'revoke'] as const) {
     const name = action === 'revoke' ? 'gitflare_revoke_approval' : `gitflare_${action}_mission`;
     server.registerTool(name, {
