@@ -103,7 +103,7 @@ export function PullRequestPanel({ mission, permissions, onChange }: { mission: 
       {state === "closed" && <p className="pull-panel-note">Closed{change.closedAt ? ` ${relativeTime(change.closedAt)}` : ""}. Reopening restarts checks against the branch's current head.</p>}
       {error && <div className="error-notice" role="alert">{error}</div>}
       <Dialog.Root open={confirmClose} onOpenChange={setConfirmClose}>
-        <Dialog size="sm" className="dialog-content">
+        <Dialog size="sm" className="dialog-content confirm-dialog">
           <Dialog.Title className="dialog-title">Close this pull request?</Dialog.Title>
           <Dialog.Description className="dialog-description">The branch <code>{change.branch}</code> is kept. Any approval stops applying, and you can reopen the pull request later.</Dialog.Description>
           <div className="dialog-actions">

@@ -157,7 +157,7 @@ function ReleaseDetail({ repository, list, release, canLand, onChanged, onNotify
       {!release.draft && <div className="release-fetch"><code>git fetch origin tag {release.tag}</code></div>}
     </section>
     <Dialog.Root open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
-      <Dialog size="sm" className="dialog-content">
+      <Dialog size="sm" className="dialog-content confirm-dialog">
         <Dialog.Title className="dialog-title">{confirming === "publish" ? `Publish ${release.tag}?` : "Delete this release?"}</Dialog.Title>
         <Dialog.Description className="dialog-description">
           {confirming === "publish"

@@ -2964,3 +2964,11 @@ a svg {
 .cf-resource-empty > button { margin-inline: auto; }
 
 .ai-off .ai-only { display: none !important; }
+.confirm-dialog {
+  top: 50% !important;
+  translate: -50% -50% !important;
+  width: min(460px, calc(100vw - 2rem)) !important;
+}
+.confirm-dialog .dialog-description code {
+  font-size: 13px;
+}

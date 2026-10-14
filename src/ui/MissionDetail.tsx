@@ -1206,7 +1206,7 @@ export default function MissionDetail({
         <AttemptHistory key={mission.id} mission={mission} />
       )}
       <Dialog.Root open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
-        <Dialog size="sm" className="dialog-content">
+        <Dialog size="sm" className="dialog-content confirm-dialog">
           <Dialog.Title className="dialog-title">
             {confirming === "approve" ? "Approve this candidate?" : "Land these changes?"}
           </Dialog.Title>
