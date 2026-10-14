@@ -470,8 +470,8 @@
     },
     {
       "path": "src/worker/git-http.ts",
-      "size": 17024,
-      "sha256": "b767715afee52dc4f5c79ee8de39e7bf8dca4072f877b8eafa891aaa57896c70"
+      "size": 17036,
+      "sha256": "62c293177c395dee9017cb2477f86c4f5586f663be57a06d5d4ad9611da6fc28"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",

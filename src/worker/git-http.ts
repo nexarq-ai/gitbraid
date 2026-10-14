@@ -198,7 +198,7 @@ export async function handleGitRequest(request: Request, deps: GitHttpDependenci
   catch { return text(403, writing ? 'Your Gitflare role cannot push to this repository. Ask an Owner for Contributor access.' : 'Your Gitflare role cannot read this repository.'); }
   const fetcher = deps.fetcher ?? fetch;
   using source = await deps.artifacts.get(repository.name);
-  if (kind === 'refs') return forward(source, service, 'refs', request, undefined, fetcher);
+  if (kind === 'refs') return await forward(source, service, 'refs', request, undefined, fetcher);
   if (request.headers.get('Content-Type')?.split(';')[0]?.trim() !== `application/x-${service}-request`) return text(415, 'Use a Git client for this request.');
   const declared = Number(request.headers.get('Content-Length') ?? '0');
   if (!writing) {
@@ -220,7 +220,7 @@ export async function handleGitRequest(request: Request, deps: GitHttpDependenci
     if (!parsed.capabilities.includes('report-status') && !parsed.capabilities.includes('report-status-v2')) return text(403, decisions.filter(decision => !decision.ok).map(decision => `${decision.ref}: ${(decision as { reason: string }).reason}`).join('\n'));
     return new Response(receivePackReport(decisions, parsed.capabilities), { status: 200, headers: { 'Content-Type': 'application/x-git-receive-pack-result', 'Cache-Control': 'no-store' } });
   }
-  return forward(source, service, 'rpc', request, limitedStream(parsed.prefix, reader, GIT_PUSH_MAX_BYTES), fetcher);
+  return await forward(source, service, 'rpc', request, limitedStream(parsed.prefix, reader, GIT_PUSH_MAX_BYTES), fetcher);
 }
 
 export function parseAdvertisedRefs(bytes: Uint8Array): Map<string, string> {
