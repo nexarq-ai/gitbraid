@@ -9,6 +9,7 @@ export interface RepositoryPolicy {
   previewCommand: string;
   testTimeoutMs: number;
   starter: boolean;
+  untested: boolean;
 }
 
 export interface PathChange { path: string; status: string }
@@ -28,9 +29,14 @@ function editablePath(value: unknown): string {
   return value;
 }
 
-export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: string, baseFiles?: string[]): RepositoryPolicy {
-  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: false, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: 120_000, starter: false };
-  if (raw === null) return { ...fallback, starter: baseFiles !== undefined && isStarterRepository(baseFiles) };
+export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: string, baseFiles?: string[], basePackageJson?: string | null): RepositoryPolicy {
+  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: false, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: 120_000, starter: false, untested: false };
+  if (raw === null) {
+    if (baseFiles === undefined) return fallback;
+    const untested = !baseFiles.some((path) => TEST_PATHS.test(path) && !path.includes('node_modules/'));
+    const npm = basePackageJson !== undefined && basePackageJson !== null ? starterCheck(['package.json'], basePackageJson, baseFiles.includes('package-lock.json')) : null;
+    return { ...fallback, starter: isStarterRepository(baseFiles), untested, ...(npm ? { testCommand: npm.testCommand, evidence: npm.evidence, install: true } : {}) };
+  }
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Error(`${POLICY_FILE} is not valid JSON`); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${POLICY_FILE} must contain a JSON object`);
@@ -74,7 +80,7 @@ export function isStarterRepository(baseFiles: string[]): boolean {
 }
 
 export function protectedChanges(changes: PathChange[], policy: Pick<RepositoryPolicy, 'editable' | 'starter'>): string[] {
-  return changes.filter(({ path, status }) => policy.starter && status === 'A' ? STARTER_PROTECTED.test(path) : isProtectedPath(path, policy.editable)).map(({ path }) => path);
+  return changes.filter(({ path, status }) => status !== 'A' ? isProtectedPath(path, policy.editable) : policy.starter ? STARTER_PROTECTED.test(path) : ALWAYS_PROTECTED.test(path)).map(({ path }) => path);
 }
 
 export function parseNameStatus(output: string): PathChange[] {

@@ -260,13 +260,13 @@
     },
     {
       "path": "src/ui/proposal-create.css",
-      "size": 6258,
-      "sha256": "ab007f8593ef386353f009e2dc75e1e80bbfb72017441385355cdcbe5d73c877"
+      "size": 6661,
+      "sha256": "e82d1bd88b187f8fd33bd0cf9acb92671219adf51a872140a8d74dd0bc113972"
     },
     {
       "path": "src/ui/ProposalCreate.tsx",
-      "size": 21573,
-      "sha256": "fa78a4e1f40ae6d87bd608e79159b768572df2610e33e991cee1bd586468853a"
+      "size": 22586,
+      "sha256": "8f72c81431219e05b09eb0ea101c96aa3fbabc3a57f71efd8210fdba8f2300d2"
     },
     {
       "path": "src/ui/public-install.css",
@@ -395,8 +395,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 46717,
-      "sha256": "76332727448cafeb20228a0b1de3ac7e1c44fb3ae421858ef34f9320c09122e5"
+      "size": 47263,
+      "sha256": "928d3e1334164672a053ec0bd61857b487c025ca626d08054deb59af128429e4"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -470,8 +470,8 @@
     },
     {
       "path": "src/worker/repository-policy.ts",
-      "size": 5854,
-      "sha256": "125ea9a1e9253f89f061088e8cb6a2c1c9f9576f6becce86f4b4f8789a830c93"
+      "size": 6365,
+      "sha256": "d585162d7e84721dd5c7af3316196b82dbe6d8db3dd6d0b2cc754585e41549a0"
     },
     {
       "path": "src/worker/repository-skills.ts",
