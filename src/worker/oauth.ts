@@ -11,7 +11,7 @@ function page(body: string, headers = new Headers()): Response {
   headers.set('Content-Type', 'text/html; charset=utf-8');
   headers.set('Cache-Control', 'no-store');
   headers.set('X-Frame-Options', 'DENY');
-  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('Referrer-Policy', 'strict-origin');
   headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect to Gitflare</title><style>body{margin:0;background:#f7f8fa;color:#1d2025;font:16px/1.6 system-ui,sans-serif}main{max-width:480px;margin:10vh auto;padding:36px;background:white;border:1px solid #e3e5e8;border-radius:12px}h1{font-size:26px;line-height:1.3}button,.button{display:inline-block;padding:10px 18px;border:1px solid #bbb;border-radius:6px;background:white;color:inherit;font:inherit;cursor:pointer;text-decoration:none}button[value=approve]{background:#161719;color:white;border-color:#161719}label{display:block;margin:16px 0}small{color:#555}strong{overflow-wrap:anywhere}@media(max-width:560px){main{margin:24px 16px;padding:24px}}</style><main><small>GITFLARE · CONNECT MCP</small>${body}</main></html>`, { headers });
 }
@@ -84,3 +84,4 @@ export function oauthProvider(origin: string, handler: Handler, authenticate: Au
 }
 
 export type { OAuthHelpers };
+
