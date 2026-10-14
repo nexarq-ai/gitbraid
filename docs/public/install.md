@@ -1,6 +1,6 @@
 # Install from GitHub in your Cloudflare account
 
-Gitflare's self-hosted core is MIT-licensed and published in a public GitHub repository. The native Cloudflare Deploy button starts installation from that repository into your own Cloudflare account. It does not connect the hosted Gitflare service or use Nexarq account resources.
+Gitflare's self-hosted core is licensed under Apache-2.0 and published in a public GitHub repository. The native Cloudflare Deploy button starts installation from that repository into your own Cloudflare account. It does not connect the hosted Gitflare service or use Nexarq account resources.
 
 [![Deploy Gitflare to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fnexarq-ai%2Fgitbraid)
 
@@ -27,7 +27,7 @@ The repository includes `.dev.vars.example` with the `ADMIN_EMAIL` and `ADMIN_PA
 
 ## Alternate local installer
 
-If you prefer to configure the account from your terminal, download and verify the MIT source archive and manifest from Gitflare's Source view, extract it, then run the included Node.js 24 installer:
+If you prefer to configure the account from your terminal, download and verify the source archive and manifest from Gitflare's Source view, extract it, then run the included Node.js 24 installer:
 
 ```sh
 npm ci

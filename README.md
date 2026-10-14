@@ -12,4 +12,4 @@ The native button flow is prepared but a fresh-account deployment has not been v
 
 Read `docs/public/install.md`, run `npm ci`, then `node scripts/install-self-hosted.mjs`. Account resources, secrets and sender belong to the installer. Complete protected administrator setup and MFA before creating users. Hosted homepage, platform administration and hosted agent enrollment are excluded.
 
-Current live limits are recorded in `docs/public/overview.md` and `docs/public/agents.md`. This self-hosted edition is distributed under the MIT License; see LICENSE. Hosted extensions are outside this package.
+Current live limits are recorded in `docs/public/overview.md` and `docs/public/agents.md`. This self-hosted edition is distributed under the Apache License, Version 2.0; see LICENSE and NOTICE. Code published before October 14, 2026 was released under the MIT License. Hosted extensions are outside this package.

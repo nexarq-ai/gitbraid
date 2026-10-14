@@ -29,4 +29,4 @@ npm run build
 
 ## Licence
 
-By contributing you agree that your contribution is licensed under the same licence as this repository (see `LICENSE`).
+By contributing you agree that your contribution is licensed under the Apache License, Version 2.0 (see `LICENSE`), as described in section 5 of that license.
