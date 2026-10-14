@@ -429,6 +429,16 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   throw new ApiError(404, 'NOT_FOUND', 'This API route could not be found.');
 }
 
+const ENTRY_PATHS = new Set(['/', '/signin', '/signup']);
+
+async function entryRedirect(request: Request, env: AppEnv, path: string): Promise<Response | null> {
+  if (request.method !== 'GET' || !ENTRY_PATHS.has(path)) return null;
+  const session = cookieValue(request);
+  const signedIn = session ? await security(env).authenticate(session).then(() => true, () => false) : false;
+  const location = signedIn ? '/overview' : env.EDITION === 'self-hosted' && path === '/' ? '/signin' : null;
+  return location ? new Response(null, { status: 302, headers: { Location: location, 'Cache-Control': 'no-store' } }) : null;
+}
+
 const application = {
   async fetch(request: Request, env: AppEnv, ctx?: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -436,6 +446,8 @@ const application = {
     if (publicGit) return publicGit;
     if (path === '/oauth/authorize') return oauthConsent(request, env, authorize);
     if (path === '/llms.txt') return new Response('# Gitflare\n\n' + listPublicDocs().map(doc => `- [${doc.title}](${new URL(request.url).origin}/api/public/docs/${doc.id}.md): ${doc.description}`).join('\n'), { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+    const entry = await entryRedirect(request, env, path);
+    if (entry) return entry;
     if (!path.startsWith('/api/') && path !== '/mcp') return env.ASSETS.fetch(request);
     let response: Response;
     try {

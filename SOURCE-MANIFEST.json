@@ -15,8 +15,8 @@
     },
     {
       "path": "distribution/wrangler.self-hosted.json",
-      "size": 1932,
-      "sha256": "a05cd2caa729ae85073685cfd0121ae431e044a5f11a6cc95649e12435ccbc9b"
+      "size": 1977,
+      "sha256": "0a872a10a5db2c8110436d5b0d2e328b71c22b531e94a565e142292ac379a6a7"
     },
     {
       "path": "docs/public/admin.md",
@@ -111,7 +111,7 @@
     {
       "path": "src/ui/AccessSettings.tsx",
       "size": 21686,
-      "sha256": "0231dcba15184ae05e71b71c573b24b6c54d3e1421af3e19fc30f2ce99de56b1"
+      "sha256": "822b8a97b248667bf11fb6653e2535d57f3cac58c7d9505a796538fc7219bcdb"
     },
     {
       "path": "src/ui/AgentAssignment.tsx",
@@ -125,8 +125,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 70374,
-      "sha256": "775652040a2a56fe2f5f623a028dae45f3d40f5098dc610e8468b9ca717629b2"
+      "size": 70892,
+      "sha256": "4eac4e6377e545b95cb8a6ec1e4027d3efd4702a05d155afba47bce59db381f2"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -195,8 +195,8 @@
     },
     {
       "path": "src/ui/AuthScreen.tsx",
-      "size": 8416,
-      "sha256": "ee0c7e82e845a3afb4f9f294c9bbefd1a874b5c394c1c6242c6cf76a3bfefa6b"
+      "size": 8444,
+      "sha256": "bc9efecd35b129befef06376724a9439233c32c5b950368e63fb6f1bd6a0ec69"
     },
     {
       "path": "src/ui/cloudflare-connection.css",
@@ -206,7 +206,7 @@
     {
       "path": "src/ui/CloudflareConnection.tsx",
       "size": 28330,
-      "sha256": "5ad3b7ddb88bcfc1c994c0608105d31e7dae0049074a67d058815ada35e34d49"
+      "sha256": "701851847da10a295da97897bc01501f3596045a2f758b41877e1d604da669c9"
     },
     {
       "path": "src/ui/components.tsx",
@@ -225,13 +225,13 @@
     },
     {
       "path": "src/ui/Documentation.tsx",
-      "size": 13749,
-      "sha256": "0651b2be39a560eb9791d17abccb99ab743964c3743a38b8c862a34b12edc22f"
+      "size": 13777,
+      "sha256": "9b77b7e1477f0447a52a993e68503a645d60643a4cb03ae9ab9a3fcb18b437d1"
     },
     {
       "path": "src/ui/InvitationScreen.tsx",
-      "size": 2447,
-      "sha256": "c28512dc3815c3946d9d4f30d85147e27bfbfa88edc92a479c59918c7fb9e12a"
+      "size": 2475,
+      "sha256": "d91df9eea14e44efd3639cb7e21f3f16c804041cd5b211ff27fba10bf324ac3b"
     },
     {
       "path": "src/ui/main.tsx",
@@ -241,12 +241,12 @@
     {
       "path": "src/ui/McpConnections.tsx",
       "size": 4052,
-      "sha256": "d8f61d9f20de4c120f8d457175c30ef3897bae0489582230411793952499998a"
+      "sha256": "425360c60053970c60c32be1f31cb22e4d9450daddf0429f0847f34d3d408abb"
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 43336,
-      "sha256": "6aefa8ccca5fb2922922287a24f464319ce641d5e3bcdbc869d00271c16c9a7d"
+      "size": 43364,
+      "sha256": "37f1581c1ea3ee88f74c14580c6e56d666d8ece1c0bbffcf6e22b14d2ae37946"
     },
     {
       "path": "src/ui/public-install.css",
@@ -290,13 +290,13 @@
     },
     {
       "path": "src/ui/SelfHostedHome.tsx",
-      "size": 334,
-      "sha256": "127894a521fe92372cebfdd126abcd5ca446411a90e2cee0913b2c649c77100f"
+      "size": 368,
+      "sha256": "526477b097c6557be192eb7ee14f575040b50aa4a7ced524b9b1ab976874e5b0"
     },
     {
       "path": "src/ui/styles.css",
-      "size": 59940,
-      "sha256": "bdc2d7c1b60eedd9133b202cf7b27ee939f4d30f62905cc25820e77b394a029c"
+      "size": 60073,
+      "sha256": "ee1ad25a99530d87a9a6e202b39e3bd40760d751a6dad4f2a9ff30b0ffcec95c"
     },
     {
       "path": "src/worker/artifacts.ts",
@@ -310,8 +310,8 @@
     },
     {
       "path": "src/worker/cloudflare.ts",
-      "size": 22699,
-      "sha256": "5281d98c8417f14a6868b20a841e1d7684d4ca6778d3c2e3cd38e8d2287c3352"
+      "size": 22697,
+      "sha256": "7b34e234142bb7a0864bd84848295aaeba56cfdc7b20082fc4801a73e2604258"
     },
     {
       "path": "src/worker/coordinator.ts",
@@ -340,8 +340,8 @@
     },
     {
       "path": "src/worker/email.ts",
-      "size": 5963,
-      "sha256": "d43e48fb612744cf517001a75ef224a249622f24b7a3625936bdef41cd111157"
+      "size": 5962,
+      "sha256": "01170d13b0856ede8775dc215bbe82a6b4a35f96f0209eb1571ffc4b6d115b18"
     },
     {
       "path": "src/worker/env.ts",
@@ -365,13 +365,13 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 40322,
-      "sha256": "e51509bd3ac526d85bad5539f16279bdccc07cde294ccbc54f7b2925478a125b"
+      "size": 41031,
+      "sha256": "f073d3273f7104f9d344bff520446c48ae1fce239b092e4d30a0dd75370755c9"
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 32684,
-      "sha256": "e5c19b5cb3ad232ec015edce7187fefc281f7b555ac92d890f9dace586c48c67"
+      "size": 32683,
+      "sha256": "064e3c8369ea20ed2396ff975e894fea2525d8d8cf2062350063a76d4048adca"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -380,8 +380,8 @@
     },
     {
       "path": "src/worker/oauth.ts",
-      "size": 7941,
-      "sha256": "7ab73ba3d8f5e896a5a3b98ac09ab1f8b800e9b2a060834d40fae84d12423e03"
+      "size": 7940,
+      "sha256": "9764e725a1df74edaa398628cfb6c185f7795398043ea0571de4613f30225c33"
     },
     {
       "path": "src/worker/onboarding.ts",
@@ -430,8 +430,8 @@
     },
     {
       "path": "wrangler.jsonc",
-      "size": 1932,
-      "sha256": "a05cd2caa729ae85073685cfd0121ae431e044a5f11a6cc95649e12435ccbc9b"
+      "size": 1977,
+      "sha256": "0a872a10a5db2c8110436d5b0d2e328b71c22b531e94a565e142292ac379a6a7"
     },
     {
       "path": "wrangler.preview.jsonc",

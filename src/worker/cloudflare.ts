@@ -147,12 +147,12 @@ async function callback(request:Request,env:AppEnv):Promise<Response> {
   const response=await tokenRequest(env,new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:pending.redirectUri,code_verifier:pending.verifier})); const values=tokenValues(response);
   const vault:Vault={...values,scopes:typeof response.scope==='string'?response.scope.split(' '):requestedScopes(env),clientId:env.CLOUDFLARE_CLIENT_ID!};
   await save(env,record.principal,vault,pending.expectedVersion);
-  return new Response(null,{status:303,headers:{Location:`${url.origin}/#settings/cloudflare`,'Set-Cookie':`${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'}});
+  return new Response(null,{status:303,headers:{Location:`${url.origin}/settings/cloudflare`,'Set-Cookie':`${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'}});
 }
 export async function dispatchCloudflare(env:AppEnv,p:Principal,action:string,body:Record<string,unknown>={},origin=''):Promise<unknown> {
   await owner(env,p);
   if(action==='status') {const record=await service(env).connectionStore(p,'get',{}) as CloudflareConnection|null;return status(env,record?JSON.parse(await decryptAuth(record.encrypted,env.AUTH_ENCRYPTION_KEY,connectionContext(p))) as Vault:undefined);}
-  if(action==='connect') return {browserStartUrl:`${new URL(origin).origin}/#settings/cloudflare`,browserAuthorizationRequired:true};
+  if(action==='connect') return {browserStartUrl:`${new URL(origin).origin}/settings/cloudflare`,browserAuthorizationRequired:true};
   if(action==='disconnect') {
     const removed=await service(env).connectionStore(p,'delete',{}) as CloudflareConnection|null;
     if(!removed)return {connected:false,revoked:true};

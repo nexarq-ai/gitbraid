@@ -8,6 +8,7 @@ import { request } from "./api";
 import { ErrorNotice } from "./components";
 import { diagrams, type DocumentationDiagram } from "./doc-diagrams";
 import "./documentation.css";
+import { navigate as goTo } from "./router";
 
 type DocumentItem = {
   id: string;
@@ -135,11 +136,11 @@ export default function Documentation({ id, publicMode = false }: { id: string; 
       {!publicMode && <div className="documentation-library-heading"><BookOpenIcon size={20} /><span>Gitflare documentation</span></div>}
       {error && <ErrorNotice message={error} onRetry={() => setRetry((value) => value + 1)} />}
       <div className="documentation-layout">
-        <div className="documentation-mobile-selector"><label htmlFor="documentation-guide">Guide</label><select id="documentation-guide" value={id} disabled={!items.length} onChange={(event) => { window.location.hash = `docs/${event.target.value}`; }}>{!items.length && <option value={id}>Loading library…</option>}{items.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></div>
+        <div className="documentation-mobile-selector"><label htmlFor="documentation-guide">Guide</label><select id="documentation-guide" value={id} disabled={!items.length} onChange={(event) => { goTo(`docs/${event.target.value}`); }}>{!items.length && <option value={id}>Loading library…</option>}{items.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></div>
         <aside className="documentation-navigation" aria-label="Documentation library">
           {[{ label: "For people", audience: "human" }, { label: "For AI clients", audience: "agent" }, { label: "Reference", audience: "reference" }].map((group) => {
             const documents = items.filter((item) => item.audience === group.audience || (group.audience === "reference" && !["human", "agent"].includes(item.audience)));
-            return documents.length > 0 && <section key={group.audience}><h2>{group.label}</h2>{documents.map((item) => <a key={item.id} href={`#docs/${item.id}`} aria-current={id === item.id ? "page" : undefined} className={id === item.id ? "selected" : ""}><BookOpenIcon size={16} /><span>{item.title}</span></a>)}</section>;
+            return documents.length > 0 && <section key={group.audience}><h2>{group.label}</h2>{documents.map((item) => <a key={item.id} href={`/docs/${item.id}`} aria-current={id === item.id ? "page" : undefined} className={id === item.id ? "selected" : ""}><BookOpenIcon size={16} /><span>{item.title}</span></a>)}</section>;
           })}
           {!items.length && !error && <p role="status">Loading library…</p>}
         </aside>
@@ -163,7 +164,7 @@ export default function Documentation({ id, publicMode = false }: { id: string; 
                 try { decodedPath = decodeURIComponent(path); } catch { decodedPath = ""; }
                 const filename = decodedPath.replace(/^\.\//, "").split("/").pop();
                 const linked = items.find((item) => item.filename === decodedPath || item.filename.split("/").pop() === filename);
-                if (linked) return <a href={`#docs/${linked.id}`} onClick={(event) => { if (linked.id === id && anchor) { event.preventDefault(); scrollToHeading(anchor); } else { pendingAnchor.current = anchor ?? ""; } }}>{children}</a>;
+                if (linked) return <a href={`/docs/${linked.id}`} onClick={(event) => { if (linked.id === id && anchor) { event.preventDefault(); scrollToHeading(anchor); } else { pendingAnchor.current = anchor ?? ""; } }}>{children}</a>;
                 return <span title="This reference is not available in the documentation library">{children}<span className="documentation-unavailable"> (reference unavailable)</span></span>;
               },
               table: ({ children }) => <div className="documentation-table"><table>{children}</table></div>,

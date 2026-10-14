@@ -24,6 +24,7 @@ import { request } from "./api";
 import { EmptyState, ErrorNotice, relativeTime, Status } from "./components";
 import AgentAssignment from "./AgentAssignment";
 import AttemptHistory from "./AttemptHistory";
+import { navigate as goTo } from "./router";
 
 type Props = {
   id: string;
@@ -910,7 +911,7 @@ export default function MissionDetail({
                       key={runId}
                       className="text-link"
                       onClick={() => {
-                        window.location.hash = `mission/${mission.id}/agents/${runId}`;
+                        goTo(`mission/${mission.id}/agents/${runId}`);
                       }}
                     >
                       {mission.runs.find((run) => run.id === runId)?.name ??

@@ -2929,3 +2929,6 @@ a svg {
 .race-card p { margin: 0; }
 .race-card .race-stats { display: flex; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 640px) { .mission-mode { grid-template-columns: 1fr; } }
+
+.route-loading { min-height: 100vh; background: #fff; }
+.route-loading-inline { padding: 24px 0; color: #59616c; font-size: 13px; }

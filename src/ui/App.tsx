@@ -1,5 +1,7 @@
 import cloudflareIcon from "./assets/cloudflare-icon.svg";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -46,18 +48,23 @@ import {
   SetupSteps,
   Status,
 } from "./components";
-import MissionDetail from "./MissionDetail";
-import RepositoryBrowser from "./RepositoryBrowser";
 import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
-import Documentation from "./Documentation";
-import RepositorySkills from "./RepositorySkills";
-import CloudflareConnection from "./CloudflareConnection";
-import McpConnections from "./McpConnections";
-import Homepage from "./SelfHostedHome";
-import AccessSettings from "./AccessSettings";
-import RepositoryWork from "./RepositoryWork";
+import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
+
+const MissionDetail = lazy(() => import("./MissionDetail"));
+const RepositoryBrowser = lazy(() => import("./RepositoryBrowser"));
+const Documentation = lazy(() => import("./Documentation"));
+const RepositorySkills = lazy(() => import("./RepositorySkills"));
+const CloudflareConnection = lazy(() => import("./CloudflareConnection"));
+const McpConnections = lazy(() => import("./McpConnections"));
+const loadHomepage = () => import("./SelfHostedHome");
+const Homepage = lazy(loadHomepage);
+const AccessSettings = lazy(() => import("./AccessSettings"));
+const RepositoryWork = lazy(() => import("./RepositoryWork"));
+// Start the homepage chunk alongside the main bundle instead of after it
+if (currentRoute() === "home") void loadHomepage();
 
 type Modal = "mission" | "repository" | "connect" | "learn" | "session" | null;
 const blankWorkspace: Workspace = {
@@ -70,6 +77,14 @@ const blankWorkspace: Workspace = {
 const runningStates = ["queued", "running", "checking", "integrating"];
 
 export default function App() {
+  return (
+    <Suspense fallback={<main className="route-loading" aria-busy="true" />}>
+      <Workspace />
+    </Suspense>
+  );
+}
+
+function Workspace() {
   const [workspace, setWorkspace] = useState<Workspace>(blankWorkspace);
   const [authConfigError, setAuthConfigError] = useState("");
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
@@ -83,7 +98,7 @@ export default function App() {
   >("checking");
   const [signingOut, setSigningOut] = useState(false);
   const [route, setRoute] = useState(
-    () => window.location.hash.slice(1) || "home",
+    () => { canonicalizeLegacyHash(); return currentRoute(); },
   );
   const [modal, setModal] = useState<Modal>(null);
   const [sidebar, setSidebar] = useState(false);
@@ -125,7 +140,7 @@ export default function App() {
       setLoaded(true);
       setError("");
       setAuthState("authenticated");
-      if (!window.location.hash || ["signin", "signup"].includes(window.location.hash.slice(1))) { window.location.hash = "overview"; setRoute("overview"); }
+      if (["home", "signin", "signup"].includes(currentRoute())) { goTo("overview", true); setRoute("overview"); }
     } catch (failure) {
       if (generation !== loadGeneration.current) return;
       const message =
@@ -164,19 +179,18 @@ export default function App() {
   }, [load]);
 
   useEffect(() => {
-    const change = () => {
-      setRoute(window.location.hash.slice(1) || (hasWorkspace.current ? "overview" : "home"));
+    return onRouteChange(() => {
+      const next = currentRoute();
+      setRoute(next === "home" && hasWorkspace.current ? "overview" : next);
       setSidebar(false);
       setSearch("");
       setFilter("all");
-    };
-    window.addEventListener("hashchange", change);
-    return () => window.removeEventListener("hashchange", change);
+    });
   }, []);
 
   useEffect(() => {
     if (authState === "authenticated" && ["signin", "signup"].includes(route)) {
-      window.location.hash = "overview";
+      goTo("overview", true);
       setRoute("overview");
     }
   }, [authState, route]);
@@ -220,7 +234,7 @@ export default function App() {
   }
 
   function navigate(target: string) {
-    window.location.hash = target;
+    goTo(target);
     setRoute(target);
     setSidebar(false);
   }
@@ -237,7 +251,7 @@ export default function App() {
     try {
       await request("/api/session/logout", {});
       clearSession();
-      window.location.hash = "signin";
+      goTo("signin");
       setRoute("signin");
     } catch (failure) {
       setError(
@@ -257,11 +271,11 @@ export default function App() {
   }
 
   const publicDocs = route.startsWith("docs") && authState !== "authenticated";
-  if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="#home" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="#docs/overview">Guides</a><a href="#connect">Connect MCP</a><a href="#signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
+  if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="/" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="/docs/overview">Guides</a><a href="/connect">Connect MCP</a><a href="/signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
+  if (route === "home" && (!authConfig || (authConfig.edition === "hosted" && !authConfig.setupRequired))) return <Homepage authenticated={authState === "authenticated"} />;
   if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError || "Loading installation…"}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
   if (isAccountRoute(route) && !authConfig.setupRequired) return <AccountScreen route={route} config={authConfig} authenticated={authState === "authenticated"} onChanged={load}/>;
   if (route.startsWith("invite?")) return <InvitationScreen route={route} config={authConfig} state={authState} error={error} onRetry={load} onSignedIn={load} onFlowChange={(active) => {authFlowActive.current=active;}}/>;
-  if (route === "home" && authConfig.edition === "hosted" && !authConfig.setupRequired) return <Homepage authenticated={authState === "authenticated"} />;
 
   if (authState !== "authenticated" || authConfig.setupRequired) {
     return (
@@ -355,7 +369,7 @@ export default function App() {
       >
         <a
           className="wordmark"
-          href="#overview"
+          href="/overview"
           style={{ textDecoration: "none" }}
         >
           <span className="brand-icon">
@@ -438,7 +452,7 @@ export default function App() {
           </div>
           <div className="utility-actions">
             <a
-              href="#docs/overview"
+              href="/docs/overview"
             >
               Documentation
               <ArrowUpRightIcon size={12} />
@@ -471,7 +485,7 @@ export default function App() {
           {error && (
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
-          <>
+          <Suspense fallback={<p className="route-loading-inline" role="status">Loading…</p>}>
             {route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (
@@ -946,7 +960,7 @@ export default function App() {
                 )}
                 {page === "settings" && (
                   <>
-                    <a className="text-link" href="#settings/cloudflare">Cloudflare account and resources</a>
+                    <a className="text-link" href="/settings/cloudflare">Cloudflare account and resources</a>
                     <AccessSettings selfHosted={authConfig.edition === "self-hosted"} repositories={workspace.repositories} onWorkspaceChanged={load} />
 
                     <section className="panel">
@@ -1016,7 +1030,7 @@ export default function App() {
                   : "Private workspace"}
               </span>
             </footer>
-          </>
+          </Suspense>
         </main>
       </div>
       <QuickSearch

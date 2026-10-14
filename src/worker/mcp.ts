@@ -103,7 +103,7 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
   }, (input) => guarded(async () => {
     if (input.action === 'connect') {
       await call<Record<string, unknown>>('/api/cloudflare');
-      return { browserStartUrl: `${origin}/#settings/cloudflare`, browserAuthorizationRequired: true };
+      return { browserStartUrl: `${origin}/settings/cloudflare`, browserAuthorizationRequired: true };
     }
     return call<Record<string, unknown>>(`/api/cloudflare/${input.action}`, ['select-account','disconnect'].includes(input.action) ? { accountId: input.accountId } : undefined);
   }));
