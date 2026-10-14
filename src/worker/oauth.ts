@@ -24,7 +24,7 @@ export async function oauthConsent(request: Request, env: AppEnv, authenticate: 
     if (!(error instanceof ApiError) || error.status !== 401) throw error;
     if (request.method !== 'GET') throw error;
     await oauth.parseAuthRequest(request);
-    return page('<h1>Sign in to connect</h1><p>Sign in to Gitflare in another tab, then return here to review the connection.</p><p><a class="button" href="/#signin" target="_blank" rel="noopener">Sign in</a></p><p><a href="">Continue after signing in</a></p>');
+    return page('<h1>Sign in to connect</h1><p>Sign in to Gitflare in another tab, then return here to review the connection.</p><p><a class="button" href="/signin" target="_blank" rel="noopener">Sign in</a></p><p><a href="">Continue after signing in</a></p>');
   }
   if (principal.credentialId) throw new ApiError(403, 'ACCOUNT_REQUIRED', 'Task credentials cannot authorize personal AI clients.');
   try {

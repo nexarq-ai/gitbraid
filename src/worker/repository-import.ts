@@ -118,18 +118,18 @@ export function buildImportPack(files: ImportFile[], parentSha: string | null, t
   return { pack: new Uint8Array(Buffer.concat([body, createHash('sha1').update(body).digest()])), commitSha: commit.hash.toString('hex') };
 }
 
-function remoteDetails(info: { remote: string; defaultBranch: string }): { base: string; ref: string } {
+export function remoteDetails(info: { remote: string; defaultBranch: string }): { base: string; ref: string } {
   const remote = new URL(info.remote); const branch = info.defaultBranch;
   if (remote.protocol !== 'https:' || remote.username || remote.password || remote.search || remote.hash || !/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,199}$/.test(branch) || branch.includes('..') || branch.includes('//') || branch.endsWith('/') || branch.endsWith('.') || branch.split('/').some(part => part.endsWith('.lock'))) throw new ApiError(502, 'IMPORT_REMOTE', 'Artifacts returned an invalid remote or default branch.');
   return { base: remote.href.replace(/\/$/, ''), ref: `refs/heads/${branch}` };
 }
-async function advertisedRefs(repository: ArtifactRepo, scope: 'read' | 'write', service: 'git-upload-pack' | 'git-receive-pack', fetcher: typeof fetch): Promise<{ refs: Map<string, string>; capabilities: Set<string> }> {
+export async function advertisedRefs(repository: ArtifactRepo, scope: 'read' | 'write', service: 'git-upload-pack' | 'git-receive-pack', fetcher: typeof fetch): Promise<{ refs: Map<string, string>; capabilities: Set<string> }> {
   const { base } = remoteDetails(await repository.info());
   const token = await repository.createToken(scope, 60);
   try { return await discoverRefs(base, service, token.plaintext, fetcher); }
   finally { await repository.revokeToken(token.plaintext); }
 }
-async function discoverRefs(base: string, service: string, token: string, fetcher: typeof fetch) {
+export async function discoverRefs(base: string, service: string, token: string, fetcher: typeof fetch) {
   const response = await fetcher(`${base}/info/refs?service=${service}`, { headers: { authorization: `Bearer ${token}` }, redirect: 'manual', signal: AbortSignal.timeout(15000) });
   requireGitResponse(response, `application/x-${service}-advertisement`);
   const lines = parsePackets(await boundedBody(response));

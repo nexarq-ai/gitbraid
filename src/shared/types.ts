@@ -109,6 +109,8 @@ export interface MissionAttachment { name: string; content: string }
 export interface Mission {
   attachments?: MissionAttachment[];
   skillChange?: RepositorySkillChange;
+  revertChange?: RevertChange;
+  branchChange?: BranchChange;
   authorization?: { principal: import('../worker/security').Principal; workspaceId: string; creatorId: string };
   id: string;
   repositoryId: string;
@@ -157,11 +159,24 @@ export interface Workspace {
   repositories: Repository[];
   missions: Mission[];
   integrations: IntegrationStatus[];
+  ai?: AiSettings;
 }
 
+export interface AiSettings { enabled: boolean; locked: boolean }
+
 export interface AgentTask { name: string; role: string; task: string; model?: string }
+export interface RevertChange { missionId: string; title: string; landedSha: string; previousSha: string }
+export interface BranchChange { branch: string; headSha: string; targetBranch: string; description?: string; closedAt?: string; closedBy?: string }
+export type PullRequestState = 'open' | 'needs_review' | 'approved' | 'landed' | 'closed';
+export type LanderRole = 'Maintainer' | 'Owner';
+export interface BranchRule { pattern: string; requirePullRequest: boolean; requiredApprovals: number; requirePassingChecks: true; requiredCheckNames: string[]; preventSelfApproval: boolean; dismissApprovalsOnNewCommits: true; restrictLanders: LanderRole[]; allowForcePush: false }
+export type BranchRuleInput = Pick<BranchRule, 'pattern' | 'requirePullRequest' | 'requiredApprovals' | 'requiredCheckNames' | 'preventSelfApproval' | 'restrictLanders'>;
+export interface BranchProtection { repositoryId: string; defaultBranch: string; rules: BranchRule[]; configured: boolean; updatedAt?: string; updatedBy?: string }
+export interface BranchInfo { name: string; headSha: string; protected: boolean; default: boolean; ahead?: number; behind?: number }
+export interface BranchList { repositoryId: string; defaultBranch: string; gitUrl: string; branches: BranchInfo[] }
+export interface CreatePullRequestInput { title: string; description?: string; branch: string }
 export interface RepositorySkillChange { action: 'create' | 'update'; path: string; content: string; baseSha: string }
-export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; expectedBaseSha?: string; mode?: MissionMode }
+export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; revertChange?: RevertChange; branchChange?: BranchChange; expectedBaseSha?: string; mode?: MissionMode }
 export interface CreateRepositoryInput { name: string; description?: string }
 export interface ApproveMissionInput { candidateSha: string; baseSha: string }
 export interface ApiError { error: { code: string; message: string } }
@@ -194,3 +209,34 @@ export interface ModelConnectionsSnapshot {
   workersAICatalog: ModelConnection[];
   discovery: 'manual';
 }
+
+export type IssueState = 'open' | 'closed';
+export type IssueCloseReason = 'completed' | 'not_planned';
+export interface IssueComment { id: string; authorId: string; body: string; createdAt: string; editedAt?: string }
+export interface Issue { repositoryId: string; number: number; title: string; body: string; state: IssueState; closedReason?: IssueCloseReason; labels: string[]; assignees: string[]; missionIds: string[]; authorId: string; createdAt: string; updatedAt: string; closedAt?: string; commentCount: number }
+export interface IssueDetail extends Issue { comments: IssueComment[] }
+export interface IssueList { items: Issue[]; total: number; openCount: number; closedCount: number; labels: string[]; offset: number; nextOffset: number | null }
+export interface Release {
+  id: string;
+  repositoryId: string;
+  tag: string;
+  name: string;
+  notes: string;
+  targetSha: string;
+  draft: boolean;
+  prerelease: boolean;
+  authorId: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+}
+
+export interface ReleaseList {
+  releases: Release[];
+  defaultBranch: string;
+  headSha: string | null;
+  commits: { sha: string; message: string }[];
+  limit: number;
+}
+
+export interface ReleaseNotes { markdown: string; targetSha: string; previousTag: string | null; commitCount: number; missionCount: number; truncated: boolean }

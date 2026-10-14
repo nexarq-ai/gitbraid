@@ -98,3 +98,8 @@
   color: #414141;
   font-size: 12px;
 }
+
+.route-progress { position: fixed; inset: 0 0 auto 0; height: 2px; z-index: 1000; overflow: hidden; pointer-events: none; }
+.route-progress span { position: absolute; inset: 0 auto 0 0; width: 40%; background: #f6821f; border-radius: 2px; animation: route-progress 1.1s ease-in-out infinite; }
+@keyframes route-progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
+@media (prefers-reduced-motion: reduce) { .route-progress span { animation: none; width: 100%; opacity: .6; } }

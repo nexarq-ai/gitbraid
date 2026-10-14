@@ -22,6 +22,7 @@ interface Team { id: string; workspaceId: string; name: string; userIds: string[
 interface Grant { id: string; workspaceId: string; subjectType: 'user' | 'team'; subjectId: string; resourceType: string; resourceId: string; actions: Action[] }
 interface Credential { id: string; workspaceId: string; userId: string; name: string; hash: string; repositoryId: string; missionId?: string; actions: Action[]; expiresAt: number; maxRequests: number; maxExecutions: number; requests: number; executions: number; revoked?: boolean; scope?: 'workspace-read' }
 interface Protection { requiredApprovals: number; requiredChecks: string[]; preventSelfApproval: boolean }
+export interface ReviewRule { requiredApprovals: number; requiredCheckNames: string[]; preventSelfApproval: boolean; restrictLanders: Role[] }
 interface Audit { id: string; workspaceId: string; actorId: string; action: string; timestamp: string; resourceId?: string; sequence?: number }
 export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string }
 interface MfaRecord { id: string; encryptedSecret: string; enabled: boolean; lastStep: number; recoveryHashes: string[] }
@@ -58,6 +59,8 @@ function boundedAudit(audit: Audit[]): Audit[] {
 }
 const RETENTION_MS = 7 * 86_400_000;
 const LOGIN_FAILURE_LIMIT = 10;
+// Account-wide ceiling across all clients, so one client cannot lock everyone else out cheaply
+const ACCOUNT_FAILURE_LIMIT = 100;
 const LOGIN_LOCK_MS = 900_000;
 const LOGIN_FAILURE_WINDOW_MS = 86_400_000;
 const VERIFY_TOKEN_MS = 86_400_000;
@@ -92,9 +95,13 @@ function prune(state: State, now: number): void {
   state.emailTokens = state.emailTokens.filter(item => item.expiresAt > now);
   state.invitations = state.invitations.filter(invitation => invitation.expiresAt + RETENTION_MS > now);
   state.credentials = state.credentials.filter(credential => credential.expiresAt + RETENTION_MS > now);
+  state.machines = state.machines.filter(machine => machine.expiresAt + RETENTION_MS > now);
   for (const [id, limit] of Object.entries(state.limits)) if (limit.until <= now) delete state.limits[id];
   for (const [id, value] of Object.entries(state.cloudflareStates)) if (value.expiresAt <= now) delete state.cloudflareStates[id];
   for (const [id, failures] of Object.entries(state.loginFailures)) if (failures.lockedUntil ? failures.lockedUntil <= now : failures.updatedAt + LOGIN_FAILURE_WINDOW_MS <= now) delete state.loginFailures[id];
+}
+function clearLoginFailures(state: State, userId: string): void {
+  for (const key of Object.keys(state.loginFailures)) if (key === userId || key.startsWith(`${userId}|`)) delete state.loginFailures[key];
 }
 function consumeLimit(state: State, key: string, max: number, windowMs: number): boolean {
   const now = Date.now(); const entry = state.limits[key];
@@ -244,7 +251,7 @@ export class SecurityService {
     if (!accepted) throw new ApiError(429, 'RATE_LIMITED', 'Too many authentication attempts. Try again in 15 minutes.');
   }
   async signup(body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
-  async login(body: Record<string, unknown>) {
+  async login(body: Record<string, unknown>, client = 'unknown') {
     const email = requireString(body.email, 'Email', 254).toLowerCase(); const password = requireString(body.password, 'Password', 256);
     const found = await this.read(state => state.users.find(item => item.email === email));
     const hash = await passwordHash(password, found?.salt ?? 'invalid-account-salt');
@@ -252,12 +259,14 @@ export class SecurityService {
     const user = await this.mutate(state => {
       const current = found && state.users.find(item => item.id === found.id && item.email === email && item.salt === found.salt);
       if (!current || current.machine) return null;
-      const failures = state.loginFailures[current.id]; const now = Date.now();
-      if (failures && failures.lockedUntil > now) return null;
-      if (sameHash(current.hash, hash)) { delete state.loginFailures[current.id]; return current; }
-      const count = (failures?.count ?? 0) + 1;
-      state.loginFailures[current.id] = { count, lockedUntil: count >= LOGIN_FAILURE_LIMIT ? now + LOGIN_LOCK_MS : 0, updatedAt: now };
-      if (count === LOGIN_FAILURE_LIMIT) this.auditAccount(state, current.id, 'account:login-locked');
+      const clientKey = `${current.id}|${client.slice(0, 64)}`; const now = Date.now();
+      if ([clientKey, current.id].some(key => (state.loginFailures[key]?.lockedUntil ?? 0) > now)) return null;
+      if (sameHash(current.hash, hash)) { clearLoginFailures(state, current.id); return current; }
+      for (const [key, limit] of [[clientKey, LOGIN_FAILURE_LIMIT], [current.id, ACCOUNT_FAILURE_LIMIT]] as const) {
+        const count = (state.loginFailures[key]?.count ?? 0) + 1;
+        state.loginFailures[key] = { count, lockedUntil: count >= limit ? now + LOGIN_LOCK_MS : 0, updatedAt: now };
+        if (count === limit) this.auditAccount(state, current.id, 'account:login-locked');
+      }
       return null;
     });
     if (!user) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
@@ -557,7 +566,7 @@ export class SecurityService {
       for (const session of state.sessions) if (session.userId === user.id) session.revoked = true;
       state.challenges = state.challenges.filter(challenge => challenge.userId !== user.id);
       state.emailTokens = state.emailTokens.filter(candidate => candidate.userId !== user.id);
-      delete state.loginFailures[user.id];
+      clearLoginFailures(state, user.id);
       this.auditAccount(state, user.id, 'account:password-reset');
       return { ok: true };
     });
@@ -568,11 +577,12 @@ export class SecurityService {
   async acceptInvite(p: Principal, value: string) { const hash = await hashToken(value); return this.mutate(state => { this.validate(state, p); if (p.bootstrap || p.credentialId) fail(); const invite = state.invitations.find(i => i.hash === hash && !i.accepted && i.expiresAt > Date.now()); if (!invite) throw new ApiError(410, 'INVITATION_EXPIRED', 'This invitation is invalid, expired, or already used.'); const user = state.users.find(u => u.id === p.userId); if (!user || user.email !== invite.email) fail('INVITATION_IDENTITY', 'This invitation was issued for a different account email.'); if (state.members.some(m => m.workspaceId === invite.workspaceId && m.userId === p.userId)) throw new ApiError(409, 'ALREADY_MEMBER', 'You already belong to this workspace.'); state.members.push({ userId: p.userId, workspaceId: invite.workspaceId, role: invite.role }); invite.accepted = true; return { ok: true, workspaceId: invite.workspaceId }; }); }
   async clearApprovals(p: Principal, missionId: string) { await this.mutate(state => { this.validate(state,p); for (const key of Object.keys(state.approvals)) if (key.startsWith(`${p.workspaceId}:${missionId}:`)) delete state.approvals[key]; }); }
   async logout(p: Principal) { if (p.sessionId) await this.action(p, 'session-revoke', { id: p.sessionId }); }
-  async recordApproval(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, checks: {name: string; status: string; candidateSha?: string}[], creatorId?: string) { return this.mutate(state => { this.validate(state, p); if (p.credentialId) fail(); const protection = state.protections[p.workspaceId] ?? { requiredApprovals: 1, requiredChecks: [], preventSelfApproval: false }; if (protection.preventSelfApproval && (!creatorId || creatorId === p.userId)) fail('SELF_APPROVAL', 'A different member must review this Stream.'); if (protection.requiredChecks.some(name => !checks.some(check => check.name === name && check.status === 'passed' && check.candidateSha === candidateSha))) throw new ApiError(409, 'CHECKS_REQUIRED', 'Required checks have not passed for this revision.'); const key = `${p.workspaceId}:${missionId}:${candidateSha}:${baseSha}:${epoch}`; const reviewers = [...new Set([...(state.approvals[key] ?? []), p.userId])]; state.approvals[key] = reviewers; return { approvals: reviewers.length, requiredApprovals: protection.requiredApprovals, ready: reviewers.length >= protection.requiredApprovals }; }); }
-  async assertLand(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, repositoryId?: string) {
+  async recordApproval(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, checks: {name: string; status: string; candidateSha?: string}[], creatorId?: string, rule?: ReviewRule) { return this.mutate(state => { this.validate(state, p); if (p.credentialId) fail(); const protection = rule ? { requiredApprovals: rule.requiredApprovals, requiredChecks: rule.requiredCheckNames, preventSelfApproval: rule.preventSelfApproval } : state.protections[p.workspaceId] ?? { requiredApprovals: 1, requiredChecks: [], preventSelfApproval: false }; if (protection.preventSelfApproval && (!creatorId || creatorId === p.userId)) fail('SELF_APPROVAL', 'A different member must review this Stream.'); if (protection.requiredChecks.some(name => !checks.some(check => check.name === name && check.status === 'passed' && check.candidateSha === candidateSha))) throw new ApiError(409, 'CHECKS_REQUIRED', 'Required checks have not passed for this revision.'); const key = `${p.workspaceId}:${missionId}:${candidateSha}:${baseSha}:${epoch}`; const reviewers = [...new Set([...(state.approvals[key] ?? []), p.userId])]; state.approvals[key] = reviewers; return { approvals: reviewers.length, requiredApprovals: protection.requiredApprovals, ready: reviewers.length >= protection.requiredApprovals }; }); }
+  async assertLand(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, repositoryId?: string, rule?: ReviewRule) {
     await this.read(state => {
       this.validate(state, p);
-      const required = state.protections[p.workspaceId]?.requiredApprovals ?? 1;
+      if (rule?.restrictLanders.length && !rule.restrictLanders.includes(p.role)) fail('LANDER_RESTRICTED', `Branch protection allows only ${rule.restrictLanders.join(' or ')} members to land this change.`);
+      const required = rule ? rule.requiredApprovals : state.protections[p.workspaceId]?.requiredApprovals ?? 1;
       const reviewers = state.approvals[`${p.workspaceId}:${missionId}:${candidateSha}:${baseSha}:${epoch}`] ?? [];
       const valid = reviewers.filter(id => {
         if (id === 'bootstrap-owner') return !state.workspaces.find(w => w.id === p.workspaceId)?.bootstrapDisabled;
@@ -604,7 +614,7 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   resendVerification(p: Principal) { return this.service.resendVerification(p); }
   requestPasswordReset(body: Record<string, unknown>) { return this.service.requestPasswordReset(body); }
   confirmPasswordReset(body: Record<string, unknown>) { return this.service.confirmPasswordReset(body); }
-  login(body: Record<string, unknown>) { return this.service.login(body); }
+  login(body: Record<string, unknown>, client?: string) { return this.service.login(body, client); }
   legacySession() { return this.service.legacySession(); }
   bootstrap() { return this.service.bootstrap(); }
   authenticate(value: string, workspaceId?: string) { return this.service.authenticate(value, workspaceId); }
@@ -617,6 +627,6 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   acceptInvite(p: Principal, value: string) { return this.service.acceptInvite(p, value); }
   clearApprovals(p: Principal, missionId: string) { return this.service.clearApprovals(p, missionId); }
   logout(p: Principal) { return this.service.logout(p); }
-  recordApproval(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, checks: {name: string; status: string; candidateSha?: string}[], creatorId?: string) { return this.service.recordApproval(p, missionId, sha, baseSha, epoch, checks, creatorId); }
-  assertLand(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, repositoryId?: string) { return this.service.assertLand(p, missionId, sha, baseSha, epoch, repositoryId); }
+  recordApproval(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, checks: {name: string; status: string; candidateSha?: string}[], creatorId?: string, rule?: ReviewRule) { return this.service.recordApproval(p, missionId, sha, baseSha, epoch, checks, creatorId, rule); }
+  assertLand(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, repositoryId?: string, rule?: ReviewRule) { return this.service.assertLand(p, missionId, sha, baseSha, epoch, repositoryId, rule); }
 }

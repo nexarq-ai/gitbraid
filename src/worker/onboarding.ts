@@ -22,7 +22,7 @@ async function withVerification<T extends { verificationToken: string; user: { e
 export async function signupWithVerification(env: AppEnv, body: Record<string, unknown>, origin: string) {
   return withVerification(env, await env.GITFLARE_SECURITY.getByName('security').signup(body), origin);
 }
-async function handleAccountEmail(request: Request, env: AppEnv, authenticate: AuthenticateRequest): Promise<Response | null> {
+async function handleAccountEmail(request: Request, env: AppEnv, authenticate: AuthenticateRequest, ctx?: ExecutionContext): Promise<Response | null> {
   const url = new URL(request.url); const path = url.pathname;
   if (request.method !== 'POST' || !['/api/auth/verify-email', '/api/auth/resend-verification', '/api/auth/password-reset/request', '/api/auth/password-reset/confirm'].includes(path)) return null;
   assertMutationOrigin(request);
@@ -41,13 +41,17 @@ async function handleAccountEmail(request: Request, env: AppEnv, authenticate: A
   }
   requireEmail(env);
   const pending = await service.requestPasswordReset(body);
-  if (pending) await deliverPasswordReset(env, { ...pending, origin: url.origin });
+  if (pending) {
+    // Sending after the response keeps timing identical whether or not the account exists
+    const delivery = deliverPasswordReset(env, { ...pending, origin: url.origin }).then(() => {}, () => {});
+    if (ctx) ctx.waitUntil(delivery); else await delivery;
+  }
   return Response.json(RESET_REQUESTED, noStore);
 }
-export async function handleOnboarding(request: Request, env: AppEnv, authenticate: AuthenticateRequest): Promise<Response | null> {
+export async function handleOnboarding(request: Request, env: AppEnv, authenticate: AuthenticateRequest, ctx?: ExecutionContext): Promise<Response | null> {
   const path = new URL(request.url).pathname; const service = env.GITFLARE_SECURITY.getByName('security');
   if (path === '/api/auth/config' && request.method === 'GET') return Response.json({ ...await service.authConfig(), passwordReset: emailConfigured(env), emailVerification: env.EDITION !== 'self-hosted' && emailConfigured(env) }, noStore);
-  const account = await handleAccountEmail(request, env, authenticate);
+  const account = await handleAccountEmail(request, env, authenticate, ctx);
   if (account) return account;
   if (request.method !== 'POST' || !['/api/setup/start', '/api/setup/verify', '/api/mfa/verify', '/api/mfa/enroll', '/api/users/create', '/api/invitations/register'].includes(path)) return handleHostedOnboarding(request, env, authenticate);
   assertMutationOrigin(request);

@@ -7,6 +7,8 @@ interface RunnerEnv { ARTIFACTS: ArtifactsBinding; RUNNER_IMAGE?: string }
 interface OutboundProps { repositories: GitPermission[] }
 
 const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
+// Vite-based dev and preview servers reject any Host other than localhost
+const PREVIEW_HOST = 'http://localhost:8080';
 
 export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
   async fetch(request: Request): Promise<Response> {
@@ -128,7 +130,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     await container.interceptOutboundHttps('*', outbound);
   }
 
-  async install(): Promise<CommandResult> {
+  async install(mode: 'ci' | 'install' = 'ci'): Promise<CommandResult> {
     const container = this.ctx.container;
     const repositories = this.#repositories;
     if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
@@ -139,7 +141,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     await container.interceptOutboundHttps('*', registry);
     try {
       // --ignore-scripts: package lifecycle scripts must not run while the registry is reachable
-      return await this.#executeCommand(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
+      return await this.#executeCommand(['npm', mode, '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
     } finally { await this.#restrictToGit(repositories); }
   }
 
@@ -152,6 +154,10 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
 
   async command(argv: string[], cwd = '/workspace', timeoutMs = 60_000): Promise<CommandResult> {
     return this.#executeCommand(argv, cwd, timeoutMs, 120_000);
+  }
+
+  async check(script: string, timeoutMs: number): Promise<CommandResult> {
+    return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, 300_000);
   }
 
   async #executeCommand(argv: string[], cwd: string, timeoutMs: number, maximumMs: number): Promise<CommandResult> {
@@ -185,7 +191,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const execution = (async () => {
       const process = await container.exec(['timeout', '--kill-after=2s', `${seconds}s`, ...argv], {
         cwd,
-        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', CI: 'true' },
       });
       const [stdout, stderr, exitCode] = await Promise.all([collect(process.stdout), collect(process.stderr), process.exitCode]);
       return { stdout, stderr, exitCode };
@@ -194,7 +200,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     finally { clearTimeout(timer); }
   }
 
-  async startPreview(command = 'node src/preview.mjs'): Promise<void> {
+  async startPreview(command: string | string[] = 'node src/preview.mjs', readinessMs = 15_000): Promise<void> {
     const container = this.ctx.container;
     if (!container?.running) throw new Error('Preview container is not running');
     const controller = new AbortController();
@@ -203,25 +209,25 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         controller.abort();
-        reject(new Error('Preview did not become HTTP-ready within 15 seconds'));
-      }, 15_000);
+        reject(new Error(`Preview did not answer HTTP on port 8080 within ${Math.round(readinessMs / 1000)} seconds`));
+      }, readinessMs);
     });
     try {
       const process = await Promise.race([
-        container.exec(['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
+        container.exec(Array.isArray(command) ? command : ['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
         timeout,
       ]);
       const exited = process.exitCode.then((code) => { throw new Error(`Preview process exited before readiness (exit ${code})`); });
       const port = container.getTcpPort(8080);
       for (;;) {
         const response = await Promise.race([
-          port.fetch(new Request('http://preview.internal/', { signal: controller.signal, redirect: 'manual' })).catch(() => null),
+          port.fetch(new Request(`${PREVIEW_HOST}/`, { signal: controller.signal, redirect: 'manual' })).catch(() => null),
           exited,
           timeout,
         ]);
         if (response) {
           await Promise.race([response.body?.cancel(), exited, timeout]);
-          if (response.ok) return;
+          if (response.status < 500) return;
         }
         await Promise.race([new Promise((resolve) => { retryTimer = setTimeout(resolve, 250); }), exited, timeout]);
       }
@@ -239,7 +245,8 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const headers = new Headers(request.headers);
     headers.delete('authorization');
     headers.delete('cookie');
-    return container.getTcpPort(8080).fetch(new Request(`http://preview.internal${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
+    headers.delete('host');
+    return container.getTcpPort(8080).fetch(new Request(`${PREVIEW_HOST}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
   }
 
   async destroy(): Promise<void> {

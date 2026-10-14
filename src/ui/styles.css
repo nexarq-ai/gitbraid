@@ -2942,6 +2942,7 @@ a svg {
 .race-card .race-stats { display: flex; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 640px) { .mission-mode { grid-template-columns: 1fr; } }
 
+.route-loading { min-height: 100vh; background: #fff; }
 .agent-usage{margin-top:8px;font-size:12px;color:var(--muted,#6b6b6b);overflow-wrap:anywhere}
 .mission-attachments pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 @media (max-width:768px){
@@ -2954,3 +2955,12 @@ a svg {
   .proposal-create-footer,.proposal-create-footer>div{flex-wrap:wrap}
   .proposal-agent-grid{grid-template-columns:minmax(0,1fr)!important}
 }
+
+/* Kumo buttons and Tailwind's preflight svg are block-level, so text-align alone cannot centre them */
+.skills-empty > svg, .skills-empty > button,
+.proposal-no-repository > svg, .proposal-no-repository > button,
+.repository-import-dropzone > svg, .repository-import-dropzone > button,
+.repository-import-success > svg,
+.cf-resource-empty > button { margin-inline: auto; }
+
+.ai-off .ai-only { display: none !important; }

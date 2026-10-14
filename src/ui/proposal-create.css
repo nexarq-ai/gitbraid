@@ -64,3 +64,12 @@
 .proposal-attachment-list li{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .proposal-attachment-list code{overflow-wrap:anywhere}
 .proposal-inline-import{margin-top:12px;min-width:0}
+.proposal-attachments .panel-body > p { margin: 0; color: #59616c; font-size: 13px; line-height: 1.6; }
+.proposal-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.proposal-file-picker { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 13px; color: #59616c; }
+.proposal-section .mission-mode { margin: 0; }
+.proposal-draft { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.proposal-draft small { flex: 1 1 260px; color: #626b79; font-size: 12px; line-height: 1.5; }
+.proposal-draft-note { margin: 10px 0 0; padding: 10px 12px; border-radius: 6px; background: #f2f7ff; color: #2b4c7e; font-size: 13px; }
+.proposal-optional-assignment summary { cursor: pointer; font-size: 13px; font-weight: 550; margin-bottom: 8px; }
+.proposal-optional-assignment textarea { width: 100%; }

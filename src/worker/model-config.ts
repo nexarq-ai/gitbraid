@@ -72,7 +72,8 @@ export async function verifyModelConnection(env: ModelEnv, model: ModelConnectio
   } catch (error) {
     const failure = classifyModelFailure(error);
     console.error(JSON.stringify({ event: 'model_verification_failed', ...failure }));
-    const reason = failure.operation === 'normalize' ? `Unexpected model output (${failure.code}).` : failure.errorName === 'TimeoutError' || failure.errorName === 'AbortError' ? 'The bounded inference timed out.' : `The AI binding rejected inference${failure.providerStatus ? ` (HTTP ${failure.providerStatus})` : ''}.`;
+    const rejection = error instanceof Error && error.message.startsWith('AI Gateway rejected') ? error.message : null;
+    const reason = rejection ?? (failure.operation === 'normalize' ? `Unexpected model output (${failure.code}).` : failure.errorName === 'TimeoutError' || failure.errorName === 'AbortError' ? 'The bounded inference timed out.' : `The AI binding rejected inference${failure.providerStatus ? ` (HTTP ${failure.providerStatus})` : ''}.`);
     return { ...validated, verification: { status: 'failed', checkedAt, detail: `${reason} Check the model identifier, transport, Gateway default BYOK alias or billing, and Workers AI availability.` } };
   }
 }

@@ -1,9 +1,12 @@
 import cloudflareIcon from "./assets/cloudflare-icon.svg";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
   useState,
+  useTransition,
   type FormEvent,
 } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
@@ -46,21 +49,51 @@ import {
   SetupSteps,
   Status,
 } from "./components";
-import MissionDetail from "./MissionDetail";
-import RepositoryBrowser from "./RepositoryBrowser";
 import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
-import Documentation from "./Documentation";
-import RepositorySkills from "./RepositorySkills";
-import CloudflareConnection from "./CloudflareConnection";
-import McpConnections from "./McpConnections";
-import Homepage from "./SelfHostedHome";
-import AccessSettings from "./AccessSettings";
-import RepositoryWork from "./RepositoryWork";
-import ProposalCreate from "./ProposalCreate";
+import WorkspaceLoader, { RouteProgress } from "./WorkspaceLoader";
+import AiSettingsPanel from "./AiSettingsPanel";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
-import ModelConnections from "./ModelConnections";
+import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
+
+const loadMissionDetail = () => import("./MissionDetail");
+const MissionDetail = lazy(loadMissionDetail);
+const loadRepositoryBrowser = () => import("./RepositoryBrowser");
+const RepositoryBrowser = lazy(loadRepositoryBrowser);
+const loadDocumentation = () => import("./Documentation");
+const Documentation = lazy(loadDocumentation);
+const loadRepositorySkills = () => import("./RepositorySkills");
+const RepositorySkills = lazy(loadRepositorySkills);
+const loadCloudflareConnection = () => import("./CloudflareConnection");
+const CloudflareConnection = lazy(loadCloudflareConnection);
+const loadMcpConnections = () => import("./McpConnections");
+const McpConnections = lazy(loadMcpConnections);
+const loadHomepage = () => import("./SelfHostedHome");
+const Homepage = lazy(loadHomepage);
+const loadAccessSettings = () => import("./AccessSettings");
+const AccessSettings = lazy(loadAccessSettings);
+const loadRepositoryWork = () => import("./RepositoryWork");
+const RepositoryWork = lazy(loadRepositoryWork);
+const loadProposalCreate = () => import("./ProposalCreate");
+const ProposalCreate = lazy(loadProposalCreate);
+const loadModelConnections = () => import("./ModelConnections");
+const ModelConnections = lazy(loadModelConnections);
+const loadIssues = () => import("./Issues");
+const Issues = lazy(loadIssues);
+const loadReleases = () => import("./Releases");
+const Releases = lazy(loadReleases);
+const loadPullRequests = () => import("./PullRequests");
+const PullRequests = lazy(loadPullRequests);
+const loadPullRequestCreate = () => import("./PullRequestCreate");
+const PullRequestCreate = lazy(loadPullRequestCreate);
+const loadBranchProtection = () => import("./BranchProtection");
+const BranchProtection = lazy(loadBranchProtection);
+const loadGitAccess = () => import("./GitAccess");
+const GitAccess = lazy(loadGitAccess);
+const workspacePages = [loadMissionDetail, loadRepositoryBrowser, loadDocumentation, loadRepositorySkills, loadCloudflareConnection, loadMcpConnections, loadAccessSettings, loadRepositoryWork, loadProposalCreate, loadModelConnections, loadIssues, loadReleases, loadPullRequests, loadPullRequestCreate, loadBranchProtection, loadGitAccess];
+// Start the homepage chunk alongside the main bundle instead of after it
+if (currentRoute() === "home") void loadHomepage();
 
 type Modal = "repository" | "connect" | "learn" | "session" | null;
 const blankWorkspace: Workspace = {
@@ -72,7 +105,30 @@ const blankWorkspace: Workspace = {
 };
 const runningStates = ["queued", "running", "checking", "integrating"];
 
+const RETURN_ROUTE_KEY = "gitflare:return-route";
+
+function isPublicRoute(route: string): boolean {
+  return ["home", "signin", "signup", "source/gitflare", "deploy"].includes(route) || route.startsWith("docs") || route.startsWith("invite?") || isAccountRoute(route);
+}
+
+function takeReturnRoute(): string {
+  try {
+    const stored = sessionStorage.getItem(RETURN_ROUTE_KEY);
+    sessionStorage.removeItem(RETURN_ROUTE_KEY);
+    if (stored && !isPublicRoute(stored)) return stored;
+  } catch {}
+  return "overview";
+}
+
 export default function App() {
+  return (
+    <Suspense fallback={currentRoute() === "home" ? <main className="route-loading" aria-busy="true" /> : <WorkspaceLoader />}>
+      <Workspace />
+    </Suspense>
+  );
+}
+
+function Workspace() {
   const [workspace, setWorkspace] = useState<Workspace>(blankWorkspace);
   const [authConfigError, setAuthConfigError] = useState("");
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
@@ -86,8 +142,9 @@ export default function App() {
   >("checking");
   const [signingOut, setSigningOut] = useState(false);
   const [route, setRoute] = useState(
-    () => window.location.hash.slice(1) || "home",
+    () => { canonicalizeLegacyHash(); return currentRoute(); },
   );
+  const [routePending, startRouteTransition] = useTransition();
   const [modal, setModal] = useState<Modal>(null);
   const [sidebar, setSidebar] = useState(false);
   const [quickSearchOpen, setQuickSearchOpen] = useState(false);
@@ -130,7 +187,7 @@ export default function App() {
       setLoaded(true);
       setError("");
       setAuthState("authenticated");
-      if (!window.location.hash || ["signin", "signup"].includes(window.location.hash.slice(1))) { window.location.hash = "overview"; setRoute("overview"); }
+      if (["signin", "signup"].includes(currentRoute())) { const next = takeReturnRoute(); goTo(next, true); setRoute(next); }
     } catch (failure) {
       if (generation !== loadGeneration.current) return;
       const message =
@@ -156,6 +213,19 @@ export default function App() {
   }, [clearSession]);
 
   useEffect(() => {
+    if (authState !== "required" || isPublicRoute(route)) return;
+    try { sessionStorage.setItem(RETURN_ROUTE_KEY, route); } catch {}
+    goTo("signin", true);
+  }, [authState, route]);
+
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    const prefetch = () => { for (const load of workspacePages) void load().catch(() => {}); };
+    const idle = (window as { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback;
+    if (idle) idle(prefetch); else setTimeout(prefetch, 1500);
+  }, [authState]);
+
+  useEffect(() => {
     window.addEventListener("gitflare:session-required", clearSession);
     return () =>
       window.removeEventListener("gitflare:session-required", clearSession);
@@ -171,20 +241,22 @@ export default function App() {
   }, [load]);
 
   useEffect(() => {
-    const change = () => {
-      setRoute(window.location.hash.slice(1) || (hasWorkspace.current ? "overview" : "home"));
+    return onRouteChange(() => {
+      const next = currentRoute();
       setSidebar(false);
-      setSearch("");
-      setFilter("all");
-    };
-    window.addEventListener("hashchange", change);
-    return () => window.removeEventListener("hashchange", change);
+      startRouteTransition(() => {
+        setRoute(next);
+        setSearch("");
+        setFilter("all");
+      });
+    });
   }, []);
 
   useEffect(() => {
     if (authState === "authenticated" && ["signin", "signup"].includes(route)) {
-      window.location.hash = "overview";
-      setRoute("overview");
+      const next = takeReturnRoute();
+      goTo(next, true);
+      setRoute(next);
     }
   }, [authState, route]);
 
@@ -227,12 +299,16 @@ export default function App() {
   }
 
   function navigate(target: string) {
-    window.location.hash = target;
-    setRoute(target);
+    goTo(target);
+    startRouteTransition(() => setRoute(target));
     setSidebar(false);
   }
 
+  const aiEnabled = workspace.ai?.enabled !== false;
+  useEffect(() => { document.documentElement.classList.toggle("ai-off", !aiEnabled); }, [aiEnabled]);
+
   function createMission(repositoryId?: string) {
+    if (!aiEnabled) { notify("AI features are turned off for this workspace. An Owner can turn them on in Settings."); return; }
     if (!permissions.includes("contribute")) { notify("Your role cannot create missions."); return; }
     navigate(repositoryId ? `repository/${repositoryId}/proposals/new` : "proposals/new");
   }
@@ -243,7 +319,7 @@ export default function App() {
     try {
       await request("/api/session/logout", {});
       clearSession();
-      window.location.hash = "signin";
+      goTo("signin");
       setRoute("signin");
     } catch (failure) {
       setError(
@@ -263,11 +339,12 @@ export default function App() {
   }
 
   const publicDocs = route.startsWith("docs") && authState !== "authenticated";
-  if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="#home" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="#docs/overview">Guides</a><a href="#connect">Connect MCP</a><a href="#signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
-  if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError || "Loading installation…"}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
+  if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="/" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="/docs/overview">Guides</a><a href="/connect">Connect MCP</a><a href="/signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
+  if (route === "home" && (!authConfig || (authConfig.edition === "hosted" && !authConfig.setupRequired))) return <Homepage authenticated={authState === "authenticated"} />;
+  if (!authConfig && !authConfigError) return <WorkspaceLoader />;
+  if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
   if (isAccountRoute(route) && !authConfig.setupRequired) return <AccountScreen key={route} route={route} config={authConfig} authenticated={authState === "authenticated"} onChanged={load}/>;
   if (route.startsWith("invite?")) return <InvitationScreen route={route} config={authConfig} state={authState} error={error} onRetry={load} onSignedIn={load} onFlowChange={(active) => {authFlowActive.current=active;}}/>;
-  if (route === "home" && authConfig.edition === "hosted" && !authConfig.setupRequired) return <Homepage authenticated={authState === "authenticated"} />;
 
   if (authState !== "authenticated" || authConfig.setupRequired) {
     return (
@@ -365,7 +442,7 @@ export default function App() {
       >
         <a
           className="wordmark"
-          href="#overview"
+          href="/overview"
           style={{ textDecoration: "none" }}
         >
           <span className="brand-icon">
@@ -408,13 +485,13 @@ export default function App() {
             <GearSixIcon size={17} />
             Settings
           </button>
-          <button className={`nav-item ${route === "settings/models" ? "active" : ""}`} aria-current={route === "settings/models" ? "page" : undefined} onClick={() => navigate("settings/models")}><RobotIcon size={17} />AI models</button>
+          <button className={`nav-item ai-only ${route === "settings/models" ? "active" : ""}`} aria-current={route === "settings/models" ? "page" : undefined} onClick={() => navigate("settings/models")}><RobotIcon size={17} />AI models</button>
           <button className={`nav-item ${route === "settings/cloudflare" ? "active" : ""}`} aria-current={route === "settings/cloudflare" ? "page" : undefined} onClick={() => navigate("settings/cloudflare")}><CloudIcon size={17} />Cloudflare</button>
           <button className={`nav-item ${page === "docs" ? "active" : ""}`} onClick={() => navigate("docs/overview")} aria-current={page === "docs" ? "page" : undefined}>
             <BookOpenIcon size={17} />
             Documentation
           </button>
-          <button className={`nav-item ${page === "connect" ? "active" : ""}`} onClick={() => navigate("connect")}><RobotIcon size={17}/>Connect AI clients</button>
+          <button className={`nav-item ai-only ${page === "connect" ? "active" : ""}`} onClick={() => navigate("connect")}><RobotIcon size={17}/>Connect AI clients</button>
           <button className="nav-item" onClick={() => setModal("learn")}>
             <BookOpenIcon size={17} />
             How Gitflare works
@@ -449,7 +526,7 @@ export default function App() {
           </div>
           <div className="utility-actions">
             <a
-              href="#docs/overview"
+              href="/docs/overview"
             >
               Documentation
               <ArrowUpRightIcon size={12} />
@@ -478,11 +555,12 @@ export default function App() {
             </div>
           </div>
         </header>
+        {routePending && <RouteProgress />}
         <main className="page-content" id="main-content" tabIndex={-1}>
           {error && (
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
-          <>
+          <Suspense fallback={<RouteProgress />}>
             {importingRepository ? importRepository ? <RepositoryImport key={importRepository.id} repository={importRepository} canManage={permissions.includes("manage")} canContribute={permissions.includes("contribute")} onBack={() => navigate(`repository/${importRepository.id}/code`)} onImported={item => setWorkspace(current => ({ ...current, repositories: current.repositories.map(repo => repo.id === item.id ? item : repo) }))} onCreateProposal={() => createMission(importRepository.id)} /> : <ErrorNotice message="This repository could not be found." /> : creatingProposal ? <ProposalCreate key={route} repositories={workspace.repositories} repositoryId={proposalRepositoryId} canContribute={permissions.includes("contribute")} canManage={permissions.includes("manage")} onImportRepository={id => navigate(`repository/${id}/import`)} onBack={() => navigate(proposalRepositoryId ? `repository/${proposalRepositoryId}/proposals` : "missions")} onCreateRepository={() => setModal("repository")} onCreated={async proposal => { await load(); navigate(`mission/${proposal.id}`); notify("Mission draft created."); }} /> : route === "settings/models" ? <ModelConnections canManage={permissions.includes("manage")} /> : route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (
@@ -495,7 +573,7 @@ export default function App() {
                 onTabChange={(tab) => navigate(`mission/${route.split("/")[1]}/${tab}`)}
                 permissions={permissions}
                 workspace={workspace}
-                onBack={() => { const mission = workspace.missions.find(item => item.id === route.split("/")[1]); navigate(mission ? `repository/${mission.repositoryId}/proposals` : "missions"); }}
+                onBack={() => { const mission = workspace.missions.find(item => item.id === route.split("/")[1]); navigate(mission ? `repository/${mission.repositoryId}/${mission.branchChange ? "pulls" : "proposals"}` : "missions"); }}
                 onUpdate={() => void load()}
               />
             ) : page === "repository" ? (
@@ -508,6 +586,11 @@ export default function App() {
                 onMission={createMission}
                 onOpenMission={(id, tab, runId) => navigate(`mission/${id}/${tab || "overview"}${runId ? `/${runId}` : ""}`)}
                 tab={route.split("/")[2] || "code"}
+                issueNumber={route.split("/")[3]}
+                releaseId={route.split("/")[3]}
+                canLand={permissions.includes("land")}
+                subroute={route.split("/").slice(3).join("/")}
+                onRefresh={() => void load()}
                 onTabChange={(tab) => navigate(`repository/${route.split("/")[1]}/${tab}`)}
                 onImport={() => navigate(`repository/${route.split("/")[1]}/import`)}
                 canManage={permissions.includes("manage")}
@@ -570,7 +653,8 @@ export default function App() {
                           size="base"
                           icon={PlusIcon}
                           disabled={!permissions.includes("contribute")}
-                          onClick={() => createMission()}
+                          className="ai-only"
+          onClick={() => createMission()}
                         >
                           Create mission
                         </Button>
@@ -629,7 +713,8 @@ export default function App() {
                                   size="base"
                                   icon={PlusIcon}
                                   disabled={!permissions.includes("contribute")}
-                          onClick={() => createMission()}
+                          className="ai-only"
+          onClick={() => createMission()}
                                 >
                                   Create your first mission
                                 </Button>
@@ -960,7 +1045,8 @@ export default function App() {
                 {page === "settings" && (
                   <>
                     <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><img src={cloudflareIcon} alt="" /><div><h2>Cloudflare account and resources</h2><p>Connect your account and manage the services used by your repositories.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/cloudflare")}>Manage Cloudflare</Button></section>
-                    <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><RobotIcon size={27} /><div><h2>AI models</h2><p>Choose available Workers AI models and manage provider connections.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/models")}>Manage AI models</Button></section>
+                    <section className="panel settings-cloudflare ai-only"><div className="settings-cloudflare-heading"><RobotIcon size={27} /><div><h2>AI models</h2><p>Choose available Workers AI models and manage provider connections.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/models")}>Manage AI models</Button></section>
+                    <AiSettingsPanel settings={workspace.ai} canManage={permissions.includes("manage")} onChanged={load} />
                     <AccessSettings selfHosted={authConfig.edition === "self-hosted"} repositories={workspace.repositories} onWorkspaceChanged={load} />
 
                     <section className="panel">
@@ -1030,7 +1116,7 @@ export default function App() {
                   : "Private workspace"}
               </span>
             </footer>
-          </>
+          </Suspense>
         </main>
       </div>
       <QuickSearch
@@ -1131,8 +1217,13 @@ function RepositoryDetail({
   canExecute,
   canManage,
   tab,
+  issueNumber,
+  subroute,
+  onRefresh,
   onTabChange,
   onImport,
+  releaseId,
+  canLand,
 }: {
   repository?: Repository;
   workspace: Workspace;
@@ -1144,8 +1235,13 @@ function RepositoryDetail({
   canExecute: boolean;
   canManage: boolean;
   tab: string;
+  issueNumber?: string;
+  subroute: string;
+  onRefresh: () => void;
   onTabChange: (tab: string) => void;
   onImport: () => void;
+  releaseId?: string;
+  canLand: boolean;
 }) {
   if (!repository)
     return (
@@ -1160,6 +1256,8 @@ function RepositoryDetail({
   const missions = workspace.missions.filter(
     (mission) => mission.repositoryId === repository.id,
   );
+  const agentMissions = missions.filter((mission) => !mission.branchChange);
+  const pullCount = missions.length - agentMissions.length;
   return (
     <>
       <button className="header-back" onClick={onBack}>
@@ -1182,6 +1280,7 @@ function RepositoryDetail({
           size="base"
           icon={PlusIcon}
           disabled={!canContribute}
+          className="ai-only"
           onClick={() => onMission(repository.id)}
         >
           Create mission
@@ -1190,16 +1289,20 @@ function RepositoryDetail({
       <nav className="repository-navigation" aria-label="Repository navigation">
         {[
             { value: "code", label: "Code" },
-            { value: "proposals", label: `Missions (${missions.length})` },
+            { value: "issues", label: "Issues" },
+            { value: "pulls", label: `Pull requests (${pullCount})` },
+            { value: "proposals", label: `Missions (${agentMissions.length})` },
             { value: "agents", label: `Agents (${missions.reduce((count, mission) => count + (mission.epoch > 0 ? mission.runs.length : 0), 0)})` },
             { value: "checks", label: `Checks (${missions.reduce((count, mission) => count + mission.checks.length, 0)})` },
-            { value: "skills", label: "Skills" },
+            { value: "skills", label: "Skills", ai: true },
+            { value: "releases", label: "Releases" },
             { value: "cloudflare", label: "Cloudflare" },
+            { value: "settings/branches", label: "Branches" },
             { value: "overview", label: "Overview" },
-          ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
+          ].map((item) => <button key={item.value} className={"ai" in item && item.ai ? "ai-only" : undefined} aria-current={tab === item.value || `${tab}/${subroute}` === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
-      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
-        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} /></>
+      {tab === "issues" ? <Issues key={repository.id} repository={repository} issueNumber={issueNumber} missions={missions} /> : tab === "releases" ? <Releases key={repository.id} repository={repository} releaseId={releaseId} canLand={canLand} onNotify={onNotify} /> : tab === "pulls" ? subroute === "new" ? <PullRequestCreate key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onCreated={onRefresh} /> : <PullRequests key={repository.id} repositoryId={repository.id} missions={missions} canContribute={canContribute} /> : tab === "settings" && subroute === "branches" ? <BranchProtection key={repository.id} repository={repository} canManage={canManage} onNotify={onNotify} /> : ["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={tab === "proposals" ? agentMissions : missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
+        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} />{repository.provider === "artifacts" && <GitAccess key={`git-${repository.id}`} repository={repository} onNotify={onNotify} />}</>
       ) : tab === "overview" ? (
         <>
           <section className="panel">
@@ -1297,6 +1400,7 @@ function RepositoryDetail({
                     variant="secondary"
                     size="base"
                     disabled={!canContribute}
+          className="ai-only"
           onClick={() => onMission(repository.id)}
                   >
                     Create mission
@@ -1324,6 +1428,7 @@ function RepositoryDetail({
                   variant="secondary"
                   size="base"
                   disabled={!canContribute}
+          className="ai-only"
           onClick={() => onMission(repository.id)}
                 >
                   Create mission

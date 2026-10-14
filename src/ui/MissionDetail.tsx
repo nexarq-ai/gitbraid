@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
+import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import {
   ArrowLeftIcon,
@@ -10,6 +11,7 @@ import {
   FileCodeIcon,
   GitBranchIcon,
   GitCommitIcon,
+  ArrowCounterClockwiseIcon,
   GitMergeIcon,
   InfoIcon,
   PlayIcon,
@@ -24,6 +26,9 @@ import { request } from "./api";
 import { EmptyState, ErrorNotice, relativeTime, Status } from "./components";
 import AgentAssignment from "./AgentAssignment";
 import AttemptHistory from "./AttemptHistory";
+import { PullRequestPanel } from "./PullRequests";
+import { navigate as goTo } from "./router";
+import { RouteProgress } from "./WorkspaceLoader";
 
 type Props = {
   id: string;
@@ -73,6 +78,7 @@ export default function MissionDetail({
   } | null>(null);
   const mutation = useRef<{ signature: string; key: string } | null>(null);
   const revision = useRef(0);
+  const [confirming, setConfirming] = useState<"approve" | "integrate" | null>(null);
   const pollSequence = useRef(0);
   const repository = workspace.repositories.find(
     (item) => item.id === mission?.repositoryId,
@@ -115,14 +121,6 @@ export default function MissionDetail({
     action: "start" | "cancel" | "approve" | "integrate" | "revoke",
   ) {
     if (!mission || busy) return;
-    if (
-      action === "integrate" &&
-      mission.status === "approved" &&
-      !window.confirm(
-        `Land commit ${mission.candidateSha} on the default branch of ${repository?.name ?? "this repository"}? This updates the canonical repository and cannot be undone here.`,
-      )
-    )
-      return;
     setBusy(action);
     setError("");
     const body =
@@ -152,6 +150,29 @@ export default function MissionDetail({
         failure instanceof Error
           ? failure.message
           : "The mission could not be updated.",
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function revert() {
+    if (!mission || busy) return;
+    setBusy("revert");
+    setError("");
+    try {
+      const started = await request<Mission>(
+        `/api/missions/${encodeURIComponent(id)}/revert`,
+        {},
+        crypto.randomUUID(),
+      );
+      onUpdate();
+      goTo(`mission/${started.id}`);
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "The revert could not be started.",
       );
     } finally {
       setBusy("");
@@ -278,7 +299,7 @@ export default function MissionDetail({
         {loadError ? (
           <ErrorNotice message={loadError} />
         ) : (
-          <div className="loading-state">Loading mission…</div>
+          <RouteProgress />
         )}
       </>
     );
@@ -359,7 +380,7 @@ export default function MissionDetail({
           <h1>{mission.title}</h1>
           <div className="detail-meta">
             <Status status={mission.status} />
-            <span>{mission.mode === "race" ? "Race mission" : "Mission"}</span>
+            <span>{mission.branchChange ? "Pull request" : mission.mode === "race" ? "Race mission" : "Mission"}</span>
             <span>
               <GitBranchIcon size={13} />
               {repository?.name ?? "Repository"}
@@ -383,7 +404,7 @@ export default function MissionDetail({
               {currentPreview ? "Refresh preview" : "Prepare preview"}
             </Button>
           )}
-          {["draft", "failed", "cancelled", "needs_review"].includes(
+          {!mission.branchChange && ["draft", "failed", "cancelled", "needs_review"].includes(
             mission.status,
           ) && (
             <Button
@@ -415,6 +436,18 @@ export default function MissionDetail({
               Cancel mission
             </Button>
           )}
+          {mission.status === "integrated" && (
+            <Button
+              variant="secondary"
+              size="base"
+              icon={ArrowCounterClockwiseIcon}
+              loading={busy === "revert"}
+              disabled={!!busy || !permissions.includes("contribute") || !permissions.includes("execute")}
+              onClick={() => void revert()}
+            >
+              Revert
+            </Button>
+          )}
           {mission.status === "approved" && (
             <Button
               variant="secondary"
@@ -437,7 +470,7 @@ export default function MissionDetail({
                 !permissions.includes("land") ||
                 unresolvedRequests.length > 0
               }
-              onClick={() => void act("integrate")}
+              onClick={() => mission.status === "integrating" ? void act("integrate") : setConfirming("integrate")}
             >
               {mission.status === "integrating"
                 ? "Recheck landing"
@@ -451,13 +484,14 @@ export default function MissionDetail({
               icon={ShieldCheckIcon}
               loading={busy === "approve"}
               disabled={!!busy || !permissions.includes("review")}
-              onClick={() => void act("approve")}
+              onClick={() => setConfirming("approve")}
             >
               Approve candidate
             </Button>
           )}
         </div>
       </div>
+      {mission.branchChange && <PullRequestPanel mission={mission} permissions={permissions} onChange={(result) => { revision.current++; setMission(result); onUpdate(); }} />}
       {currentPreview && (
         <div className="alert info">
           <ArrowSquareOutIcon size={17} />
@@ -528,7 +562,8 @@ export default function MissionDetail({
         <div className="alert info">
           <GitMergeIcon size={17} />
           <div className="alert-text">
-            The approved candidate has landed in the repository.
+            The approved candidate has landed in the repository. Revert creates a
+            new commit that undoes it, checked and approved like any change.
           </div>
         </div>
       )}
@@ -925,7 +960,7 @@ export default function MissionDetail({
                       key={runId}
                       className="text-link"
                       onClick={() => {
-                        window.location.hash = `mission/${mission.id}/agents/${runId}`;
+                        goTo(`mission/${mission.id}/agents/${runId}`);
                       }}
                     >
                       {mission.runs.find((run) => run.id === runId)?.name ??
@@ -1170,6 +1205,24 @@ export default function MissionDetail({
       {tab === "attempts" && (
         <AttemptHistory key={mission.id} mission={mission} />
       )}
+      <Dialog.Root open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
+        <Dialog size="sm" className="dialog-content">
+          <Dialog.Title className="dialog-title">
+            {confirming === "approve" ? "Approve this candidate?" : "Land these changes?"}
+          </Dialog.Title>
+          <Dialog.Description className="dialog-description">
+            {confirming === "approve"
+              ? <>Approve commit <code>{mission.candidateSha?.slice(0, 12)}</code> after {mission.checks.length} passing check{mission.checks.length === 1 ? "" : "s"}. Approval does not change the repository; landing is a separate step.</>
+              : <>Land commit <code>{mission.candidateSha?.slice(0, 12)}</code> on <strong>{repository?.defaultBranch ?? "the default branch"}</strong> of <strong>{repository?.name ?? "this repository"}</strong>. You can undo it later with Revert.</>}
+          </Dialog.Description>
+          <div className="dialog-actions">
+            <Button variant="secondary" size="base" type="button" onClick={() => setConfirming(null)}>Cancel</Button>
+            <Button variant="primary" size="base" type="button" icon={confirming === "approve" ? ShieldCheckIcon : GitMergeIcon} onClick={() => { const action = confirming; setConfirming(null); if (action) void act(action); }}>
+              {confirming === "approve" ? "Approve" : "Land changes"}
+            </Button>
+          </div>
+        </Dialog>
+      </Dialog.Root>
     </>
   );
 }
