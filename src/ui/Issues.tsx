@@ -3,9 +3,10 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
-import { ArrowLeftIcon, ChatCircleIcon, CheckCircleIcon, CircleIcon, PlusIcon, ProhibitIcon } from "@phosphor-icons/react";
+import { ArrowLeftIcon, ChatCircleIcon, CheckCircleIcon, CircleIcon, GitBranchIcon, PlusIcon, ProhibitIcon, SparkleIcon } from "@phosphor-icons/react";
 import type { AccessSnapshot, IssueCloseReason, IssueDetail, IssueList, Mission, Repository } from "../shared/types";
-import { request } from "./api";
+import { request, RequestError } from "./api";
+import { BranchCreated, createBranch } from "./BranchProtection";
 import { EmptyState, relativeTime } from "./components";
 import { navigate } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
@@ -22,6 +23,7 @@ function StateBadge({ state, reason }: { state: string; reason?: IssueCloseReaso
 }
 
 const Labels = ({ labels }: { labels: string[] }) => labels.length ? <span className="issue-labels">{labels.map((label) => <span key={label} className="issue-label">{label}</span>)}</span> : null;
+export const issueBranchName = (number: number, title: string) => `issue-${number}${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/^-+|-+$/g, "").replace(/^(.)/, "-$1")}`;
 const splitLabels = (value: string) => value.split(",").map((label) => label.trim()).filter(Boolean);
 
 export default function Issues({ repository, issueNumber, missions = [] }: { repository: Repository; issueNumber?: string; missions?: Mission[] }) {
@@ -151,6 +153,8 @@ function IssueView({ repository, number, viewer, base, missions }: { repository:
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null);
   const [labels, setLabels] = useState<string | null>(null);
   const [reason, setReason] = useState<IssueCloseReason>("completed");
+  const [createdBranch, setCreatedBranch] = useState("");
+  const branchKey = useRef(crypto.randomUUID());
   const path = `/api/repositories/${encodeURIComponent(repository.id)}/issues/${encodeURIComponent(number)}`;
   useEffect(() => {
     let active = true;
@@ -163,11 +167,20 @@ function IssueView({ repository, number, viewer, base, missions }: { repository:
     catch (failure) { setError(failure instanceof Error ? failure.message : "The issue could not be updated."); }
     finally { setBusy(""); }
   }
+  async function branch() {
+    if (!issue) return;
+    const name = issueBranchName(issue.number, issue.title);
+    setBusy("branch"); setError("");
+    try { await createBranch(repository.id, name, undefined, branchKey.current); setCreatedBranch(name); }
+    catch (failure) { if (failure instanceof RequestError && failure.code === "BRANCH_EXISTS") setCreatedBranch(name); else setError(failure instanceof Error ? failure.message : "The branch could not be created."); }
+    finally { setBusy(""); }
+  }
   if (!issue) return error ? <><a className="header-back" href={`/${base}`}><ArrowLeftIcon size={13} />All issues</a><div className="error-notice" role="alert">{error}</div></> : <RouteProgress />;
   const canModerate = viewer.permissions.includes("review");
+  const canContribute = viewer.permissions.includes("contribute");
   const canComment = canModerate || viewer.permissions.includes("contribute");
   const canEdit = canModerate || (viewer.permissions.includes("contribute") && issue.authorId === viewer.userId);
-  const name = (id: string) => viewer.names.get(id) ?? (id === viewer.userId ? "You" : id.slice(0, 8));
+  const name = (id: string) => id === "gitflare" ? "Gitflare" : viewer.names.get(id) ?? (id === viewer.userId ? "You" : id.slice(0, 8));
   return (
     <div className="issue-detail">
       <a className="header-back" href={`/${base}`}><ArrowLeftIcon size={13} />All issues</a>
@@ -182,10 +195,15 @@ function IssueView({ repository, number, viewer, base, missions }: { repository:
       ) : (
         <div className="issue-header">
           <div><h2>{issue.title} <span>#{issue.number}</span></h2><p><StateBadge state={issue.state} reason={issue.closedReason} /> {name(issue.authorId)} opened this issue {relativeTime(issue.createdAt)} · {issue.commentCount} {issue.commentCount === 1 ? "comment" : "comments"}</p></div>
-          {canEdit && <Button variant="secondary" size="base" onClick={() => setEditing({ title: issue.title, body: issue.body })}>Edit</Button>}
+          <div className="issue-header-actions">
+            {canContribute && issue.state === "open" && <Button className="ai-only" variant="primary" size="base" icon={SparkleIcon} onClick={() => navigate(`repository/${repository.id}/proposals/new?issue=${issue.number}`)}>Fix with AI</Button>}
+            {canContribute && issue.state === "open" && <Button variant="secondary" size="base" icon={GitBranchIcon} loading={busy === "branch"} disabled={!!busy} onClick={() => void branch()}>Create branch</Button>}
+            {canEdit && <Button variant="secondary" size="base" onClick={() => setEditing({ title: issue.title, body: issue.body })}>Edit</Button>}
+          </div>
         </div>
       )}
       {error && <div className="error-notice" role="alert">{error}</div>}
+      {createdBranch && <BranchCreated repositoryId={repository.id} name={createdBranch} onDismiss={() => setCreatedBranch("")} />}
       <div className="issue-layout">
         <div className="issue-thread">
           <article className="panel issue-comment">

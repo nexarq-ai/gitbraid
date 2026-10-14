@@ -1,17 +1,37 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
+import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Input } from "@cloudflare/kumo/components/input";
-import { GitBranchIcon, LockSimpleIcon, PlusIcon, ShieldCheckIcon, TrashIcon } from "@phosphor-icons/react";
-import type { BranchList, BranchProtection as Protection, BranchRuleInput, LanderRole, Repository } from "../shared/types";
+import { CopyIcon, GitBranchIcon, GitPullRequestIcon, LockSimpleIcon, PlusIcon, ShieldCheckIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
+import type { AccessSnapshot, BranchChangeResult, BranchInfo, BranchList, BranchProtection as Protection, BranchRuleInput, LanderRole, Repository } from "../shared/types";
 import { request } from "./api";
 import { ErrorNotice, relativeTime } from "./components";
+import { navigate } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 import "./pull-requests.css";
+import "./branches.css";
 
 type DraftRule = BranchRuleInput & { id: string; checks: string };
 const landerRoles: LanderRole[] = ["Maintainer", "Owner"];
 const toDraft = (rule: BranchRuleInput): DraftRule => ({ ...rule, id: crypto.randomUUID(), checks: rule.requiredCheckNames.join("\n") });
 const toInput = ({ pattern, requirePullRequest, requiredApprovals, preventSelfApproval, restrictLanders, checks }: DraftRule): BranchRuleInput => ({ pattern: pattern.trim(), requirePullRequest, requiredApprovals, preventSelfApproval, restrictLanders, requiredCheckNames: checks.split(/[\n,]/).map(name => name.trim()).filter(Boolean) });
+
+export const createBranch = (repositoryId: string, name: string, from: string | undefined, key: string) => request<BranchChangeResult>(`/api/repositories/${encodeURIComponent(repositoryId)}/branches`, { name, ...(from ? { from } : {}) }, key);
+
+export function BranchCreated({ repositoryId, name, onDismiss, onNotify }: { repositoryId: string; name: string; onDismiss: () => void; onNotify?: (message: string) => void }) {
+  const command = `git fetch && git switch ${name}`;
+  const pull = `repository/${repositoryId}/pulls/new?branch=${encodeURIComponent(name)}`;
+  return (
+    <section className="panel branch-created" role="status">
+      <div className="panel-header"><h2>Branch <code>{name}</code> is ready</h2><Button variant="ghost" size="base" shape="square" aria-label="Dismiss" icon={XIcon} onClick={onDismiss} /></div>
+      <div className="panel-body">
+        <p>Fetch it in your clone and switch to it:</p>
+        <div className="clipboard-row"><code>{command}</code><Button variant="ghost" size="base" shape="square" aria-label={`Copy ${command}`} icon={CopyIcon} onClick={() => void navigator.clipboard.writeText(command).then(() => onNotify?.("Command copied.")).catch(() => onNotify?.("Copy is unavailable in this browser."))} /></div>
+        <a className="text-link" href={`/${pull}`} onClick={event => { event.preventDefault(); navigate(pull); }}><GitPullRequestIcon size={14} />Open a pull request from {name}</a>
+      </div>
+    </section>
+  );
+}
 
 export default function BranchProtection({ repository, canManage, onNotify }: { repository: Repository; canManage: boolean; onNotify: (message: string) => void }) {
   const [branches, setBranches] = useState<BranchList | null>(null);
@@ -22,7 +42,20 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mutation = useRef<{ signature: string; key: string } | null>(null);
+  const [canContribute, setCanContribute] = useState(false);
+  const [draft, setDraft] = useState<{ name: string; source: "branch" | "commit"; branch: string; sha: string } | null>(null);
+  const [deleting, setDeleting] = useState<BranchInfo | null>(null);
+  const [branchBusy, setBranchBusy] = useState(false);
+  const [branchError, setBranchError] = useState("");
+  const [created, setCreated] = useState("");
+  const branchKey = useRef<{ signature: string; key: string } | null>(null);
   const base = `/api/repositories/${encodeURIComponent(repository.id)}`;
+
+  useEffect(() => {
+    let active = true;
+    request<AccessSnapshot>("/api/access").then(access => { if (active) setCanContribute(access.permissions.includes("contribute")); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -32,6 +65,22 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
       .catch(failure => { if (active) setLoadError(failure instanceof Error ? failure.message : "Branch settings could not be loaded."); });
     return () => { active = false; };
   }, [base, attempt]);
+
+  const refreshBranches = () => request<BranchList>(`${base}/branches`).then(setBranches).catch(() => {});
+
+  async function changeBranch(path: string, body: Record<string, unknown>, done: () => void) {
+    if (branchBusy) return;
+    const signature = JSON.stringify([path, body]);
+    if (branchKey.current?.signature !== signature) branchKey.current = { signature, key: crypto.randomUUID() };
+    setBranchBusy(true); setBranchError("");
+    try {
+      await request<BranchChangeResult>(`${base}/${path}`, body, branchKey.current.key);
+      branchKey.current = null;
+      done();
+      await refreshBranches();
+    } catch (failure) { setBranchError(failure instanceof Error ? failure.message : "The branch could not be changed."); }
+    finally { setBranchBusy(false); }
+  }
 
   const update = (id: string, patch: Partial<DraftRule>) => setRules(current => current.map(rule => rule.id === id ? { ...rule, ...patch } : rule));
 
@@ -64,22 +113,46 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
     <div className="branch-settings">
       <div className="repository-work-heading"><div><h2>Branches &amp; protection</h2><p>Protected branches only change through pull requests or missions that pass checks and get approval on the exact revision.</p></div></div>
       <section className="panel">
-        <div className="panel-header"><h2>Branches</h2><span className="number-tag">{branches.branches.length}</span></div>
+        <div className="panel-header"><h2>Branches</h2><div className="branch-header-actions"><span className="number-tag">{branches.branches.length}</span>{canContribute && <Button variant="secondary" size="base" icon={PlusIcon} onClick={() => { setBranchError(""); setDraft({ name: "", source: "branch", branch: branches.defaultBranch, sha: "" }); }}>New branch</Button>}</div></div>
         <div className="table-scroll">
           <table className="resource-table">
-            <thead><tr><th>Branch</th><th>Head</th><th>Status</th></tr></thead>
+            <thead><tr><th>Branch</th><th>Head</th><th>Status</th>{canContribute && <th><span className="sr-only">Actions</span></th>}</tr></thead>
             <tbody>
               {branches.branches.map(branch => (
                 <tr key={branch.name}>
                   <td><div className="resource-name"><GitBranchIcon size={18} /><div><code>{branch.name}</code>{(branch.ahead !== undefined || branch.behind !== undefined) && <small>{branch.ahead ?? 0} ahead · {branch.behind ?? 0} behind</small>}</div></div></td>
                   <td><code>{branch.headSha.slice(0, 12)}</code></td>
                   <td className="branch-flags">{branch.default && <span className="pill">Default</span>}{branch.protected && <span className="pill approved"><LockSimpleIcon size={11} />Protected</span>}</td>
+                  {canContribute && <td className="branch-actions">{!branch.default && !branch.protected && <Button variant="ghost" size="base" icon={TrashIcon} aria-label={`Delete ${branch.name}`} onClick={() => { setBranchError(""); setDeleting(branch); }}>Delete</Button>}</td>}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+      {created && <BranchCreated repositoryId={repository.id} name={created} onDismiss={() => setCreated("")} onNotify={onNotify} />}
+      <Dialog.Root open={draft !== null} onOpenChange={open => { if (!open && !branchBusy) setDraft(null); }}>
+        <Dialog size="sm" className="dialog-content confirm-dialog">
+          <Dialog.Title className="dialog-title">New branch</Dialog.Title>
+          <Dialog.Description className="dialog-description">The branch points at an existing commit. Nothing is committed.</Dialog.Description>
+          {draft && <form onSubmit={event => { event.preventDefault(); const name = draft.name.trim(); void changeBranch("branches", { name, from: draft.source === "branch" ? draft.branch : draft.sha }, () => { setDraft(null); setCreated(name); onNotify(`Branch ${name} created.`); }); }}>
+            <div className="form-field"><label htmlFor="branch-name">Branch name</label><Input id="branch-name" required maxLength={200} autoFocus disabled={branchBusy} value={draft.name} placeholder="feature/checkout-retries" onChange={event => setDraft({ ...draft, name: event.target.value })} /></div>
+            <div className="form-field"><span>From</span><div className="branch-source" role="radiogroup" aria-label="Branch source"><label><input type="radio" name="branch-source" checked={draft.source === "branch"} disabled={branchBusy} onChange={() => setDraft({ ...draft, source: "branch" })} />Branch</label><label><input type="radio" name="branch-source" checked={draft.source === "commit"} disabled={branchBusy} onChange={() => setDraft({ ...draft, source: "commit" })} />Commit SHA</label></div>
+              {draft.source === "branch" ? <select aria-label="Source branch" disabled={branchBusy} value={draft.branch} onChange={event => setDraft({ ...draft, branch: event.target.value })}>{branches.branches.map(branch => <option key={branch.name} value={branch.name}>{branch.name}{branch.default ? " (default)" : ""}</option>)}</select> : <Input aria-label="Commit SHA" required maxLength={40} disabled={branchBusy} value={draft.sha} placeholder="Full 40 character commit SHA" onChange={event => setDraft({ ...draft, sha: event.target.value.trim().toLowerCase() })} />}
+            </div>
+            {branchError && <div className="error-notice" role="alert">{branchError}</div>}
+            <div className="dialog-actions"><Button variant="secondary" size="base" type="button" disabled={branchBusy} onClick={() => setDraft(null)}>Cancel</Button><Button variant="primary" size="base" type="submit" loading={branchBusy} disabled={branchBusy || !draft.name.trim() || (draft.source === "commit" && !/^[a-f0-9]{40}$/.test(draft.sha))}>Create branch</Button></div>
+          </form>}
+        </Dialog>
+      </Dialog.Root>
+      <Dialog.Root open={deleting !== null} onOpenChange={open => { if (!open && !branchBusy) setDeleting(null); }}>
+        <Dialog size="sm" className="dialog-content confirm-dialog">
+          <Dialog.Title className="dialog-title">Delete {deleting?.name}?</Dialog.Title>
+          <Dialog.Description className="dialog-description">The branch ref is removed; commits it shares with other branches or tags stay in the repository. The delete is refused if the branch moved from <code>{deleting?.headSha.slice(0, 12)}</code>.</Dialog.Description>
+          {branchError && <div className="error-notice" role="alert">{branchError}</div>}
+          <div className="dialog-actions"><Button variant="secondary" size="base" type="button" disabled={branchBusy} onClick={() => setDeleting(null)}>Cancel</Button><Button variant="destructive" size="base" type="button" loading={branchBusy} disabled={branchBusy} onClick={() => { const target = deleting; if (target) void changeBranch("branches/delete", { name: target.name, expectedHeadSha: target.headSha }, () => { setDeleting(null); if (created === target.name) setCreated(""); onNotify(`Branch ${target.name} deleted.`); }); }}>Delete branch</Button></div>
+        </Dialog>
+      </Dialog.Root>
       <section className="panel branch-rules">
         <div className="panel-header">
           <h2>Protection rules</h2>

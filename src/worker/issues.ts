@@ -7,6 +7,7 @@ export const ISSUE_COMMENT_LIMIT = 500;
 export const ISSUE_REQUEST_MAX_BYTES = 131_072;
 export const ISSUE_BODY_MAX = 20_000;
 export const ISSUE_COMMENT_MAX = 10_000;
+export const ISSUE_SYSTEM_AUTHOR = 'gitflare';
 const PAGE_LIMIT = 50;
 const identifier = /^[a-zA-Z0-9-]{1,100}$/;
 
@@ -102,6 +103,32 @@ function assertMissions(store: IssueStore, ids: string[]): void {
   for (const id of ids) if (!store.get(`mission:${id}`)) throw new ApiError(404, 'MISSION_NOT_FOUND', 'Every linked mission must belong to this repository.');
 }
 
+function addComment(store: IssueStore, issue: Issue, authorId: string, body: string, now: string): void {
+  const key = `${commentPrefix(issue.number)}${pad(issue.commentCount + 1)}`;
+  store.put(key, { key, id: crypto.randomUUID(), authorId, body, createdAt: now });
+  issue.commentCount++;
+}
+
+export function linkIssueMission(store: IssueStore, number: number, missionId: string, now = new Date().toISOString()): void {
+  const issue = required(store, number);
+  if (issue.missionIds.includes(missionId)) return;
+  if (issue.missionIds.length >= 20) throw new ApiError(409, 'ISSUE_MISSION_LIMIT', 'An issue can link at most 20 missions. Unlink one first.');
+  issue.missionIds.push(missionId);
+  issue.updatedAt = now;
+  store.put(issueKey(number), issue);
+}
+
+export function recordIssueOutcome(store: IssueStore, number: number, state: IssueState, body: string, now = new Date().toISOString()): boolean {
+  const issue = store.get<Issue>(issueKey(number));
+  if (!issue || issue.state === state || (state === 'open' && issue.closedReason !== 'completed')) return false;
+  if (state === 'closed') Object.assign(issue, { state, closedReason: 'completed', closedAt: now });
+  else { issue.state = 'open'; delete issue.closedReason; delete issue.closedAt; }
+  if (issue.commentCount < ISSUE_COMMENT_LIMIT) addComment(store, issue, ISSUE_SYSTEM_AUTHOR, body, now);
+  issue.updatedAt = now;
+  store.put(issueKey(number), issue);
+  return true;
+}
+
 export function applyIssueChange(store: IssueStore, change: IssueChange, actor: IssueActor, now = new Date().toISOString()): number {
   const issue = change.action === 'create' ? undefined : required(store, change.number);
   if (requiresModeration(change, issue, actor.userId) && !actor.moderator) throw new ApiError(403, 'FORBIDDEN', 'Closing, reopening, labeling, assigning, and editing other people’s issues require review access.');
@@ -122,9 +149,7 @@ export function applyIssueChange(store: IssueStore, change: IssueChange, actor: 
       store.put(comment.key, { ...comment, body: change.body, editedAt: now });
     } else {
       if (current.commentCount >= ISSUE_COMMENT_LIMIT) throw new ApiError(409, 'COMMENT_LIMIT', `An issue can hold at most ${ISSUE_COMMENT_LIMIT} comments.`);
-      const key = `${commentPrefix(current.number)}${pad(current.commentCount + 1)}`;
-      store.put(key, { key, id: crypto.randomUUID(), authorId: actor.userId, body: change.body, createdAt: now });
-      current.commentCount++;
+      addComment(store, current, actor.userId, change.body, now);
     }
   } else if (change.action === 'close') {
     if (current.state === 'closed') throw new ApiError(409, 'ISSUE_ALREADY_CLOSED', 'This issue is already closed.');
