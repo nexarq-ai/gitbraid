@@ -18,7 +18,7 @@ export const mcpToolNames = [
   'gitflare_inspect_mission', 'gitflare_draft_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
   'gitflare_review_mission', 'gitflare_revert_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
-  'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
+  'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_ai_settings', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
 ] as const;
 
 const identifier = z.string().min(1).max(100).regex(/^[a-zA-Z0-9-]+$/);
@@ -238,6 +238,10 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     title: 'Read the current proposal Git baseline', description: 'Resolve this repository’s actual latest default-branch commit and message for a draft proposal. Supply its commitSha as expected_base_sha when creating the proposal to reject changes during drafting. Execution start independently refreshes to the latest commit.',
     inputSchema: z.object({ repository_id: identifier }).strict(), annotations: readOnly,
   }, input => guarded(async () => call<Record<string, unknown>>(`/api/repositories/${input.repository_id}/proposal-base`)));
+  server.registerTool('gitflare_ai_settings', {
+    title: 'Read or change AI features', description: 'Read whether AI features are on for this workspace, or turn them on or off (Owner). When off, agent missions, mission drafting and model settings are refused, while repositories, reviews, landing, reverts and skill edits keep working. An installation started with AI_FEATURES=disabled cannot be turned on here.',
+    inputSchema: z.object({ enabled: z.boolean().optional(), idempotency_key: requestKey.optional() }).strict(), annotations: { ...mutation, idempotentHint: true },
+  }, (input) => guarded(async () => input.enabled === undefined ? call<Record<string, unknown>>('/api/settings/ai') : call<Record<string, unknown>>('/api/settings/ai', { enabled: input.enabled }, input.idempotency_key ?? crypto.randomUUID())));
   server.registerTool('gitflare_draft_mission', {
     title: 'Draft a mission plan from a goal', description: 'Turn a plain-language goal into a suggested title, acceptance criteria, and one to eight agent assignments, using the repository file list, README and package.json at the default branch. Uses one bounded model call and saves nothing; review and edit the draft, then create it with gitflare_create_mission. Repository content is treated as untrusted data.',
     inputSchema: z.object({ repository_id: identifier, goal: z.string().min(10).max(4000), mode: z.enum(['combine', 'race']).default('combine'), agents: z.number().int().min(1).max(8).default(1), title: z.string().max(120).optional(), idempotency_key: requestKey }).strict(), annotations: { ...mutation, idempotentHint: false },

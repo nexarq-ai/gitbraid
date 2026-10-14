@@ -30,8 +30,8 @@ export function deploymentConfiguration(input, accountId, subdomain, overrideNam
 }
 
 export async function preflightDeployment(api, name, gatewayId, namespace) {
-  if (typeof gatewayId !== 'string' || typeof namespace !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(gatewayId) || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(namespace)) throw new Error('Invalid gateway or Artifacts namespace name.');
-  const gateway = await api('GET', `/ai-gateway/gateways/${gatewayId}`, undefined, true);
+  if ((gatewayId !== null && (typeof gatewayId !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(gatewayId))) || typeof namespace !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(namespace)) throw new Error('Invalid gateway or Artifacts namespace name.');
+  const gateway = gatewayId === null ? true : await api('GET', `/ai-gateway/gateways/${gatewayId}`, undefined, true);
   const artifact = await api('GET', `/artifacts/namespaces/${namespace}`, undefined, true);
   const settings = await api('GET', `/workers/scripts/${name}/settings`, undefined, true);
   const preview = await api('GET', `/workers/scripts/${name}-preview/settings`, undefined, true);
@@ -94,7 +94,7 @@ export async function deploySelfHosted() {
   };
   const subdomain = await api('GET', '/workers/subdomain');
   const { config, preview } = deploymentConfiguration(source, accountId, subdomain?.subdomain, process.env.WRANGLER_CI_OVERRIDE_NAME);
-  const gateway = config.vars.AI_GATEWAY_ID;
+  const gateway = config.vars.AI_FEATURES === 'disabled' ? null : config.vars.AI_GATEWAY_ID;
   const namespace = config.artifacts?.find(binding => binding.binding === 'ARTIFACTS')?.namespace;
   const plan = await preflightDeployment(api, config.name, gateway, namespace);
   await ensureResources(api, plan, gateway, namespace);

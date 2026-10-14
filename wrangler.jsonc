@@ -27,6 +27,7 @@
     "WORKSPACE_NAME": "Gitbraid workspace",
     "AI_GATEWAY_ID": "gitflare",
     "MODEL": "openai/gpt-6-luna",
+    "AI_FEATURES": "enabled",
     "GITBRAID_INSTALLATION": "gitbraid",
     "GITBRAID_PRIMARY_WORKER": "gitbraid"
   },

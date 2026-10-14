@@ -79,6 +79,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   getModelConnections(): ModelConnection[] { return this.store.get<ModelConnection[]>('model-connections') ?? defaultModelConnections(); }
 
+  getAiEnabled(): boolean { return this.store.get<boolean>('ai-enabled') ?? true; }
+
+  setAiEnabled(enabled: boolean): boolean { this.store.put('ai-enabled', enabled); return enabled; }
+
   getModelRequest(key: string, fingerprint: string): { result?: ModelConnection[] } | undefined {
     const receipt = this.store.get<Receipt<ModelConnection[] | undefined>>(`model-request:${key}`);
     if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);

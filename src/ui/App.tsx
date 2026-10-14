@@ -53,6 +53,7 @@ import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
 import WorkspaceLoader, { RouteProgress } from "./WorkspaceLoader";
+import AiSettingsPanel from "./AiSettingsPanel";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
 import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
 
@@ -291,7 +292,11 @@ function Workspace() {
     setSidebar(false);
   }
 
+  const aiEnabled = workspace.ai?.enabled !== false;
+  useEffect(() => { document.documentElement.classList.toggle("ai-off", !aiEnabled); }, [aiEnabled]);
+
   function createMission(repositoryId?: string) {
+    if (!aiEnabled) { notify("AI features are turned off for this workspace. An Owner can turn them on in Settings."); return; }
     if (!permissions.includes("contribute")) { notify("Your role cannot create missions."); return; }
     navigate(repositoryId ? `repository/${repositoryId}/proposals/new` : "proposals/new");
   }
@@ -468,13 +473,13 @@ function Workspace() {
             <GearSixIcon size={17} />
             Settings
           </button>
-          <button className={`nav-item ${route === "settings/models" ? "active" : ""}`} aria-current={route === "settings/models" ? "page" : undefined} onClick={() => navigate("settings/models")}><RobotIcon size={17} />AI models</button>
+          <button className={`nav-item ai-only ${route === "settings/models" ? "active" : ""}`} aria-current={route === "settings/models" ? "page" : undefined} onClick={() => navigate("settings/models")}><RobotIcon size={17} />AI models</button>
           <button className={`nav-item ${route === "settings/cloudflare" ? "active" : ""}`} aria-current={route === "settings/cloudflare" ? "page" : undefined} onClick={() => navigate("settings/cloudflare")}><CloudIcon size={17} />Cloudflare</button>
           <button className={`nav-item ${page === "docs" ? "active" : ""}`} onClick={() => navigate("docs/overview")} aria-current={page === "docs" ? "page" : undefined}>
             <BookOpenIcon size={17} />
             Documentation
           </button>
-          <button className={`nav-item ${page === "connect" ? "active" : ""}`} onClick={() => navigate("connect")}><RobotIcon size={17}/>Connect AI clients</button>
+          <button className={`nav-item ai-only ${page === "connect" ? "active" : ""}`} onClick={() => navigate("connect")}><RobotIcon size={17}/>Connect AI clients</button>
           <button className="nav-item" onClick={() => setModal("learn")}>
             <BookOpenIcon size={17} />
             How Gitflare works
@@ -631,7 +636,8 @@ function Workspace() {
                           size="base"
                           icon={PlusIcon}
                           disabled={!permissions.includes("contribute")}
-                          onClick={() => createMission()}
+                          className="ai-only"
+          onClick={() => createMission()}
                         >
                           Create mission
                         </Button>
@@ -690,7 +696,8 @@ function Workspace() {
                                   size="base"
                                   icon={PlusIcon}
                                   disabled={!permissions.includes("contribute")}
-                          onClick={() => createMission()}
+                          className="ai-only"
+          onClick={() => createMission()}
                                 >
                                   Create your first mission
                                 </Button>
@@ -1021,7 +1028,8 @@ function Workspace() {
                 {page === "settings" && (
                   <>
                     <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><img src={cloudflareIcon} alt="" /><div><h2>Cloudflare account and resources</h2><p>Connect your account and manage the services used by your repositories.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/cloudflare")}>Manage Cloudflare</Button></section>
-                    <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><RobotIcon size={27} /><div><h2>AI models</h2><p>Choose available Workers AI models and manage provider connections.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/models")}>Manage AI models</Button></section>
+                    <section className="panel settings-cloudflare ai-only"><div className="settings-cloudflare-heading"><RobotIcon size={27} /><div><h2>AI models</h2><p>Choose available Workers AI models and manage provider connections.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/models")}>Manage AI models</Button></section>
+                    <AiSettingsPanel settings={workspace.ai} canManage={permissions.includes("manage")} onChanged={load} />
                     <AccessSettings selfHosted={authConfig.edition === "self-hosted"} repositories={workspace.repositories} onWorkspaceChanged={load} />
 
                     <section className="panel">
@@ -1243,6 +1251,7 @@ function RepositoryDetail({
           size="base"
           icon={PlusIcon}
           disabled={!canContribute}
+          className="ai-only"
           onClick={() => onMission(repository.id)}
         >
           Create mission
@@ -1254,10 +1263,10 @@ function RepositoryDetail({
             { value: "proposals", label: `Missions (${missions.length})` },
             { value: "agents", label: `Agents (${missions.reduce((count, mission) => count + (mission.epoch > 0 ? mission.runs.length : 0), 0)})` },
             { value: "checks", label: `Checks (${missions.reduce((count, mission) => count + mission.checks.length, 0)})` },
-            { value: "skills", label: "Skills" },
+            { value: "skills", label: "Skills", ai: true },
             { value: "cloudflare", label: "Cloudflare" },
             { value: "overview", label: "Overview" },
-          ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
+          ].map((item) => <button key={item.value} className={"ai" in item && item.ai ? "ai-only" : undefined} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
       {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
         <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} /></>
@@ -1358,6 +1367,7 @@ function RepositoryDetail({
                     variant="secondary"
                     size="base"
                     disabled={!canContribute}
+          className="ai-only"
           onClick={() => onMission(repository.id)}
                   >
                     Create mission
@@ -1385,6 +1395,7 @@ function RepositoryDetail({
                   variant="secondary"
                   size="base"
                   disabled={!canContribute}
+          className="ai-only"
           onClick={() => onMission(repository.id)}
                 >
                   Create mission

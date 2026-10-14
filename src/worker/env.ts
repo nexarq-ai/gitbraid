@@ -28,6 +28,7 @@ export type AppEnv = Omit<Env, 'CLOUDFLARE_CLIENT_ID' | 'CLOUDFLARE_CLIENT_SECRE
   MODEL?: string;
   AI?: Ai;
   AI_GATEWAY_ID?: string;
+  AI_FEATURES?: 'enabled' | 'disabled';
   TEST_COMMAND?: string;
   PREVIEW_ORIGIN?: string;
 };

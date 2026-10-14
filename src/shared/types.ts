@@ -158,7 +158,10 @@ export interface Workspace {
   repositories: Repository[];
   missions: Mission[];
   integrations: IntegrationStatus[];
+  ai?: AiSettings;
 }
+
+export interface AiSettings { enabled: boolean; locked: boolean }
 
 export interface AgentTask { name: string; role: string; task: string; model?: string }
 export interface RevertChange { missionId: string; title: string; landedSha: string; previousSha: string }

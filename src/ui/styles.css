@@ -2962,3 +2962,5 @@ a svg {
 .repository-import-dropzone > svg, .repository-import-dropzone > button,
 .repository-import-success > svg,
 .cf-resource-empty > button { margin-inline: auto; }
+
+.ai-off .ai-only { display: none !important; }

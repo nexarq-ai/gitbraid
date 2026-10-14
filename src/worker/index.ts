@@ -2,7 +2,7 @@ import { listRepositorySkills } from './repository-skills';
 import { assertReviewClear, currentReviewRequests, reviewMissionInput } from './proposal-review';
 import { timingSafeEqual } from 'node:crypto';
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
+import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
 import { createArtifactsRepository, repositoryHead } from './artifacts';
 import { ApiError, assertMutationOrigin, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString } from './domain';
 import type { AppEnv } from './env';
@@ -220,10 +220,24 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     await access.authorizeMetadata(principal);
     return Response.json(modelConnectionsSnapshot(env, await coordinatorRead('getModelConnections', () => catalog.getModelConnections())));
   }
+  if (url.pathname === '/api/settings/ai') {
+    if (request.method === 'GET') { await access.authorizeMetadata(principal); return Response.json(await aiSettings(env, catalog)); }
+    if (request.method === 'POST') {
+      assertMutationOrigin(request);
+      await access.authorize(principal, 'manage');
+      requireIdempotencyKey(request);
+      const body = await readJson(request);
+      if (typeof body.enabled !== 'boolean') throw new ApiError(400, 'INVALID_INPUT', 'Send enabled as true or false.');
+      if (body.enabled && env.AI_FEATURES === 'disabled') throw new ApiError(409, 'AI_LOCKED', 'AI features are turned off for this installation with AI_FEATURES=disabled.');
+      await catalog.setAiEnabled(body.enabled);
+      return Response.json(await aiSettings(env, catalog));
+    }
+  }
   if (request.method === 'POST' && url.pathname === '/api/models/action') {
     assertMutationOrigin(request);
     await access.authorize(principal, 'manage');
     const key = requireIdempotencyKey(request), body = await readJson(request);
+    if (body.action !== 'remove') await requireAi(env, catalog);
     if (!['add', 'remove', 'verify'].includes(String(body.action))) throw new ApiError(400, 'INVALID_MODEL_ACTION', 'Choose add, remove or verify.');
     const model = body.action === 'add' ? validateModelConnection(body.model) : undefined;
     const modelId = model?.id ?? modelIdentifier(body.modelId);
@@ -256,7 +270,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const groups = await Promise.all(visible.map((repository) => env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).listMissions()));
     const missions: Mission[] = [];
     for (const mission of groups.flat()) { try { await access.check(principal, 'read', 'repository', mission.repositoryId, mission.id); missions.push(mission); } catch {} }
-    const workspace: Workspace = { name: principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : (await access.workspace(principal)).name, mode: local ? 'local' : 'connected', repositories: visible, missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local) };
+    const workspace: Workspace = { name: principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : (await access.workspace(principal)).name, mode: local ? 'local' : 'connected', repositories: visible, missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local), ai: await aiSettings(env, catalog) };
     return Response.json(workspace);
   }
   const cloudflareProject = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/cloudflare(?:\/(usage|action))?$/.exec(url.pathname);
@@ -417,6 +431,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     return Response.json(repository, { status: 201 });
   }
   if (url.pathname === '/api/missions/draft') {
+    await requireAi(env, catalog);
     const draft = draftRequest(body);
     const repositoryId = requireString(body.repositoryId, 'Repository', 100);
     const repository = await catalog.getRepository(repositoryId);
@@ -433,6 +448,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   }
   if (url.pathname === '/api/missions') {
     const input = missionInput(body);
+    if (!input.skillChange && !input.revertChange) await requireAi(env, catalog);
     const repository = await catalog.getRepository(input.repositoryId);
     if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
     await access.authorize(principal, 'contribute', 'repository', input.repositoryId);
@@ -515,6 +531,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       return Response.json(started, { status: 202 });
     }
     if (match[2] === 'start') {
+      if (!mission.skillChange && !mission.revertChange) await requireAi(env, catalog);
       const readiness = executionReadiness(env, mission.skillChange || mission.revertChange ? 'skill-edit' : 'agent');
       if (!readiness.ready || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', `Connect the required services before running agents: ${[...readiness.missing, ...(!env.MISSION_WORKFLOW ? ['Mission Workflow'] : [])].join(', ')}.`);
       const current = await currentRepository(env, repository);
@@ -562,6 +579,17 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     return Response.json(await coordinator.approveMission(key, mission.id, candidateSha, baseSha, principal.userId));
   }
   throw new ApiError(404, 'NOT_FOUND', 'This API route could not be found.');
+}
+
+async function aiSettings(env: AppEnv, catalog: { getAiEnabled(): Promise<boolean> }): Promise<AiSettings> {
+  const locked = env.AI_FEATURES === 'disabled';
+  if (locked) return { enabled: false, locked };
+  try { return { enabled: await catalog.getAiEnabled(), locked }; }
+  catch { return { enabled: true, locked }; }
+}
+
+async function requireAi(env: AppEnv, catalog: { getAiEnabled(): Promise<boolean> }): Promise<void> {
+  if (!(await aiSettings(env, catalog)).enabled) throw new ApiError(403, 'AI_DISABLED', 'AI features are turned off for this workspace. An Owner can turn them on in Settings.');
 }
 
 const ENTRY_PATHS = new Set(['/', '/signin', '/signup']);
