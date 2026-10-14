@@ -92,6 +92,21 @@ const blankWorkspace: Workspace = {
 };
 const runningStates = ["queued", "running", "checking", "integrating"];
 
+const RETURN_ROUTE_KEY = "gitflare:return-route";
+
+function isPublicRoute(route: string): boolean {
+  return ["home", "signin", "signup", "source/gitflare", "deploy"].includes(route) || route.startsWith("docs") || route.startsWith("invite?") || isAccountRoute(route);
+}
+
+function takeReturnRoute(): string {
+  try {
+    const stored = sessionStorage.getItem(RETURN_ROUTE_KEY);
+    sessionStorage.removeItem(RETURN_ROUTE_KEY);
+    if (stored && !isPublicRoute(stored)) return stored;
+  } catch {}
+  return "overview";
+}
+
 export default function App() {
   return (
     <Suspense fallback={currentRoute() === "home" ? <main className="route-loading" aria-busy="true" /> : <WorkspaceLoader />}>
@@ -159,7 +174,7 @@ function Workspace() {
       setLoaded(true);
       setError("");
       setAuthState("authenticated");
-      if (["home", "signin", "signup"].includes(currentRoute())) { goTo("overview", true); setRoute("overview"); }
+      if (["signin", "signup"].includes(currentRoute())) { const next = takeReturnRoute(); goTo(next, true); setRoute(next); }
     } catch (failure) {
       if (generation !== loadGeneration.current) return;
       const message =
@@ -183,6 +198,12 @@ function Workspace() {
       inFlight.current -= 1;
     }
   }, [clearSession]);
+
+  useEffect(() => {
+    if (authState !== "required" || isPublicRoute(route)) return;
+    try { sessionStorage.setItem(RETURN_ROUTE_KEY, route); } catch {}
+    goTo("signin", true);
+  }, [authState, route]);
 
   useEffect(() => {
     if (authState !== "authenticated") return;
@@ -211,7 +232,7 @@ function Workspace() {
       const next = currentRoute();
       setSidebar(false);
       startRouteTransition(() => {
-        setRoute(next === "home" && hasWorkspace.current ? "overview" : next);
+        setRoute(next);
         setSearch("");
         setFilter("all");
       });
@@ -220,8 +241,9 @@ function Workspace() {
 
   useEffect(() => {
     if (authState === "authenticated" && ["signin", "signup"].includes(route)) {
-      goTo("overview", true);
-      setRoute("overview");
+      const next = takeReturnRoute();
+      goTo(next, true);
+      setRoute(next);
     }
   }, [authState, route]);
 

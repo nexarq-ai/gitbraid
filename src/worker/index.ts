@@ -570,7 +570,7 @@ async function entryRedirect(request: Request, env: AppEnv, path: string): Promi
   if (request.method !== 'GET' || !ENTRY_PATHS.has(path)) return null;
   const session = cookieValue(request);
   const signedIn = session ? await security(env).authenticate(session).then(() => true, () => false) : false;
-  const location = signedIn ? '/overview' : env.EDITION === 'self-hosted' && path === '/' ? '/signin' : null;
+  const location = signedIn ? (path === '/' && env.EDITION !== 'self-hosted' ? null : '/overview') : env.EDITION === 'self-hosted' && path === '/' ? '/signin' : null;
   return location ? new Response(null, { status: 302, headers: { Location: location, 'Cache-Control': 'no-store' } }) : null;
 }
 
