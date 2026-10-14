@@ -534,7 +534,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     await assertAuthority();
     await checked(sandbox, ['git', 'push', 'origin', 'HEAD:refs/heads/gitflare-candidate']);
     result.candidateSha = sha;
-    const { check } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange);
+    const { check } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive);
     check.id = 'integration';
     check.name = check.name.replace('Repository test suite', 'Combined candidate tests');
     result.checks.push(check);

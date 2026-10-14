@@ -20,10 +20,19 @@ export interface ImportReceipt { fingerprint: string; timestamp: number; candida
 export function validateImportInput(body: Record<string, unknown>): ImportInput {
   if (body.expectedHeadSha !== null && (typeof body.expectedHeadSha !== 'string' || !/^[a-f0-9]{40}$/.test(body.expectedHeadSha))) throw new ApiError(400, 'INVALID_COMMIT', 'Supply the observed repository head, or null for an empty repository.');
   const archiveBase64 = requireString(body.archiveBase64, 'ZIP archive', Math.ceil(IMPORT_ZIP_MAX_BYTES / 3) * 4);
-  if (archiveBase64.length % 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(archiveBase64)) throw new ApiError(400, 'INVALID_ARCHIVE', 'The ZIP archive must use standard base64 encoding.');
+  if (archiveBase64.length % 4 || !isCanonicalBase64(archiveBase64)) throw new ApiError(400, 'INVALID_ARCHIVE', 'The ZIP archive must use standard base64 encoding.');
   const message = body.message === undefined ? 'Import existing code' : requireString(body.message, 'Commit message', 200);
   if (/[\r\n\u0000-\u001f\u007f]/.test(message)) throw new ApiError(400, 'INVALID_IMPORT_MESSAGE', 'Use a single line commit message.');
   return { archiveBase64, expectedHeadSha: body.expectedHeadSha as string | null, message };
+}
+function isCanonicalBase64(value: string): boolean {
+  const pad = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const end = value.length - pad;
+  for (let i = 0; i < end; i++) {
+    const c = value.charCodeAt(i);
+    if (!(c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c === 43 || c === 47)) return false;
+  }
+  return true;
 }
 export function importFingerprint(input: ImportInput): string { return createHash('sha256').update(Buffer.from(input.archiveBase64, 'base64')).update(JSON.stringify([input.expectedHeadSha, input.message])).digest('hex'); }
 function invalid(message: string): never { throw new ApiError(400, 'INVALID_ARCHIVE', message); }

@@ -115,8 +115,11 @@ export default function App() {
     setToast("");
   }, []);
 
-  const load = useCallback(async () => {
-    const generation = ++loadGeneration.current;
+  const inFlight = useRef(0);
+  const load = useCallback(async (background: unknown = false) => {
+    if (background === true && inFlight.current > 0) return;
+    const generation = background === true ? loadGeneration.current : ++loadGeneration.current;
+    inFlight.current += 1;
     try {
       const [data, access] = await Promise.all([request<Workspace>("/api/workspace"), request<AccessSnapshot>("/api/access")]);
       if (generation !== loadGeneration.current) return;
@@ -147,6 +150,8 @@ export default function App() {
       } else if (!hasWorkspace.current) {
         setAuthState("unavailable");
       }
+    } finally {
+      inFlight.current -= 1;
     }
   }, [clearSession]);
 
@@ -158,9 +163,9 @@ export default function App() {
 
   useEffect(() => {
     void request<AuthConfig>("/api/auth/config").then(setAuthConfig).catch((failure: unknown) => { setAuthConfigError(failure instanceof Error ? failure.message : "Installation configuration is unavailable."); setAuthState("unavailable"); });
-    void load();
+    void load(true);
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible" && !authFlowActive.current) void load();
+      if (document.visibilityState === "visible" && !authFlowActive.current) void load(true);
     }, 15000);
     return () => clearInterval(timer);
   }, [load]);

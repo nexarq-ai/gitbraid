@@ -120,13 +120,13 @@
     },
     {
       "path": "src/ui/api.ts",
-      "size": 1564,
-      "sha256": "084ecd4d1d5d8c28fe615af5bd06383d86149768349c0576717b4f469df0cba9"
+      "size": 1637,
+      "sha256": "2ed9f3a8758e618c49e9915e0db51b8f0d7f656abafdd09fb73613b1e6dfb530"
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 67204,
-      "sha256": "3e5bb341566ee8db28fea61db196b18f5684e1f2ea315172b5dde0b18f8bdc57"
+      "size": 67449,
+      "sha256": "20455096fdb567002209d140346b53dcba4c3845b10c1adc26a08478b9660818"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -265,8 +265,8 @@
     },
     {
       "path": "src/ui/ProposalCreate.tsx",
-      "size": 21560,
-      "sha256": "7b2fbe36a01542586f7f33a05615eb015e311fd7a8438aba7316cdcb45b162dd"
+      "size": 21573,
+      "sha256": "203a4bf1ed700f94f3de6c5ef6edfcf3d1de2079eb5a88e76e045d04c0ed902b"
     },
     {
       "path": "src/ui/public-install.css",
@@ -385,8 +385,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 42465,
-      "sha256": "7671c06df4b7f777ba1bd432bb3f05295ba2423c80458321906dfdfe1c6842dc"
+      "size": 42475,
+      "sha256": "fc2020f459d42e40f25edb7fee54a0cc8138f09ed86fe8b6576c012e4f77f1fa"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -412,6 +412,11 @@
       "path": "src/worker/mfa.ts",
       "size": 3677,
       "sha256": "5f5c695288c5d8d4791483f8eb6ce37c89cafc6bd3d8cc6112e344d39efce63f"
+    },
+    {
+      "path": "src/worker/mission-context.ts",
+      "size": 2280,
+      "sha256": "d7002c0bd6636ae2101a30b7231fc8b52ab9a1d39dc06797fd4f02bfaef4c264"
     },
     {
       "path": "src/worker/model-adapter.ts",
@@ -440,8 +445,8 @@
     },
     {
       "path": "src/worker/repository-import.ts",
-      "size": 23375,
-      "sha256": "d168cbe0d1a4ac37c8bf54f79a2711afcca4adeac2f43ac391c5aa37c5d7c19f"
+      "size": 23682,
+      "sha256": "7f1e27378bef773c5c7331c64e4b5cffedc8748a1b2d7fd26ed5c599e670d3c0"
     },
     {
       "path": "src/worker/repository-initialization.ts",
