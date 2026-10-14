@@ -3,6 +3,8 @@ type FunctionCall = { type: 'function_call'; call_id: string; name: string; argu
 type FunctionCallOutput = { type: 'function_call_output'; call_id: string; output: string };
 type InputRecord = Record<string, unknown>;
 
+const MAX_THINKING_FIELD_LEN = 262144;
+
 function getText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -11,7 +13,40 @@ function getText(content: unknown): string {
   return '';
 }
 
-export function anthropicInput(input: InputRecord[], tools: InputRecord[], maxTokens: number): Record<string, unknown> {
+export function nativeModelId(modelId: string): string {
+  return modelId.startsWith('anthropic/') ? modelId.slice('anthropic/'.length) : modelId;
+}
+
+export function isSonnet55(modelId: string): boolean {
+  return nativeModelId(modelId) === 'claude-sonnet-5-5';
+}
+
+function validateAnthropicBlockRecord(record: unknown): void {
+  if (!record || typeof record !== 'object' || (record as any).type !== 'anthropic_block') {
+    throw new Error('Malformed anthropic_block record');
+  }
+  const block = (record as any).block;
+  if (!block || typeof block !== 'object') throw new Error('Malformed anthropic_block payload');
+  const btype = block.type;
+  if (btype === 'thinking') {
+    if (typeof block.thinking !== 'string' || block.thinking.length > MAX_THINKING_FIELD_LEN) {
+      throw new Error('Malformed thinking block');
+    }
+    if (typeof block.signature !== 'string' || block.signature.length > MAX_THINKING_FIELD_LEN) {
+      throw new Error('Malformed thinking signature');
+    }
+    return;
+  }
+  if (btype === 'redacted_thinking') {
+    if (typeof block.data !== 'string' || block.data.length > MAX_THINKING_FIELD_LEN) {
+      throw new Error('Malformed redacted_thinking block');
+    }
+    return;
+  }
+  throw new Error('Unknown anthropic_block type: ' + String(btype));
+}
+
+export function anthropicInput(input: InputRecord[], tools: InputRecord[], maxTokens: number, modelId?: string): Record<string, unknown> {
   let system = '';
   const messages: { role: string; content: unknown[] }[] = [];
 
@@ -53,6 +88,12 @@ export function anthropicInput(input: InputRecord[], tools: InputRecord[], maxTo
       continue;
     }
 
+    if (type === 'anthropic_block') {
+      validateAnthropicBlockRecord(item);
+      pushBlock('assistant', (item as any).block);
+      continue;
+    }
+
     const msg = item as unknown as InternalMsg;
     if (!msg.role) throw new Error('Malformed message record');
     const text = getText(msg.content);
@@ -82,6 +123,12 @@ export function anthropicInput(input: InputRecord[], tools: InputRecord[], maxTo
     thinking: { type: 'disabled' },
     messages,
   };
+
+  if (modelId !== undefined && (modelId === 'anthropic/claude-sonnet-5-5' || modelId === 'claude-sonnet-5-5')) {
+    result.thinking = { type: 'between_tools' };
+    result.output_config = { effort: 'low' };
+  }
+
   if (system) result.system = system;
   if (nativeTools.length) result.tools = nativeTools;
   return result;
@@ -137,6 +184,22 @@ export function anthropicOutput(raw: Record<string, unknown>): {
 
       calls.push({ call_id: id, name, arguments: argsStr });
       output.push({ type: 'function_call', call_id: id, name, arguments: argsStr });
+      continue;
+    }
+
+    if (btype === 'thinking') {
+      const thinking = (block as any).thinking;
+      const signature = (block as any).signature;
+      if (typeof thinking !== 'string' || thinking.length > MAX_THINKING_FIELD_LEN) throw new Error('Malformed thinking block');
+      if (typeof signature !== 'string' || signature.length > MAX_THINKING_FIELD_LEN) throw new Error('Malformed thinking signature');
+      output.push({ type: 'anthropic_block', block: { type: 'thinking', thinking, signature } });
+      continue;
+    }
+
+    if (btype === 'redacted_thinking') {
+      const data = (block as any).data;
+      if (typeof data !== 'string' || data.length > MAX_THINKING_FIELD_LEN) throw new Error('Malformed redacted_thinking block');
+      output.push({ type: 'anthropic_block', block: { type: 'redacted_thinking', data } });
       continue;
     }
 

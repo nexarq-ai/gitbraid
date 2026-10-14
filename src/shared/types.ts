@@ -16,6 +16,22 @@ export interface Repository {
   updatedAt: string;
 }
 
+export interface ModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+export interface AgentUsage {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  unreportedCalls: number;
+}
+
 export interface AgentRun {
   id: string;
   name: string;
@@ -36,6 +52,7 @@ export interface AgentRun {
   model?: string;
   modelConfig?: ModelConnection;
   skills?: { name: string; path: string; commitSha: string; sha256: string }[];
+  usage?: AgentUsage;
   skillWarnings?: string[];
 }
 
@@ -87,7 +104,10 @@ export interface ReviewMissionInput {
   reviewId?: string;
 }
 
+export interface MissionAttachment { name: string; content: string }
+
 export interface Mission {
+  attachments?: MissionAttachment[];
   skillChange?: RepositorySkillChange;
   authorization?: { principal: import('../worker/security').Principal; workspaceId: string; creatorId: string };
   id: string;
@@ -141,7 +161,7 @@ export interface Workspace {
 
 export interface AgentTask { name: string; role: string; task: string; model?: string }
 export interface RepositorySkillChange { action: 'create' | 'update'; path: string; content: string; baseSha: string }
-export interface CreateMissionInput { title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; expectedBaseSha?: string; mode?: MissionMode }
+export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; expectedBaseSha?: string; mode?: MissionMode }
 export interface CreateRepositoryInput { name: string; description?: string }
 export interface ApproveMissionInput { candidateSha: string; baseSha: string }
 export interface ApiError { error: { code: string; message: string } }

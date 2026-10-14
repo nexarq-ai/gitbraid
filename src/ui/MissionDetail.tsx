@@ -654,6 +654,10 @@ export default function MissionDetail({
       {(tab === "overview" || tab === "agents") && (
         <>
           {tab === "overview" && (
+          <>
+            {((mission as { attachments?: { name: string; content: string }[] }).attachments ?? []).length > 0 && (
+              <section className="panel mission-attachments"><div className="panel-header"><h2>Context files</h2></div><div className="panel-body">{((mission as { attachments?: { name: string; content: string }[] }).attachments ?? []).map(item => <details key={item.name}><summary><code>{item.name}</code></summary><pre>{item.content.slice(0, 2000)}{item.content.length > 2000 ? "\n…" : ""}</pre></details>)}</div></section>
+            )}
             <div className="detail-summary">
               <section className="panel">
                 <div className="panel-header">
@@ -711,6 +715,7 @@ export default function MissionDetail({
                 </div>
               </aside>
             </div>
+          </>
           )}
           {tab === "agents" && selectedRunId && (
             <p className="mission-prompt">
@@ -771,6 +776,9 @@ export default function MissionDetail({
                       <AgentAssignment run={run} mission={mission} />
                       {run.note && (
                         <p className="agent-note">Shared with the team: {run.note}</p>
+                      )}
+                      {run.usage && run.usage.calls > 0 && (
+                        <p className="agent-usage">Usage: {run.usage.calls} {run.usage.calls === 1 ? "call" : "calls"} · input {run.usage.inputTokens.toLocaleString()} · output {run.usage.outputTokens.toLocaleString()} · cache read {run.usage.cacheReadTokens.toLocaleString()} · cache write {run.usage.cacheWriteTokens.toLocaleString()}{run.usage.unreportedCalls > 0 ? ` · ${run.usage.unreportedCalls} without provider counts (unknown)` : ""}</p>
                       )}
                       {run.summary && (
                         <p style={{ marginTop: 12 }}>{run.summary}</p>

@@ -1,13 +1,22 @@
-import { anthropicInput, anthropicOutput } from './anthropic-adapter';
-import type { ModelConnection } from '../shared/types';
+import { anthropicInput, anthropicOutput, isSonnet55, nativeModelId } from './anthropic-adapter';
+import type { ModelConnection, ModelUsage } from '../shared/types';
 
+export interface AiGatewayUniversalRequest {
+  provider: string;
+  endpoint: string;
+  headers: Record<string, string>;
+  query: unknown;
+}
 export interface ModelEnv {
-  AI?: { run(model: string, input: Record<string, unknown>, options?: { gateway: { id: string }; extraHeaders?: Record<string, string>; signal?: AbortSignal }): Promise<unknown> };
+  AI?: {
+    run(model: string, input: Record<string, unknown>, options?: { gateway: { id: string }; extraHeaders?: Record<string, string>; signal?: AbortSignal }): Promise<unknown>;
+    gateway?(id: string): { run(request: AiGatewayUniversalRequest | AiGatewayUniversalRequest[], options?: { extraHeaders?: object; signal?: AbortSignal }): Promise<Response> };
+  };
   AI_GATEWAY_ID?: string;
 }
 export type InputItem = Record<string, unknown>;
 export type ToolCall = { call_id: string; name: string; arguments: string };
-export interface ModelMessage { output: InputItem[]; calls: ToolCall[]; text: string }
+export interface ModelMessage { output: InputItem[]; calls: ToolCall[]; text: string; usage?: ModelUsage }
 export type ModelFailureCode = 'invalid_shape' | 'provider_error' | 'incomplete_response' | 'invalid_tool_call' | 'empty_response' | 'tool_limit' | 'unexpected_verification_tools' | 'invalid_final_summary';
 
 export class ModelResponseError extends Error {
@@ -68,10 +77,29 @@ export function workersAIMessages(input: InputItem[]): InputItem[] {
   });
 }
 
+function safeCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function nativeUsage(raw: Record<string, unknown>): ModelUsage | undefined {
+  const usage = raw.usage && typeof raw.usage === 'object' && !Array.isArray(raw.usage) ? raw.usage as Record<string, unknown> : undefined;
+  if (!usage) return undefined;
+  const inputTokens = safeCount(usage.input_tokens);
+  const outputTokens = safeCount(usage.output_tokens);
+  const cacheReadTokens = safeCount(usage.cache_read_input_tokens);
+  const cacheWriteTokens = safeCount(usage.cache_creation_input_tokens);
+  if (inputTokens === undefined && outputTokens === undefined && cacheReadTokens === undefined && cacheWriteTokens === undefined) return undefined;
+  return { ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}), ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}) };
+}
+
 export function normalizeModelMessage(body: unknown, protocol: ModelConnection['protocol']): ModelMessage {
   const raw = object(body);
   if (protocol === 'anthropic') {
-    try { return anthropicOutput(raw); }
+    try {
+      const result = anthropicOutput(raw);
+      const usage = nativeUsage(raw);
+      return usage ? { ...result, usage } : result;
+    }
     catch { throw new ModelResponseError('invalid_shape', 'Model returned invalid or incomplete Anthropic output'); }
   }
   if (raw.error) throw new ModelResponseError('provider_error', 'Model returned no usable completed response');
@@ -120,17 +148,36 @@ export function normalizeModelMessage(body: unknown, protocol: ModelConnection['
   }
   if (calls.length > 4) throw new ModelResponseError('tool_limit', 'Model exceeded the per-turn tool limit');
   if (new Set(calls.map(call => call.call_id)).size !== calls.length || calls.some(call => !call.call_id || call.call_id.length > 200 || call.name.length > 100 || call.arguments.length > 16_000)) throw new ModelResponseError('invalid_tool_call', 'Model returned an invalid function call');
-  return { output, calls, text: texts.join('\n') };
+  const usage = nativeUsage(raw);
+  return usage ? { output, calls, text: texts.join('\n'), usage } : { output, calls, text: texts.join('\n') };
 }
 
-export async function inferenceMessage(env: ModelEnv, model: ModelConnection, input: InputItem[], tools: InputItem[], timeoutMs: number, maxTokens = 4096): Promise<ModelMessage> {
+export async function inferenceMessage(env: ModelEnv, model: ModelConnection, input: InputItem[], tools: InputItem[], timeoutMs: number, maxTokens = 4096, onUsage?: (usage: ModelUsage | undefined) => Promise<void>): Promise<ModelMessage> {
   if (!env.AI || !env.AI_GATEWAY_ID) throw new Error('AI Gateway connection is not configured');
   let parameters: Record<string, unknown>;
-  if (model.protocol === 'anthropic') parameters = anthropicInput(input, tools, maxTokens);
+  if (model.protocol === 'anthropic') parameters = anthropicInput(input, tools, maxTokens, model.id);
   else if (model.protocol === 'responses') parameters = { input, ...(tools.length ? { tools } : {}), max_output_tokens: maxTokens, ...(model.id === 'openai/gpt-6-luna' || model.id === 'openai/gpt-6.1-sol' ? { reasoning: { effort: 'low' }, include: ['reasoning.encrypted_content'] } : {}), store: false };
   else parameters = { messages: model.protocol === 'workers-ai' ? workersAIMessages(input) : chatMessages(input), ...(tools.length ? { tools: tools.map(tool => model.protocol === 'workers-ai' ? { name: tool.name, description: tool.description, parameters: tool.parameters } : { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }) } : {}), max_tokens: maxTokens, stream: false };
-  const body = await env.AI.run(model.id, parameters, { gateway: { id: env.AI_GATEWAY_ID }, ...(model.source === 'gateway' ? { extraHeaders: { 'cf-aig-no-wholesale': 'true' } } : {}), signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
-  try { return normalizeModelMessage(body, model.protocol); }
+  let body: unknown;
+  if (model.protocol === 'anthropic' && isSonnet55(model.id)) {
+    if (!env.AI.gateway) throw new Error('AI Gateway connection is not configured');
+    const response = await env.AI.gateway(env.AI_GATEWAY_ID).run({
+      provider: 'anthropic',
+      endpoint: 'https://api.anthropic.com/v1/messages',
+      headers: { 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json', 'cf-aig-no-wholesale': 'true' },
+      query: { ...parameters, model: nativeModelId(model.id), cache_control: { type: 'ephemeral' } },
+    }, { extraHeaders: { 'cf-aig-no-wholesale': 'true' }, signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
+    if (!response.ok) throw new Error('AI Gateway request failed with status ' + response.status);
+    try { body = await response.json(); }
+    catch { throw new Error('AI Gateway returned an unparsable response'); }
+  } else {
+    body = await env.AI.run(model.id, parameters, { gateway: { id: env.AI_GATEWAY_ID }, ...(model.source === 'gateway' ? { extraHeaders: { 'cf-aig-no-wholesale': 'true' } } : {}), signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
+  }
+  try {
+    const message = normalizeModelMessage(body, model.protocol);
+    if (onUsage) await onUsage(message.usage);
+    return message;
+  }
   catch (error) {
     console.error(JSON.stringify({ event: 'model_output_rejected', ...classifyModelFailure(error), ...modelOutputShape(body) }));
     throw error;

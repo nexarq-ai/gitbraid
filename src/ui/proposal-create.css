@@ -59,3 +59,8 @@
 .proposal-baseline dd code { font-size: 11px; }
 .proposal-commit-message { white-space: pre-wrap; }
 .proposal-baseline .proposal-base-error { color: #a43131; }
+
+.proposal-attachment-list{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.proposal-attachment-list li{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.proposal-attachment-list code{overflow-wrap:anywhere}
+.proposal-inline-import{margin-top:12px;min-width:0}
