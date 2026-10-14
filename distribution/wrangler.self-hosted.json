@@ -18,7 +18,8 @@
       "/mcp",
       "/oauth/*",
       "/.well-known/*",
-      "/llms.txt"
+      "/llms.txt",
+      "/git/*"
     ]
   },
   "vars": {

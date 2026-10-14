@@ -110,6 +110,7 @@ export interface Mission {
   attachments?: MissionAttachment[];
   skillChange?: RepositorySkillChange;
   revertChange?: RevertChange;
+  branchChange?: BranchChange;
   authorization?: { principal: import('../worker/security').Principal; workspaceId: string; creatorId: string };
   id: string;
   repositoryId: string;
@@ -165,8 +166,17 @@ export interface AiSettings { enabled: boolean; locked: boolean }
 
 export interface AgentTask { name: string; role: string; task: string; model?: string }
 export interface RevertChange { missionId: string; title: string; landedSha: string; previousSha: string }
+export interface BranchChange { branch: string; headSha: string; targetBranch: string; description?: string; closedAt?: string; closedBy?: string }
+export type PullRequestState = 'open' | 'needs_review' | 'approved' | 'landed' | 'closed';
+export type LanderRole = 'Maintainer' | 'Owner';
+export interface BranchRule { pattern: string; requirePullRequest: boolean; requiredApprovals: number; requirePassingChecks: true; requiredCheckNames: string[]; preventSelfApproval: boolean; dismissApprovalsOnNewCommits: true; restrictLanders: LanderRole[]; allowForcePush: false }
+export type BranchRuleInput = Pick<BranchRule, 'pattern' | 'requirePullRequest' | 'requiredApprovals' | 'requiredCheckNames' | 'preventSelfApproval' | 'restrictLanders'>;
+export interface BranchProtection { repositoryId: string; defaultBranch: string; rules: BranchRule[]; configured: boolean; updatedAt?: string; updatedBy?: string }
+export interface BranchInfo { name: string; headSha: string; protected: boolean; default: boolean; ahead?: number; behind?: number }
+export interface BranchList { repositoryId: string; defaultBranch: string; gitUrl: string; branches: BranchInfo[] }
+export interface CreatePullRequestInput { title: string; description?: string; branch: string }
 export interface RepositorySkillChange { action: 'create' | 'update'; path: string; content: string; baseSha: string }
-export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; revertChange?: RevertChange; expectedBaseSha?: string; mode?: MissionMode }
+export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; revertChange?: RevertChange; branchChange?: BranchChange; expectedBaseSha?: string; mode?: MissionMode }
 export interface CreateRepositoryInput { name: string; description?: string }
 export interface ApproveMissionInput { candidateSha: string; baseSha: string }
 export interface ApiError { error: { code: string; message: string } }

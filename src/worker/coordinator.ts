@@ -10,6 +10,7 @@ import type { ImportReceipt, ImportResult } from './repository-import';
 import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './releases';
 import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
 import { applyIssueChange, issueFingerprint, listIssues, readIssue, type IssueActor, type IssueChange, type IssueQuery } from './issues';
+import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 
 interface Receipt<T> { fingerprint: string; result: T }
 interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
@@ -84,6 +85,50 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   getIssue(number: number): IssueDetail | undefined { return readIssue(this.store, number); }
 
   changeIssue(key: string, change: IssueChange, actor: IssueActor): IssueDetail { return readIssue(this.store, this.mutate(key, issueFingerprint(change, actor), () => applyIssueChange(this.store, change, actor)))!; }
+  getBranchProtection(): StoredBranchProtection | undefined { return this.store.get<StoredBranchProtection>('branch-protection'); }
+
+  setBranchProtection(key: string, rules: unknown, actorId: string): StoredBranchProtection {
+    const normalized = normalizeBranchRules(rules);
+    return this.mutate(key, JSON.stringify(['branch-protection', normalized]), () => {
+      const stored = { rules: normalized, updatedAt: new Date().toISOString(), updatedBy: actorId } satisfies StoredBranchProtection;
+      this.store.put('branch-protection', stored);
+      return stored;
+    });
+  }
+
+  pullRequestAction(key: string, id: string, action: 'update' | 'close' | 'reopen', actorId: string, headSha?: string): Mission {
+    return this.mutateMission(key, JSON.stringify(['pull', id, action, headSha ?? null]), id, () => {
+      const mission = this.requiredMission(id);
+      const change = mission.branchChange;
+      if (!change) throw new ApiError(409, 'NOT_A_PULL_REQUEST', 'Only a pull request can be updated from its branch, closed or reopened.');
+      if (['integrating', 'integrated'].includes(mission.status)) throw new ApiError(409, 'PULL_REQUEST_LANDED', 'This pull request is landing or has landed.');
+      if (action === 'close') {
+        if (change.closedAt) return mission;
+        if (mission.status === 'approved') { this.archive(mission, 'approved'); delete mission.approvedAt; delete mission.approvedBy; this.archive(mission, 'approval_revoked'); }
+        this.store.delete(`dispatch:${mission.id}-${mission.epoch}`);
+        mission.runs = mission.runs.map((run) => ['queued', 'running'].includes(run.status) ? { ...run, status: 'cancelled', completedAt: new Date().toISOString() } : run);
+        mission.status = 'cancelled';
+        mission.branchChange = { ...change, closedAt: new Date().toISOString(), closedBy: actorId };
+        this.saveMission(mission, `${actorId} closed this pull request. Late execution results will be rejected.`, 'warning');
+        this.archive(mission, 'cancelled');
+        return mission;
+      }
+      if (!headSha || !/^[a-f0-9]{40}$/.test(headSha)) throw new ApiError(400, 'INVALID_COMMIT', 'Provide the exact branch head commit.');
+      if (action === 'reopen' && !change.closedAt) throw new ApiError(409, 'PULL_REQUEST_OPEN', 'This pull request is already open.');
+      if (action === 'update' && change.closedAt) throw new ApiError(409, 'PULL_REQUEST_CLOSED', 'Reopen this pull request before updating it from its branch.');
+      if (['queued', 'running', 'checking'].includes(mission.status)) throw new ApiError(409, 'MISSION_ACTIVE', 'Checks are already running for this pull request. Wait or cancel them first.');
+      if (mission.status === 'approved') {
+        this.archive(mission, 'approved');
+        mission.status = 'needs_review';
+        delete mission.approvedAt;
+        delete mission.approvedBy;
+        this.archive(mission, 'approval_revoked');
+      }
+      const { closedAt: _closedAt, closedBy: _closedBy, ...open } = change;
+      mission.branchChange = { ...open, headSha };
+      return this.saveMission(mission, action === 'reopen' ? `${actorId} reopened this pull request at ${headSha.slice(0, 12)}.` : `${actorId} updated this pull request from ${change.branch} at ${headSha.slice(0, 12)}. Earlier approvals no longer apply.`);
+    });
+  }
 
   getModelConnections(): ModelConnection[] { return this.store.get<ModelConnection[]>('model-connections') ?? defaultModelConnections(); }
 
@@ -348,8 +393,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (skillChange && repository.headSha !== skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill before proposing this edit.');
       const revertChange = input.revertChange;
       if (revertChange && (!/^[a-f0-9]{40}$/.test(revertChange.landedSha) || !/^[a-f0-9]{40}$/.test(revertChange.previousSha))) throw new ApiError(400, 'INVALID_COMMIT', 'A revert needs the exact landed and previous commits.');
-      const race = input.mode === 'race' && !revertChange;
-      const tasks = skillChange ? [{ name: 'Skill editor', role: 'Trusted skill editor', task: `Apply exactly the submitted Markdown to ${skillChange.path}.` }] : revertChange ? [{ name: 'Revert editor', role: 'Trusted revert editor', task: `Undo exactly the change landed by "${revertChange.title}" (${revertChange.previousSha.slice(0, 12)} to ${revertChange.landedSha.slice(0, 12)}) with a new revert commit.` }] : input.tasks ?? (race ? [
+      const branchChange = input.branchChange ? { ...input.branchChange, branch: branchName(input.branchChange.branch), targetBranch: repository.defaultBranch } : undefined;
+      if (branchChange && (!/^[a-f0-9]{40}$/.test(branchChange.headSha) || branchChange.branch === repository.defaultBranch)) throw new ApiError(400, 'INVALID_PULL_REQUEST', 'A pull request needs the exact head commit of a branch other than the default branch.');
+      const race = input.mode === 'race' && !revertChange && !branchChange;
+      const tasks = skillChange ? [{ name: 'Skill editor', role: 'Trusted skill editor', task: `Apply exactly the submitted Markdown to ${skillChange.path}.` }] : branchChange ? [{ name: 'Branch merger', role: 'Trusted branch merger', task: `Merge ${branchChange.branch} at ${branchChange.headSha.slice(0, 12)} into ${branchChange.targetBranch}, fast-forwarding when possible.` }] : revertChange ? [{ name: 'Revert editor', role: 'Trusted revert editor', task: `Undo exactly the change landed by "${revertChange.title}" (${revertChange.previousSha.slice(0, 12)} to ${revertChange.landedSha.slice(0, 12)}) with a new revert commit.` }] : input.tasks ?? (race ? [
         { name: 'Candidate A', role: 'Independent attempt', task: 'Complete the whole mission with the smallest change that satisfies every criterion.' },
         { name: 'Candidate B', role: 'Independent attempt', task: 'Complete the whole mission, favouring clarity and explicit error handling.' },
       ] : [
@@ -358,7 +405,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       ]);
       const mission: Mission = {
         id: crypto.randomUUID(), repositoryId: repository.id, title: input.title, prompt: input.prompt,
-        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(race ? { mode: 'race' as const } : {}),
+        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
         runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
@@ -415,6 +462,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (!['draft', 'failed', 'cancelled', 'needs_review'].includes(mission.status)) throw new ApiError(409, 'MISSION_ACTIVE', 'Cancel the active attempt or revoke its approval before starting again.');
       const repository = this.getRepository(mission.repositoryId);
       if (mission.skillChange && repository?.headSha !== mission.skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill and submit a new edit proposal.');
+      if (mission.branchChange?.closedAt) throw new ApiError(409, 'PULL_REQUEST_CLOSED', 'Reopen this pull request before running its checks.');
       if (mission.epoch > 0) this.archive(mission, 'retry');
       if (authorization) mission.authorization = { ...authorization, creatorId: mission.authorization?.creatorId ?? authorization.creatorId };
       mission.status = 'queued';

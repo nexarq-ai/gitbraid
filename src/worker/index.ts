@@ -26,6 +26,8 @@ import { handleIssues } from './issues';
 import { releaseApi } from './releases';
 import { modelConnectionsSnapshot, modelIdentifier, resolveModelConnection, validateModelConnection, verifyModelConnection } from './model-config';
 import { IMPORT_REQUEST_MAX_BYTES, RepositoryImportFailure, buildImportPack, importFingerprint, inspectRepositoryImport, parseImportArchive, pushRepositoryImport, validateImportInput } from './repository-import';
+import { handleGitRequest, listBranches, type GitHttpDependencies } from './git-http';
+import { branchName, effectiveRules, landingRule, protectionSnapshot } from './branch-protection';
 
 export { GitflareSecurity } from './security';
 export { GitflareCoordinator } from './coordinator';
@@ -96,6 +98,17 @@ async function authorize(request: Request, env: AppEnv, bearerOnly = false): Pro
   const value = bearer ?? (!bearerOnly ? cookieValue(request) : undefined);
   if (value) return security(env).authenticate(value, request.headers.get('X-Gitflare-Workspace') ?? undefined);
   throw new ApiError(401, 'AUTH_REQUIRED', 'Sign in to Gitflare.');
+}
+
+async function landingReviewRule(env: AppEnv, repository: Repository) { return landingRule(await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getBranchProtection(), repository.defaultBranch); }
+function gitDependencies(env: AppEnv): GitHttpDependencies {
+  return {
+    authenticate: (token) => security(env).authenticate(token),
+    authorize: (principal, action, repositoryId) => security(env).authorize(principal, action, 'repository', repositoryId),
+    repository: async (principal, name) => (await env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId)).listRepositories()).find(item => item.name === name || principal.workspaceId !== 'legacy' && item.name === `w-${principal.workspaceId.replace(/-/g, '')}-${name.slice(0, 29)}`),
+    rules: async (repository) => effectiveRules(await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getBranchProtection(), repository.defaultBranch),
+    artifacts: env.ARTIFACTS,
+  };
 }
 
 function integrations(env: AppEnv, local: boolean): IntegrationStatus[] {
@@ -323,7 +336,36 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     if (repositoryMatch[2] === 'skills') return Response.json(await listRepositorySkills(env.ARTIFACTS, repository, url.searchParams.get('ref') ?? undefined));
     return browseRepository(env, repository, repositoryMatch[2], url);
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert))?$/.exec(url.pathname);
+  const branchRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/(branches|branch-protection|pulls)$/.exec(url.pathname);
+  if (branchRoute) {
+    const repository = await catalog.getRepository(branchRoute[1]);
+    if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+    const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
+    const writing = request.method === 'POST';
+    if (!writing && (request.method !== 'GET' || branchRoute[2] === 'pulls')) throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use a supported branch operation.');
+    await access.authorize(principal, !writing ? 'read' : branchRoute[2] === 'branch-protection' ? 'manage' : 'contribute', 'repository', repository.id);
+    if (!writing && branchRoute[2] === 'branch-protection') return Response.json(protectionSnapshot(repository.id, repository.defaultBranch, await coordinator.getBranchProtection()));
+    if (!env.ARTIFACTS || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to use branches.');
+    if (!writing) return Response.json({ repositoryId: repository.id, defaultBranch: repository.defaultBranch, gitUrl: `${url.origin}/git/${repository.name}.git`, branches: await listBranches(env.ARTIFACTS, repository, effectiveRules(await coordinator.getBranchProtection(), repository.defaultBranch)) });
+    assertMutationOrigin(request);
+    const key = requireIdempotencyKey(request), body = await readJson(request, 65_536);
+    if (branchRoute[2] === 'branch-protection') { await coordinator.setBranchProtection(key, body.rules, principal.userId); return Response.json(protectionSnapshot(repository.id, repository.defaultBranch, await coordinator.getBranchProtection())); }
+    await access.authorize(principal, 'execute', 'repository', repository.id);
+    if (!env.MISSION_WORKFLOW || !executionReadiness(env, 'skill-edit').ready) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect the required services before opening a pull request.');
+    const title = requireString(body.title, 'Title', 120), branch = branchName(body.branch);
+    const description = body.description === undefined || body.description === '' ? undefined : requireString(body.description, 'Description', 8000);
+    if (branch === repository.defaultBranch) throw new ApiError(400, 'INVALID_PULL_REQUEST', 'Choose a branch other than the default branch.');
+    const current = await currentRepository(env, repository);
+    if (!current.headSha) throw new ApiError(409, 'EMPTY_REPOSITORY', 'Push an initial commit to the default branch first.');
+    const headSha = await repositoryHead(env.ARTIFACTS, repository.name, branch).catch(() => null);
+    if (!headSha) throw new ApiError(404, 'BRANCH_NOT_FOUND', `Branch ${branch} was not found. Push it first.`);
+    if (headSha === current.headSha) throw new ApiError(409, 'NOTHING_TO_MERGE', `${branch} has no commits that are not already on ${repository.defaultBranch}.`);
+    const models = await coordinatorRead('getModelConnections', () => catalog.getModelConnections());
+    const authorization = { principal, workspaceId: principal.workspaceId, creatorId: principal.userId };
+    const draft = await coordinator.createMission(key, { repositoryId: repository.id, expectedBaseSha: current.headSha, title, prompt: description ?? `Merge ${branch} into ${repository.defaultBranch}.`, branchChange: { branch, headSha, targetBranch: repository.defaultBranch, ...(description ? { description } : {}) } }, authorization, models);
+    return Response.json(await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models), { status: 202 });
+  }
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert|pull))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -471,7 +513,9 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const { mission, repository } = await findMission(env, match[1], principal.workspaceId);
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
     const reviewInput = match[2] === 'review' ? reviewMissionInput(body) : undefined;
-    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'revert' ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
+    const pullAction = match[2] === 'pull' ? body.action : undefined;
+    if (match[2] === 'pull' && !['update', 'close', 'reopen'].includes(String(pullAction))) throw new ApiError(400, 'INVALID_PULL_ACTION', 'Choose update, close or reopen.');
+    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'revert' || (pullAction && pullAction !== 'close') ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
     try { await access.authorize(principal, action, 'repository', repository.id, mission.id); }
     catch (error) {
       if (reviewInput?.action !== 'comment' || publicError(error).code !== 'FORBIDDEN') throw error;
@@ -483,6 +527,19 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       return Response.json(reviewed);
     }
     if (match[2] === 'cancel') return Response.json(await coordinator.cancelMission(key, mission.id));
+    if (match[2] === 'pull') {
+      if (!mission.branchChange) throw new ApiError(409, 'NOT_A_PULL_REQUEST', 'This mission is not a pull request.');
+      if (pullAction === 'close') { const closed = await coordinator.pullRequestAction(key, mission.id, 'close', principal.userId); await access.clearApprovals(principal, mission.id); return Response.json(closed); }
+      await access.authorize(principal, 'contribute', 'repository', repository.id, mission.id);
+      if (!env.MISSION_WORKFLOW || !executionReadiness(env, 'skill-edit').ready || !env.ARTIFACTS) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect the required services before running pull request checks.');
+      await currentRepository(env, repository);
+      const headSha = await repositoryHead(env.ARTIFACTS, repository.name, mission.branchChange.branch).catch(() => null);
+      if (!headSha) throw new ApiError(404, 'BRANCH_NOT_FOUND', `Branch ${mission.branchChange.branch} no longer exists.`);
+      await coordinator.pullRequestAction(key, mission.id, pullAction as 'update' | 'reopen', principal.userId, headSha);
+      await access.clearApprovals(principal, mission.id);
+      const authorization = { principal, workspaceId: principal.workspaceId, creatorId: mission.authorization?.creatorId ?? principal.userId };
+      return Response.json(await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, mission.id, authorization, await coordinatorRead('getModelConnections', () => catalog.getModelConnections())), { status: 202 });
+    }
     if (match[2] === 'select') {
       if (!Number.isInteger(body.epoch)) throw new ApiError(400, 'INVALID_INPUT', 'Include the attempt number this selection applies to.');
       const selected = await coordinator.selectCandidate(key, mission.id, requireString(body.runId, 'Agent run', 100), body.epoch as number, principal.userId);
@@ -541,8 +598,8 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       return Response.json(started, { status: 202 });
     }
     if (match[2] === 'start') {
-      if (!mission.skillChange && !mission.revertChange) await requireAi(env, catalog);
-      const readiness = executionReadiness(env, mission.skillChange || mission.revertChange ? 'skill-edit' : 'agent');
+      if (!mission.skillChange && !mission.revertChange && !mission.branchChange) await requireAi(env, catalog);
+      const readiness = executionReadiness(env, mission.skillChange || mission.revertChange || mission.branchChange ? 'skill-edit' : 'agent');
       if (!readiness.ready || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', `Connect the required services before running agents: ${[...readiness.missing, ...(!env.MISSION_WORKFLOW ? ['Mission Workflow'] : [])].join(', ')}.`);
       const current = await currentRepository(env, repository);
       if (!current.headSha) throw new ApiError(409, 'EMPTY_REPOSITORY', 'Push an initial commit before starting a mission.');
@@ -556,7 +613,8 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const current = await currentRepository(env, repository);
     if (match[2] === 'integrate') {
       if (!env.SANDBOX || !env.ARTIFACTS) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect Artifacts and Sandbox before integrating.');
-      await access.assertLand(principal, mission.id, candidateSha, baseSha, mission.epoch, repository.id);
+      const rule = await landingReviewRule(env, repository);
+      await access.assertLand(principal, mission.id, candidateSha, baseSha, mission.epoch, repository.id, rule);
       const claim = await coordinator.beginIntegration(key, mission.id, candidateSha, baseSha);
       if (claim.mission.status === 'integrated') return Response.json(claim.mission);
       if (!claim.claimId) throw new ApiError(500, 'INTEGRATION_CLAIM_MISSING', 'The integration claim could not be established.');
@@ -566,7 +624,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
         throw new ApiError(409, 'INTEGRATION_PENDING', 'An integration is in progress or needs reconciliation. The canonical branch has not confirmed the approved commit.');
       }
       try {
-        const result = await integrateCandidate(env, { repository: current, mission: claim.mission, integrationAttemptId: claim.claimId, beforePush: async () => { await coordinator.claimIntegrationPush(mission.id, claim.mission.epoch, claim.claimId!); }, assertAuthority: async () => { await access.check(principal, 'land', 'repository', repository.id, mission.id); await access.assertLand(principal, mission.id, candidateSha, baseSha, mission.epoch, repository.id); } });
+        const result = await integrateCandidate(env, { repository: current, mission: claim.mission, integrationAttemptId: claim.claimId, beforePush: async () => { await coordinator.claimIntegrationPush(mission.id, claim.mission.epoch, claim.claimId!); }, assertAuthority: async () => { await access.check(principal, 'land', 'repository', repository.id, mission.id); await access.assertLand(principal, mission.id, candidateSha, baseSha, mission.epoch, repository.id, await landingReviewRule(env, repository)); } });
         const integrated = await coordinator.completeIntegration(mission.id, claim.mission.epoch, result.sha, claim.claimId);
         await catalog.saveRepository({ ...current, headSha: result.sha, updatedAt: result.integratedAt });
         return Response.json(integrated);
@@ -584,7 +642,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       }
     }
     assertReviewClear(mission);
-    const approval = await access.recordApproval(principal, mission.id, candidateSha, baseSha, mission.epoch, mission.checks, mission.authorization?.creatorId);
+    const approval = await access.recordApproval(principal, mission.id, candidateSha, baseSha, mission.epoch, mission.checks, mission.authorization?.creatorId, await landingReviewRule(env, repository));
     if (!approval.ready) return Response.json({ ...mission, approval });
     return Response.json(await coordinator.approveMission(key, mission.id, candidateSha, baseSha, principal.userId));
   }
@@ -615,6 +673,10 @@ async function entryRedirect(request: Request, env: AppEnv, path: string): Promi
 const application = {
   async fetch(request: Request, env: AppEnv, ctx?: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path.startsWith('/git/')) {
+      try { return (await handleGitRequest(request, gitDependencies(env)))!; }
+      catch { return new Response('Gitflare could not complete this Git request. Try again shortly.\n', { status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } }); }
+    }
     const publicGit = await publicGitResponse(request, env);
     if (publicGit) return publicGit;
     if (path === '/oauth/authorize') return oauthConsent(request, env, authorize);

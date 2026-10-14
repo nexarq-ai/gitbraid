@@ -83,7 +83,15 @@ const loadIssues = () => import("./Issues");
 const Issues = lazy(loadIssues);
 const loadReleases = () => import("./Releases");
 const Releases = lazy(loadReleases);
-const workspacePages = [loadMissionDetail, loadRepositoryBrowser, loadDocumentation, loadRepositorySkills, loadCloudflareConnection, loadMcpConnections, loadAccessSettings, loadRepositoryWork, loadProposalCreate, loadModelConnections, loadIssues, loadReleases];
+const loadPullRequests = () => import("./PullRequests");
+const PullRequests = lazy(loadPullRequests);
+const loadPullRequestCreate = () => import("./PullRequestCreate");
+const PullRequestCreate = lazy(loadPullRequestCreate);
+const loadBranchProtection = () => import("./BranchProtection");
+const BranchProtection = lazy(loadBranchProtection);
+const loadGitAccess = () => import("./GitAccess");
+const GitAccess = lazy(loadGitAccess);
+const workspacePages = [loadMissionDetail, loadRepositoryBrowser, loadDocumentation, loadRepositorySkills, loadCloudflareConnection, loadMcpConnections, loadAccessSettings, loadRepositoryWork, loadProposalCreate, loadModelConnections, loadIssues, loadReleases, loadPullRequests, loadPullRequestCreate, loadBranchProtection, loadGitAccess];
 // Start the homepage chunk alongside the main bundle instead of after it
 if (currentRoute() === "home") void loadHomepage();
 
@@ -565,7 +573,7 @@ function Workspace() {
                 onTabChange={(tab) => navigate(`mission/${route.split("/")[1]}/${tab}`)}
                 permissions={permissions}
                 workspace={workspace}
-                onBack={() => { const mission = workspace.missions.find(item => item.id === route.split("/")[1]); navigate(mission ? `repository/${mission.repositoryId}/proposals` : "missions"); }}
+                onBack={() => { const mission = workspace.missions.find(item => item.id === route.split("/")[1]); navigate(mission ? `repository/${mission.repositoryId}/${mission.branchChange ? "pulls" : "proposals"}` : "missions"); }}
                 onUpdate={() => void load()}
               />
             ) : page === "repository" ? (
@@ -581,6 +589,8 @@ function Workspace() {
                 issueNumber={route.split("/")[3]}
                 releaseId={route.split("/")[3]}
                 canLand={permissions.includes("land")}
+                subroute={route.split("/").slice(3).join("/")}
+                onRefresh={() => void load()}
                 onTabChange={(tab) => navigate(`repository/${route.split("/")[1]}/${tab}`)}
                 onImport={() => navigate(`repository/${route.split("/")[1]}/import`)}
                 canManage={permissions.includes("manage")}
@@ -1208,6 +1218,8 @@ function RepositoryDetail({
   canManage,
   tab,
   issueNumber,
+  subroute,
+  onRefresh,
   onTabChange,
   onImport,
   releaseId,
@@ -1224,6 +1236,8 @@ function RepositoryDetail({
   canManage: boolean;
   tab: string;
   issueNumber?: string;
+  subroute: string;
+  onRefresh: () => void;
   onTabChange: (tab: string) => void;
   onImport: () => void;
   releaseId?: string;
@@ -1242,6 +1256,8 @@ function RepositoryDetail({
   const missions = workspace.missions.filter(
     (mission) => mission.repositoryId === repository.id,
   );
+  const agentMissions = missions.filter((mission) => !mission.branchChange);
+  const pullCount = missions.length - agentMissions.length;
   return (
     <>
       <button className="header-back" onClick={onBack}>
@@ -1274,17 +1290,19 @@ function RepositoryDetail({
         {[
             { value: "code", label: "Code" },
             { value: "issues", label: "Issues" },
-            { value: "proposals", label: `Missions (${missions.length})` },
+            { value: "pulls", label: `Pull requests (${pullCount})` },
+            { value: "proposals", label: `Missions (${agentMissions.length})` },
             { value: "agents", label: `Agents (${missions.reduce((count, mission) => count + (mission.epoch > 0 ? mission.runs.length : 0), 0)})` },
             { value: "checks", label: `Checks (${missions.reduce((count, mission) => count + mission.checks.length, 0)})` },
             { value: "skills", label: "Skills", ai: true },
             { value: "releases", label: "Releases" },
             { value: "cloudflare", label: "Cloudflare" },
+            { value: "settings/branches", label: "Branches" },
             { value: "overview", label: "Overview" },
-          ].map((item) => <button key={item.value} className={"ai" in item && item.ai ? "ai-only" : undefined} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
+          ].map((item) => <button key={item.value} className={"ai" in item && item.ai ? "ai-only" : undefined} aria-current={tab === item.value || `${tab}/${subroute}` === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
-      {tab === "issues" ? <Issues key={repository.id} repository={repository} issueNumber={issueNumber} missions={missions} /> : tab === "releases" ? <Releases key={repository.id} repository={repository} releaseId={releaseId} canLand={canLand} onNotify={onNotify} /> : ["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
-        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} /></>
+      {tab === "issues" ? <Issues key={repository.id} repository={repository} issueNumber={issueNumber} missions={missions} /> : tab === "releases" ? <Releases key={repository.id} repository={repository} releaseId={releaseId} canLand={canLand} onNotify={onNotify} /> : tab === "pulls" ? subroute === "new" ? <PullRequestCreate key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onCreated={onRefresh} /> : <PullRequests key={repository.id} repositoryId={repository.id} missions={missions} canContribute={canContribute} /> : tab === "settings" && subroute === "branches" ? <BranchProtection key={repository.id} repository={repository} canManage={canManage} onNotify={onNotify} /> : ["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={tab === "proposals" ? agentMissions : missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
+        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} />{repository.provider === "artifacts" && <GitAccess key={`git-${repository.id}`} repository={repository} onNotify={onNotify} />}</>
       ) : tab === "overview" ? (
         <>
           <section className="panel">

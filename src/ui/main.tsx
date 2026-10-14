@@ -18,6 +18,7 @@ import "./repository-import.css";
 import "./model-connections.css";
 import "./issues.css";
 import "./releases.css";
+import "./pull-requests.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
