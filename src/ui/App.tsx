@@ -38,7 +38,7 @@ import {
   SignOutIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import type { AccessSnapshot, Mission, Repository, Workspace } from "../shared/types";
+import type { AccessSnapshot, Repository, Workspace } from "../shared/types";
 import { request, RequestError, selectWorkspace } from "./api";
 import {
   BranchIllustration,
@@ -51,6 +51,7 @@ import {
 import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
+import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
 import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
 
 const MissionDetail = lazy(() => import("./MissionDetail"));
@@ -63,10 +64,12 @@ const loadHomepage = () => import("./SelfHostedHome");
 const Homepage = lazy(loadHomepage);
 const AccessSettings = lazy(() => import("./AccessSettings"));
 const RepositoryWork = lazy(() => import("./RepositoryWork"));
+const ProposalCreate = lazy(() => import("./ProposalCreate"));
+const ModelConnections = lazy(() => import("./ModelConnections"));
 // Start the homepage chunk alongside the main bundle instead of after it
 if (currentRoute() === "home") void loadHomepage();
 
-type Modal = "mission" | "repository" | "connect" | "learn" | "session" | null;
+type Modal = "repository" | "connect" | "learn" | "session" | null;
 const blankWorkspace: Workspace = {
   name: "Your workspace",
   mode: "local",
@@ -106,7 +109,6 @@ function Workspace() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [toast, setToast] = useState("");
-  const [selectedRepository, setSelectedRepository] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadGeneration = useRef(0);
@@ -128,8 +130,11 @@ function Workspace() {
     setToast("");
   }, []);
 
-  const load = useCallback(async () => {
-    const generation = ++loadGeneration.current;
+  const inFlight = useRef(0);
+  const load = useCallback(async (background: unknown = false) => {
+    if (background === true && inFlight.current > 0) return;
+    const generation = background === true ? loadGeneration.current : ++loadGeneration.current;
+    inFlight.current += 1;
     try {
       const [data, access] = await Promise.all([request<Workspace>("/api/workspace"), request<AccessSnapshot>("/api/access")]);
       if (generation !== loadGeneration.current) return;
@@ -160,6 +165,8 @@ function Workspace() {
       } else if (!hasWorkspace.current) {
         setAuthState("unavailable");
       }
+    } finally {
+      inFlight.current -= 1;
     }
   }, [clearSession]);
 
@@ -171,9 +178,9 @@ function Workspace() {
 
   useEffect(() => {
     void request<AuthConfig>("/api/auth/config").then(setAuthConfig).catch((failure: unknown) => { setAuthConfigError(failure instanceof Error ? failure.message : "Installation configuration is unavailable."); setAuthState("unavailable"); });
-    void load();
+    void load(true);
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible" && !authFlowActive.current) void load();
+      if (document.visibilityState === "visible" && !authFlowActive.current) void load(true);
     }, 15000);
     return () => clearInterval(timer);
   }, [load]);
@@ -241,8 +248,7 @@ function Workspace() {
 
   function createMission(repositoryId?: string) {
     if (!permissions.includes("contribute")) { notify("Your role cannot create missions."); return; }
-    setSelectedRepository(repositoryId ?? workspace.repositories[0]?.id ?? "");
-    setModal(workspace.repositories.length ? "mission" : "repository");
+    navigate(repositoryId ? `repository/${repositoryId}/proposals/new` : "proposals/new");
   }
 
   async function signOut() {
@@ -274,7 +280,7 @@ function Workspace() {
   if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="/" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="/docs/overview">Guides</a><a href="/connect">Connect MCP</a><a href="/signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
   if (route === "home" && (!authConfig || (authConfig.edition === "hosted" && !authConfig.setupRequired))) return <Homepage authenticated={authState === "authenticated"} />;
   if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError || "Loading installation…"}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
-  if (isAccountRoute(route) && !authConfig.setupRequired) return <AccountScreen route={route} config={authConfig} authenticated={authState === "authenticated"} onChanged={load}/>;
+  if (isAccountRoute(route) && !authConfig.setupRequired) return <AccountScreen key={route} route={route} config={authConfig} authenticated={authState === "authenticated"} onChanged={load}/>;
   if (route.startsWith("invite?")) return <InvitationScreen route={route} config={authConfig} state={authState} error={error} onRetry={load} onSignedIn={load} onFlowChange={(active) => {authFlowActive.current=active;}}/>;
 
   if (authState !== "authenticated" || authConfig.setupRequired) {
@@ -292,9 +298,13 @@ function Workspace() {
     );
   }
 
+  const creatingProposal = route === "proposals/new" || /^repository\/[^/]+\/proposals\/new$/.test(route);
+  const importingRepository = /^repository\/[^/]+\/import$/.test(route);
+  const importRepository = importingRepository ? workspace.repositories.find(repo => repo.id === route.split("/")[1]) : undefined;
+  const proposalRepositoryId = route.startsWith("repository/") && creatingProposal ? route.split("/")[1] : undefined;
   const requestedPage = ["signin", "signup"].includes(route) ? "overview" : route.split("/")[0];
   const page = requestedPage === "access" ? "settings" : requestedPage;
-  const pageName =
+  const pageName = importingRepository ? "Import code" : creatingProposal ? "Create a mission" :
     {
       overview: "Overview",
       repositories: "Repositories",
@@ -392,7 +402,7 @@ function Workspace() {
           {navigation.map((item) => (
             <button
               key={item.id}
-              className={`nav-item ${page === item.id || (page === "mission" && item.id === "missions") || (page === "repository" && item.id === "repositories") ? "active" : ""}`}
+              className={`nav-item ${page === item.id || ((page === "mission" || (page === "proposals" && creatingProposal)) && item.id === "missions") || (page === "repository" && item.id === "repositories") ? "active" : ""}`}
               onClick={() => navigate(item.id)}
               aria-current={page === item.id ? "page" : undefined}
             >
@@ -412,6 +422,7 @@ function Workspace() {
             <GearSixIcon size={17} />
             Settings
           </button>
+          <button className={`nav-item ${route === "settings/models" ? "active" : ""}`} aria-current={route === "settings/models" ? "page" : undefined} onClick={() => navigate("settings/models")}><RobotIcon size={17} />AI models</button>
           <button className={`nav-item ${route === "settings/cloudflare" ? "active" : ""}`} aria-current={route === "settings/cloudflare" ? "page" : undefined} onClick={() => navigate("settings/cloudflare")}><CloudIcon size={17} />Cloudflare</button>
           <button className={`nav-item ${page === "docs" ? "active" : ""}`} onClick={() => navigate("docs/overview")} aria-current={page === "docs" ? "page" : undefined}>
             <BookOpenIcon size={17} />
@@ -486,7 +497,7 @@ function Workspace() {
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
           <Suspense fallback={<p className="route-loading-inline" role="status">Loading…</p>}>
-            {route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
+            {importingRepository ? importRepository ? <RepositoryImport key={importRepository.id} repository={importRepository} canManage={permissions.includes("manage")} canContribute={permissions.includes("contribute")} onBack={() => navigate(`repository/${importRepository.id}/code`)} onImported={item => setWorkspace(current => ({ ...current, repositories: current.repositories.map(repo => repo.id === item.id ? item : repo) }))} onCreateProposal={() => createMission(importRepository.id)} /> : <ErrorNotice message="This repository could not be found." /> : creatingProposal ? <ProposalCreate key={route} repositories={workspace.repositories} repositoryId={proposalRepositoryId} canContribute={permissions.includes("contribute")} canManage={permissions.includes("manage")} onImportRepository={id => navigate(`repository/${id}/import`)} onBack={() => navigate(proposalRepositoryId ? `repository/${proposalRepositoryId}/proposals` : "missions")} onCreateRepository={() => setModal("repository")} onCreated={async proposal => { await load(); navigate(`mission/${proposal.id}`); notify("Mission draft created."); }} /> : route === "settings/models" ? <ModelConnections canManage={permissions.includes("manage")} /> : route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (
               <MissionDetail
@@ -512,9 +523,11 @@ function Workspace() {
                 onOpenMission={(id, tab, runId) => navigate(`mission/${id}/${tab || "overview"}${runId ? `/${runId}` : ""}`)}
                 tab={route.split("/")[2] || "code"}
                 onTabChange={(tab) => navigate(`repository/${route.split("/")[1]}/${tab}`)}
+                onImport={() => navigate(`repository/${route.split("/")[1]}/import`)}
                 canManage={permissions.includes("manage")}
                 onNotify={notify}
                 canContribute={permissions.includes("contribute")}
+                canExecute={permissions.includes("execute")}
               />
             ) : (
               <>
@@ -960,7 +973,8 @@ function Workspace() {
                 )}
                 {page === "settings" && (
                   <>
-                    <a className="text-link" href="/settings/cloudflare">Cloudflare account and resources</a>
+                    <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><img src={cloudflareIcon} alt="" /><div><h2>Cloudflare account and resources</h2><p>Connect your account and manage the services used by your repositories.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/cloudflare")}>Manage Cloudflare</Button></section>
+                    <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><RobotIcon size={27} /><div><h2>AI models</h2><p>Choose available Workers AI models and manage provider connections.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/models")}>Manage AI models</Button></section>
                     <AccessSettings selfHosted={authConfig.edition === "self-hosted"} repositories={workspace.repositories} onWorkspaceChanged={load} />
 
                     <section className="panel">
@@ -1043,17 +1057,11 @@ function Workspace() {
         modal={modal}
         onClose={() => setModal(null)}
         workspace={workspace}
-        repositoryId={selectedRepository}
-        onCreated={async (kind, item) => {
+        onCreated={async (item, importCode) => {
           await load();
           setModal(null);
-          if (kind === "mission") navigate(`mission/${item.id}`);
-          else navigate(`repository/${item.id}`);
-          notify(
-            kind === "mission"
-              ? "Mission created as a draft."
-              : "Repository created.",
-          );
+          navigate(importCode ? `repository/${item.id}/import` : creatingProposal ? `repository/${item.id}/proposals/new` : `repository/${item.id}`);
+          notify("Repository created.");
         }}
         onSignedIn={async () => {
           setModal(null);
@@ -1134,9 +1142,11 @@ function RepositoryDetail({
   onOpenMission,
   onNotify,
   canContribute,
+  canExecute,
   canManage,
   tab,
   onTabChange,
+  onImport,
 }: {
   repository?: Repository;
   workspace: Workspace;
@@ -1145,9 +1155,11 @@ function RepositoryDetail({
   onOpenMission: (id: string, tab?: string, runId?: string) => void;
   onNotify: (message: string) => void;
   canContribute: boolean;
+  canExecute: boolean;
   canManage: boolean;
   tab: string;
   onTabChange: (tab: string) => void;
+  onImport: () => void;
 }) {
   if (!repository)
     return (
@@ -1200,8 +1212,8 @@ function RepositoryDetail({
             { value: "overview", label: "Overview" },
           ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
-      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
-        <RepositoryBrowser key={repository.id} repository={repository} />
+      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
+        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} /></>
       ) : tab === "overview" ? (
         <>
           <section className="panel">
@@ -1246,7 +1258,7 @@ function RepositoryDetail({
               </div>
               {repository.remote && (
                 <div className="clipboard-row">
-                  <code>git clone {repository.remote}</code>
+                  <code>git clone {quoteGitArgument(repository.remote)}</code>
                   <Button
                     variant="ghost"
                     size="base"
@@ -1255,7 +1267,7 @@ function RepositoryDetail({
                     icon={CopyIcon}
                     onClick={() => {
                       void navigator.clipboard
-                        .writeText(`git clone ${repository.remote}`)
+                        .writeText(`git clone ${quoteGitArgument(repository.remote ?? "")}`)
                         .then(() => onNotify("Clone command copied."))
                         .catch(() =>
                           onNotify("Copy is unavailable in this browser."),
@@ -1343,84 +1355,43 @@ function CreationDialog({
   modal,
   onClose,
   workspace,
-  repositoryId,
   onCreated,
   onSignedIn,
 }: {
   modal: Modal;
   onClose: () => void;
   workspace: Workspace;
-  repositoryId: string;
-  onCreated: (
-    kind: "mission" | "repository",
-    item: Mission | Repository,
-  ) => Promise<void>;
+  onCreated: (item: Repository, importCode?: boolean) => Promise<void>;
   onSignedIn: () => Promise<void>;
 }) {
-  const [title, setTitle] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [repoId, setRepoId] = useState(repositoryId);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [initializeReadme, setInitializeReadme] = useState(true);
+  const [importCode, setImportCode] = useState(false);
   const [gitignore, setGitignore] = useState("none");
   const [license, setLicense] = useState("none");
   const [copyrightHolder, setCopyrightHolder] = useState("");
   const [token, setToken] = useState("");
-  const [criteria, setCriteria] = useState("");
-  const [missionMode, setMissionMode] = useState<"combine" | "race">("combine");
-  const [agentTasks, setAgentTasks] = useState(["", ""]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mutation = useRef<{ signature: string; key: string } | null>(null);
 
   useEffect(() => {
-    setTitle("");
-    setPrompt("");
     setName("");
     setDescription("");
-    setInitializeReadme(true); setGitignore("none"); setLicense("none"); setCopyrightHolder("");
+    setImportCode(false); setInitializeReadme(true); setGitignore("none"); setLicense("none"); setCopyrightHolder("");
     setToken("");
-    setCriteria("");
-    setMissionMode("combine");
-    setAgentTasks(["", ""]);
     setError("");
     setBusy(false);
-    setRepoId(repositoryId || workspace.repositories[0]?.id || "");
     mutation.current = null;
-  }, [modal, repositoryId]);
+  }, [modal]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
     setError("");
-    const acceptanceCriteria = criteria
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const tasks = agentTasks.every((task) => task.trim())
-      ? agentTasks.map((task, index) => ({
-          name: missionMode === "race" ? `Candidate ${String.fromCharCode(65 + index)}` : `Agent ${index + 1}`,
-          role: missionMode === "race" ? "Independent attempt" : index === 0 ? "Implementation" : "Complementary implementation",
-          task: task.trim(),
-        }))
-      : undefined;
-    const body =
-      modal === "session"
-        ? { token }
-        : modal === "repository" || modal === "connect"
-          ? { name: name.trim(), description: description.trim(), ...(modal === "repository" ? { initializeReadme, gitignore, license, copyrightHolder: copyrightHolder.trim() || undefined } : {}) }
-          : {
-              title: title.trim(),
-              prompt: prompt.trim(),
-              repositoryId: repoId,
-              acceptanceCriteria: acceptanceCriteria.length
-                ? acceptanceCriteria
-                : undefined,
-              tasks,
-              mode: missionMode,
-            };
+    const body = modal === "session" ? { token } : { name: name.trim(), description: description.trim(), ...(modal === "repository" ? { initializeReadme: importCode ? false : initializeReadme, gitignore: importCode ? "none" : gitignore, license: importCode ? "none" : license, copyrightHolder: importCode ? undefined : copyrightHolder.trim() || undefined } : {}) };
     const signature = JSON.stringify({ modal, body });
     if (mutation.current?.signature !== signature)
       mutation.current = { signature, key: crypto.randomUUID() };
@@ -1437,14 +1408,7 @@ function CreationDialog({
           body,
           mutation.current.key,
         );
-        await onCreated("repository", result);
-      } else {
-        const result = await request<Mission>(
-          "/api/missions",
-          body,
-          mutation.current.key,
-        );
-        await onCreated("mission", result);
+        await onCreated(result, modal === "repository" && importCode);
       }
       mutation.current = null;
     } catch (failure) {
@@ -1459,15 +1423,12 @@ function CreationDialog({
   }
 
   const titleText = {
-    mission: "Create a mission",
     repository: "Create a repository",
     connect: "Connect an existing repository",
     learn: "From intent to a reviewed change",
     session: "Sign in to Gitflare",
-  }[modal ?? "mission"];
+  }[modal ?? "repository"];
   const descriptionText = {
-    mission:
-      "Define the outcome and what each agent does. The mission is saved as a draft; no agent runs until you choose Start mission.",
     repository: "A home for your code and every agent contribution.",
     connect:
       "Add a repository that already exists in the Artifacts namespace connected to this workspace.",
@@ -1475,7 +1436,7 @@ function CreationDialog({
       "Keep the speed of parallel agents, with a clear record of what changed and why.",
     session:
       "Enter the owner access token for this workspace. It is used to establish a private session.",
-  }[modal ?? "mission"];
+  }[modal ?? "repository"];
 
   return (
     <Dialog.Root
@@ -1585,7 +1546,8 @@ function CreationDialog({
                     onChange={(event) => setDescription(event.target.value)}
                   />
                 </div>
-                {modal === "repository" && <div className="form-field"><label className="access-checkbox"><input type="checkbox" checked={initializeReadme} onChange={event => setInitializeReadme(event.target.checked)}/>Initialize with a README</label><label htmlFor="repository-gitignore">.gitignore template</label><select id="repository-gitignore" value={gitignore} onChange={event => setGitignore(event.target.value)}>{["none", "Node", "Python"].map(value => <option key={value} value={value}>{value === "none" ? "None" : value}</option>)}</select><label htmlFor="repository-license">License</label><select id="repository-license" value={license} onChange={event => setLicense(event.target.value)}>{["none", "MIT", "Apache-2.0"].map(value => <option key={value} value={value}>{value === "none" ? "No license" : value}</option>)}</select>{license === "MIT" && <><label htmlFor="repository-copyright">Copyright holder</label><Input id="repository-copyright" value={copyrightHolder} onChange={event => setCopyrightHolder(event.target.value)} required maxLength={200}/></>}</div>}
+                {modal === "repository" && <div className="form-field"><label htmlFor="repository-start">Start this repository</label><select id="repository-start" value={importCode ? "import" : "new"} onChange={event => setImportCode(event.target.value === "import")}><option value="new">Start a new project</option><option value="import">Import existing code</option></select><small>{importCode ? "Create an empty repository, then choose your project ZIP on the import page." : "Choose initial setup files for your repository."}</small></div>}
+                {modal === "repository" && !importCode && <div className="form-field"><label className="access-checkbox"><input type="checkbox" checked={initializeReadme} onChange={event => setInitializeReadme(event.target.checked)}/>Initialize with a README</label><label htmlFor="repository-gitignore">.gitignore template</label><select id="repository-gitignore" value={gitignore} onChange={event => setGitignore(event.target.value)}>{["none", "Node", "Python"].map(value => <option key={value} value={value}>{value === "none" ? "None" : value}</option>)}</select><label htmlFor="repository-license">License</label><select id="repository-license" value={license} onChange={event => setLicense(event.target.value)}>{["none", "MIT", "Apache-2.0"].map(value => <option key={value} value={value}>{value === "none" ? "No license" : value}</option>)}</select>{license === "MIT" && <><label htmlFor="repository-copyright">Copyright holder</label><Input id="repository-copyright" value={copyrightHolder} onChange={event => setCopyrightHolder(event.target.value)} required maxLength={200}/></>}</div>}
                 {modal === "repository" &&
                   workspace.mode === "local" &&
                   !workspace.integrations.find(
@@ -1600,102 +1562,7 @@ function CreationDialog({
                     </div>
                   )}
               </>
-            ) : (
-              <>
-                <div className="form-field">
-                  <label htmlFor="mission-repository">Repository</label>
-                  <select
-                    id="mission-repository"
-                    required
-                    value={repoId}
-                    onChange={(event) => setRepoId(event.target.value)}
-                  >
-                    {workspace.repositories.map((repo) => (
-                      <option key={repo.id} value={repo.id}>
-                        {repo.name}
-                        {repo.provider === "local" ? " (local)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-field">
-                  <label htmlFor="mission-title">Mission title</label>
-                  <Input
-                    id="mission-title"
-                    aria-label="Mission title"
-                    placeholder="Make checkout resilient to retries"
-                    required
-                    maxLength={120}
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                  />
-                </div>
-                <div className="form-field">
-                  <label htmlFor="mission-prompt">What should change?</label>
-                  <textarea
-                    id="mission-prompt"
-                    required
-                    minLength={10}
-                    maxLength={6000}
-                    placeholder="Describe the outcome, relevant context, and constraints…"
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                  />
-                </div>
-                <div className="form-field">
-                  <label htmlFor="mission-criteria">Acceptance criteria</label>
-                  <textarea
-                    id="mission-criteria"
-                    className="short-textarea"
-                    maxLength={1000}
-                    placeholder="One criterion per line (up to 12)…"
-                    value={criteria}
-                    onChange={(event) => setCriteria(event.target.value)}
-                  />
-                </div>
-                <fieldset className="mission-mode">
-                  <legend>How the agents work</legend>
-                  <label className={missionMode === "combine" ? "selected" : ""}>
-                    <input type="radio" name="mission-mode" checked={missionMode === "combine"} onChange={() => setMissionMode("combine")} />
-                    <span><strong>Combine</strong>Each agent owns one part. Their changes are merged and tested together.</span>
-                  </label>
-                  <label className={missionMode === "race" ? "selected" : ""}>
-                    <input type="radio" name="mission-mode" checked={missionMode === "race"} onChange={() => setMissionMode("race")} />
-                    <span><strong>Race</strong>Every agent attempts the whole mission. You compare the passing results and pick one.</span>
-                  </label>
-                </fieldset>
-                <div className="task-fields">
-                  {agentTasks.map((task, index) => (
-                    <div className="form-field" key={index}>
-                      <label htmlFor={`agent-task-${index}`}>
-                        <RobotIcon size={14} />
-                        {missionMode === "race" ? `Candidate ${String.fromCharCode(65 + index)} approach` : `Agent ${index + 1} assignment`}
-                      </label>
-                      <textarea
-                        id={`agent-task-${index}`}
-                        required={agentTasks.some((entry) => entry.trim())}
-                        minLength={10}
-                        className="short-textarea"
-                        maxLength={400}
-                        placeholder={missionMode === "race" ? "Optional emphasis, e.g. smallest change, or clearest code…" : index === 0 ? "Implement the core change…" : "Handle a complementary change…"}
-                        value={task}
-                        onChange={(event) => setAgentTasks((current) => current.map((entry, position) => position === index ? event.target.value : entry))}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <div className="agent-count">
-                  <span>{agentTasks.length} agents</span>
-                  <Button type="button" variant="ghost" size="sm" disabled={agentTasks.length >= 4} onClick={() => setAgentTasks((current) => [...current, ""])}>Add agent</Button>
-                  <Button type="button" variant="ghost" size="sm" disabled={agentTasks.length <= 2} onClick={() => setAgentTasks((current) => current.slice(0, -1))}>Remove agent</Button>
-                  <small>Leave every box empty to use default assignments.</small>
-                </div>
-                <p className="security-note">
-                  <ShieldCheckIcon size={15} />
-                  Creating a draft does not start agent execution.
-                </p>
-              </>
-            )}
+            ) : null}
             {error && (
               <div className="form-error" role="alert">
                 {error}
@@ -1723,7 +1590,7 @@ function CreationDialog({
                     ? "Create repository"
                     : modal === "connect"
                       ? "Connect repository"
-                      : "Create mission"}
+                      : "Create repository"}
               </Button>
             </div>
           </form>

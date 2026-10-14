@@ -20,6 +20,7 @@ export async function request<T>(
   key?: string,
 ): Promise<T> {
   const response = await fetch(path, {
+    signal: body === undefined ? AbortSignal.timeout(30000) : undefined,
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     headers: {

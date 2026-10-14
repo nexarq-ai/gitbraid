@@ -1,0 +1,66 @@
+.proposal-create { max-width: 1180px; margin: 0 auto; }
+.proposal-create .page-heading { margin-bottom: 24px; }
+.proposal-create-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; align-items: start; gap: 24px; }
+.proposal-main-fields { min-width: 0; }
+.proposal-section .panel-body { padding: 24px; }
+.proposal-create .form-field:last-child { margin-bottom: 0; }
+.proposal-create .form-field textarea { width: 100%; min-height: 0; resize: vertical; line-height: 1.6; }
+.proposal-create .form-field input, .proposal-create .form-field select { width: 100%; }
+.proposal-optional { font-weight: 400; color: #929dab; }
+.proposal-agents { margin-top: 28px; }
+.proposal-agents-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.proposal-agents-heading h2 { display: flex; align-items: center; gap: 10px; font-size: 16px; }
+.proposal-agents-heading h2 span { font-size: 12px; font-weight: 400; color: #626b79; }
+.proposal-agents-heading p { margin-top: 6px; font-size: 13px; line-height: 1.6; color: #626b79; }
+.proposal-agent-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.proposal-agent-card { min-width: 0; }
+.proposal-create .proposal-agent-grid > .panel { margin: 0; }
+.proposal-agent-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #e6e8eb; background: #f8f9fb; border-radius: 7px 7px 0 0; }
+.proposal-agent-heading > span { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; }
+.proposal-agent-heading > span svg { color: #626b79; }
+.proposal-agent-fields { padding: 20px; }
+.proposal-agent-fields .form-field { margin-bottom: 16px; }
+.proposal-agent-fields .form-field label { font-size: 12px; }
+.proposal-name-error { margin: 0 0 14px; font-size: 13px; color: #a43131; }
+.proposal-process ol { list-style: none; counter-reset: proposal-step; padding: 22px; margin: 0; }
+.proposal-process li { position: relative; padding: 0 0 22px 32px; counter-increment: proposal-step; }
+.proposal-process li:last-child { padding-bottom: 0; }
+.proposal-process li::before { content: counter(proposal-step); position: absolute; left: 0; top: 0; display: flex; justify-content: center; align-items: center; width: 22px; height: 22px; border: 1px solid #d7dce2; border-radius: 50%; background: #f8f9fb; color: #626b79; font-size: 11px; }
+.proposal-process strong { font-size: 13px; }
+.proposal-process p { margin-top: 6px; font-size: 12px; line-height: 1.7; color: #626b79; }
+.proposal-source-note { display: flex; align-items: start; gap: 8px; padding: 16px 22px; border-top: 1px solid #e6e8eb; color: #626b79; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.proposal-source-note svg { flex-shrink: 0; margin-top: 2px; }
+.proposal-source-note strong { color: #343b45; }
+.proposal-create-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-top: 1px solid #e0e4e9; padding-top: 22px; margin-top: 28px; }
+.proposal-create-footer p { display: flex; align-items: center; gap: 8px; color: #626b79; font-size: 12px; line-height: 1.6; }
+.proposal-create-footer p svg { color: #768191; flex-shrink: 0; }
+.proposal-create-footer > div { display: flex; gap: 12px; flex-shrink: 0; }
+.proposal-create .error-notice { margin-top: 20px; }
+.proposal-no-repository { padding: 36px; text-align: center; }
+.proposal-no-repository > svg { color: #768191; margin-bottom: 12px; }
+.proposal-no-repository h2 { font-size: 17px; }
+.proposal-no-repository p { color: #626b79; font-size: 13px; line-height: 1.6; margin: 12px auto 20px; }
+.settings-cloudflare { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 24px; margin-bottom: 24px; }
+.settings-cloudflare-heading { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.settings-cloudflare-heading > img { width: 27px; height: 27px; flex-shrink: 0; }
+.settings-cloudflare h2 { font-size: 15px; }
+.settings-cloudflare p { margin-top: 6px; color: #626b79; font-size: 13px; line-height: 1.6; }
+@media (max-width: 1100px) { .proposal-create-layout { grid-template-columns: minmax(0, 1fr); } .proposal-process { grid-row: 1; } .proposal-process ol { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; } .proposal-process li { padding-bottom: 0; } }
+@media (max-width: 760px) { .proposal-agent-grid { grid-template-columns: 1fr; } .proposal-process ol { display: block; padding: 18px; } .proposal-process li { padding-bottom: 18px; } .proposal-section .panel-body { padding: 18px; } .proposal-agents-heading { align-items: start; } .proposal-agents-heading p { max-width: 250px; } .proposal-create-footer { align-items: start; flex-direction: column; gap: 16px; } .proposal-create-footer > div { width: 100%; justify-content: end; flex-wrap: wrap; } .settings-cloudflare { align-items: start; flex-direction: column; padding: 20px; gap: 16px; } }
+.proposal-baseline { padding: 20px 22px; border-top: 1px solid #e6e8eb; }
+.proposal-baseline-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 18px; }
+.proposal-baseline-heading h3 { font-size: 13px; }
+.proposal-target-branch { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: #626b79; font-size: 12px; margin-bottom: 16px; }
+.proposal-target-branch svg { flex-shrink: 0; }
+.proposal-target-branch strong { padding: 3px 7px; color: #343b45; background: #f1f3f6; border-radius: 4px; overflow-wrap: anywhere; }
+.proposal-baseline dl { margin: 0 0 14px; }
+.proposal-baseline dt { font-size: 11px; color: #626b79; margin-top: 12px; margin-bottom: 5px; }
+.proposal-baseline dd { margin: 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.proposal-baseline dd code { font-size: 11px; }
+.proposal-commit-message { white-space: pre-wrap; }
+.proposal-baseline .proposal-base-error { color: #a43131; }
+
+.proposal-attachment-list{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.proposal-attachment-list li{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.proposal-attachment-list code{overflow-wrap:anywhere}
+.proposal-inline-import{margin-top:12px;min-width:0}

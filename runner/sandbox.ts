@@ -132,6 +132,8 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const container = this.ctx.container;
     const repositories = this.#repositories;
     if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
+    const excluded = await this.#executeCommand(['/bin/sh', '-c', "printf '\\nnode_modules/\\n' >> .git/info/exclude"], '/workspace/repo', 15_000, 15_000);
+    if (excluded.exitCode !== 0) throw new Error('Installed dependencies could not be excluded from candidate commits');
     const registry = this.ctx.exports.RegistryOutbound;
     await container.interceptAllOutboundHttp(registry);
     await container.interceptOutboundHttps('*', registry);

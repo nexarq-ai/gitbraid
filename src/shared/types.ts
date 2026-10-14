@@ -16,6 +16,22 @@ export interface Repository {
   updatedAt: string;
 }
 
+export interface ModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+export interface AgentUsage {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  unreportedCalls: number;
+}
+
 export interface AgentRun {
   id: string;
   name: string;
@@ -34,6 +50,10 @@ export interface AgentRun {
   summary?: string;
   error?: string;
   model?: string;
+  modelConfig?: ModelConnection;
+  skills?: { name: string; path: string; commitSha: string; sha256: string }[];
+  usage?: AgentUsage;
+  skillWarnings?: string[];
 }
 
 export interface Check {
@@ -84,7 +104,11 @@ export interface ReviewMissionInput {
   reviewId?: string;
 }
 
+export interface MissionAttachment { name: string; content: string }
+
 export interface Mission {
+  attachments?: MissionAttachment[];
+  skillChange?: RepositorySkillChange;
   authorization?: { principal: import('../worker/security').Principal; workspaceId: string; creatorId: string };
   id: string;
   repositoryId: string;
@@ -135,8 +159,9 @@ export interface Workspace {
   integrations: IntegrationStatus[];
 }
 
-export interface AgentTask { name: string; role: string; task: string }
-export interface CreateMissionInput { title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; mode?: MissionMode }
+export interface AgentTask { name: string; role: string; task: string; model?: string }
+export interface RepositorySkillChange { action: 'create' | 'update'; path: string; content: string; baseSha: string }
+export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; expectedBaseSha?: string; mode?: MissionMode }
 export interface CreateRepositoryInput { name: string; description?: string }
 export interface ApproveMissionInput { candidateSha: string; baseSha: string }
 export interface ApiError { error: { code: string; message: string } }
@@ -152,4 +177,20 @@ export interface ProjectResource {
   id: string;
   name: string;
   environment: string;
+}
+
+export interface ModelConnection {
+  id: string;
+  label: string;
+  source: 'gateway' | 'workers-ai';
+  protocol: 'responses' | 'chat' | 'anthropic' | 'workers-ai';
+  verification?: { status: 'verified' | 'failed'; checkedAt: string; detail: string };
+}
+
+export interface ModelConnectionsSnapshot {
+  gateway: { id: string | null; configured: boolean };
+  workersAI: { enabled: boolean };
+  models: ModelConnection[];
+  workersAICatalog: ModelConnection[];
+  discovery: 'manual';
 }

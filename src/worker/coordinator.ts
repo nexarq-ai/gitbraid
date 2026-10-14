@@ -1,15 +1,17 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { CreateMissionInput, Mission, MissionAttempt, MissionEvent, Repository, ReviewMissionInput } from '../shared/types';
+import type { CreateMissionInput, Mission, MissionAttempt, MissionEvent, ModelConnection, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
 import { assertReviewClear, reviewMissionInput } from './proposal-review';
+import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
+import type { ImportReceipt, ImportResult } from './repository-import';
+import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
 
 interface Receipt<T> { fingerprint: string; result: T }
-interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number }
-// Longer than any landing request can run, so a claim this old has no live owner
-const STALE_INTEGRATION_CLAIM_MS = 600_000;
+interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
+const INTEGRATION_PREPARATION_MS = 600_000;
 
 function eligibleRaceRuns(mission: Mission): Mission['runs'] {
   const checks = mission.raceChecks ?? mission.checks;
@@ -22,9 +24,9 @@ export const PREVIEW_HEARTBEAT_MS = 30_000;
 interface DispatchIntent { workflowId: string; missionId: string; repositoryId: string; epoch: number; attempts: number; nextAttemptAt: number }
 export const DISPATCH_FAST_ATTEMPTS = 8;
 
-export async function startWithDurableDispatch(coordinator: { startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> }, key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> {
+export async function startWithDurableDispatch(coordinator: { startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> }, key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> {
   try {
-    return await coordinator.startMissionWithDispatch(key, id, authorization);
+    return await coordinator.startMissionWithDispatch(key, id, authorization, models);
   } catch (error) {
     if (error instanceof Error && /startMissionWithDispatch/.test(error.message) && /not a function|does not exist|not implemented|does not implement|missing|unknown method/i.test(error.message)) throw new ApiError(503, 'EXECUTION_DEPLOYMENT_PENDING', 'Execution services are updating. Wait briefly and retry; this request has not started a mission.');
     throw error;
@@ -73,6 +75,112 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   saveRepository(repository: Repository): void {
     this.store.put(`repository:${repository.id}`, repository);
+  }
+
+  getModelConnections(): ModelConnection[] { return this.store.get<ModelConnection[]>('model-connections') ?? defaultModelConnections(); }
+
+  getModelRequest(key: string, fingerprint: string): { result?: ModelConnection[] } | undefined {
+    const receipt = this.store.get<Receipt<ModelConnection[] | undefined>>(`model-request:${key}`);
+    if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
+    return receipt ? { result: receipt.result } : undefined;
+  }
+
+  claimModelVerification(key: string, fingerprint: string): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      if (this.getModelRequest(key, fingerprint)) return false;
+      this.store.put(`model-request:${key}`, { fingerprint });
+      return true;
+    });
+  }
+
+  changeModelConnections(key: string, fingerprint: string, action: 'add' | 'remove', value: ModelConnection | string): ModelConnection[] {
+    return this.ctx.storage.transactionSync(() => {
+      const receipt = this.getModelRequest(key, fingerprint);
+      if (receipt?.result) return receipt.result;
+      if (receipt) throw new ApiError(409, 'MODEL_REQUEST_PENDING', 'This model request is pending verification.');
+      const models = this.getModelConnections();
+      let updated: ModelConnection[];
+      if (action === 'add') {
+        const model = validateModelConnection(value);
+        if (models.some(existing => existing.id === model.id)) throw new ApiError(409, 'MODEL_ALREADY_CONFIGURED', 'This model is already enabled. Remove it before changing its transport.');
+        if (models.length >= 20) throw new ApiError(400, 'MODEL_LIMIT', 'Enable at most 20 models in a workspace.');
+        updated = [...models, model];
+      } else {
+        if (!models.some(model => model.id === value)) throw new ApiError(404, 'MODEL_NOT_FOUND', 'This model is not enabled.');
+        updated = models.filter(model => model.id !== value);
+      }
+      this.store.put('model-connections', updated);
+      this.store.put(`model-request:${key}`, { fingerprint, result: updated });
+      return updated;
+    });
+  }
+
+  completeModelVerification(key: string, fingerprint: string, verified: ModelConnection): ModelConnection[] {
+    return this.ctx.storage.transactionSync(() => {
+      const receipt = this.getModelRequest(key, fingerprint);
+      if (!receipt) throw new ApiError(409, 'MODEL_REQUEST_PENDING', 'Model verification has no active request.');
+      if (receipt.result) return receipt.result;
+      const models = this.getModelConnections();
+      const current = models.find(model => model.id === verified.id);
+      if (!current || current.source !== verified.source || current.protocol !== verified.protocol) throw new ApiError(409, 'MODEL_CONNECTION_CHANGED', 'The model connection changed while verification was running.');
+      const updated = models.map(model => model.id === verified.id ? { ...model, verification: verified.verification } : model);
+      this.store.put('model-connections', updated);
+      this.store.put(`model-request:${key}`, { fingerprint, result: updated });
+      return updated;
+    });
+  }
+
+  repositoryBootstrapSha(): string | undefined { return this.store.get<string>('repository-bootstrap'); }
+
+  saveRepositoryBootstrapSha(sha: string): void { this.store.put('repository-bootstrap', sha); }
+
+  getImportRequest(key: string, fingerprint: string): ImportReceipt | undefined {
+    const receipt = this.store.get<ImportReceipt>(`repository-import:${key}`);
+    if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
+    return receipt;
+  }
+
+  claimRepositoryImport(key: string, fingerprint: string): { claimed: boolean; receipt: ImportReceipt } {
+    return this.ctx.storage.transactionSync(() => {
+      const receipt = this.getImportRequest(key, fingerprint);
+      if (receipt) return { claimed: false, receipt };
+      if (this.store.get<string>('repository-import-active')) throw new ApiError(409, 'IMPORT_PENDING', 'A repository import is pending reconciliation. Retry its original request before importing again.');
+      const next = { fingerprint, timestamp: Math.floor(Date.now() / 1000) } satisfies ImportReceipt;
+      this.store.put(`repository-import:${key}`, next);
+      this.store.put('repository-import-active', key);
+      return { claimed: true, receipt: next };
+    });
+  }
+
+  prepareRepositoryImport(key: string, fingerprint: string, candidateSha: string, files: string[], skipped: string[]): void {
+    this.ctx.storage.transactionSync(() => {
+      const receipt = this.getImportRequest(key, fingerprint);
+      if (!receipt || this.store.get<string>('repository-import-active') !== key || receipt.candidateSha) throw new ApiError(409, 'IMPORT_PENDING', 'This import has already been prepared or is no longer active.');
+      this.store.put(`repository-import:${key}`, { ...receipt, candidateSha, files, skipped } satisfies ImportReceipt);
+    });
+  }
+
+  rejectRepositoryImport(key: string, fingerprint: string, rejection: NonNullable<ImportReceipt['rejection']>): void {
+    this.ctx.storage.transactionSync(() => {
+      const receipt = this.getImportRequest(key, fingerprint);
+      if (!receipt || receipt.result || this.store.get<string>('repository-import-active') !== key) throw new ApiError(409, 'IMPORT_PENDING', 'The import is not active.');
+      this.store.put(`repository-import:${key}`, { ...receipt, rejection } satisfies ImportReceipt);
+      this.store.delete('repository-import-active');
+    });
+  }
+
+  completeRepositoryImport(key: string, fingerprint: string, repository: Repository): ImportResult {
+    return this.ctx.storage.transactionSync(() => {
+      const receipt = this.getImportRequest(key, fingerprint);
+      if (!receipt?.candidateSha || repository.headSha !== receipt.candidateSha) throw new ApiError(409, 'IMPORT_UNCONFIRMED', 'The canonical import commit has not been confirmed.');
+      if (receipt.result) return receipt.result;
+      if (this.store.get<string>('repository-import-active') !== key) throw new ApiError(409, 'IMPORT_PENDING', 'This import is no longer active.');
+      const result = { repository, headSha: receipt.candidateSha, files: receipt.files ?? [], skipped: receipt.skipped ?? [] } satisfies ImportResult;
+      this.saveRepository(repository);
+      this.store.put(`repository-import:${key}`, { ...receipt, result } satisfies ImportReceipt);
+      this.store.delete('repository-import-active');
+      return result;
+    });
   }
 
   claimProvision(id: string): boolean {
@@ -190,14 +298,20 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return mission;
   }
 
-  createMission(key: string, input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>): Mission {
-    return this.mutate(key, JSON.stringify(['mission', input]), () => {
+  createMission(key: string, input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Mission {
+    return this.mutate(key, JSON.stringify(['mission', input]), () => this.newMission(input, authorization, models));
+  }
+
+  private newMission(input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Mission {
       const repository = this.getRepository(input.repositoryId);
       if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+      if (input.expectedBaseSha !== undefined && input.expectedBaseSha !== repository.headSha) throw new ApiError(409, 'STALE_PROPOSAL_BASE', 'The repository changed while you drafted this proposal. Refresh the base and review your assignments before saving.');
       const now = new Date().toISOString();
       const criteria = input.acceptanceCriteria ?? [];
+      const skillChange = input.skillChange ? validateRepositorySkillChange(input.skillChange) : undefined;
+      if (skillChange && repository.headSha !== skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill before proposing this edit.');
       const race = input.mode === 'race';
-      const tasks = input.tasks ?? (race ? [
+      const tasks = skillChange ? [{ name: 'Skill editor', role: 'Trusted skill editor', task: `Apply exactly the submitted Markdown to ${skillChange.path}.` }] : input.tasks ?? (race ? [
         { name: 'Candidate A', role: 'Independent attempt', task: 'Complete the whole mission with the smallest change that satisfies every criterion.' },
         { name: 'Candidate B', role: 'Independent attempt', task: 'Complete the whole mission, favouring clarity and explicit error handling.' },
       ] : [
@@ -206,12 +320,39 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       ]);
       const mission: Mission = {
         id: crypto.randomUUID(), repositoryId: repository.id, title: input.title, prompt: input.prompt,
-        acceptanceCriteria: criteria, authorization, ...(race ? { mode: 'race' as const } : {}),
+        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
         runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
       };
-      return this.saveMission(mission, 'Mission created. Agent execution has not started.');
+      return this.saveMission(pinMissionModels(mission, models), 'Mission created. Agent execution has not started.');
+  }
+
+  getSkillEditRequest(key: string, repositoryId: string, supplied: RepositorySkillChange): Mission | undefined {
+    const change = validateRepositorySkillChange(supplied);
+    const receipt = this.store.get<Receipt<Mission>>(`request:${key}`);
+    if (!receipt) return undefined;
+    assertReplayFingerprint(receipt.fingerprint, JSON.stringify(['skill-edit', repositoryId, change]));
+    return this.requiredMission(receipt.result.id);
+  }
+
+  async createSkillMissionWithDispatch(key: string, repositoryId: string, supplied: RepositorySkillChange, authorization: NonNullable<Mission['authorization']>): Promise<Mission> {
+    const change = validateRepositorySkillChange(supplied);
+    await this.ensureDispatchAlarm(Date.now() + 1000);
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const existing = this.getSkillEditRequest(key, repositoryId, change);
+      if (existing) return existing;
+      if (!this.env.GITFLARE_SECURITY) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', 'The security service is not configured.');
+      const access = this.env.GITFLARE_SECURITY.getByName('security');
+      await access.authorize(authorization.principal, 'contribute', 'repository', repositoryId);
+      await access.authorize(authorization.principal, 'execute', 'repository', repositoryId);
+      return this.mutate(key, JSON.stringify(['skill-edit', repositoryId, change]), () => {
+        const mission = this.newMission(skillMissionInput(repositoryId, change), authorization);
+        mission.status = 'queued';
+        mission.epoch = 1;
+        this.queueDispatch(mission);
+        return this.saveMission(mission, 'Skill edit queued for exact-content execution and repository checks.');
+      });
     });
   }
 
@@ -229,13 +370,14 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return this.store.list<DispatchIntent>('dispatch:');
   }
 
-  async startMission(key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> {
+  async startMission(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
     await this.ensureDispatchAlarm(Date.now() + 1000);
     const started = this.mutateMission(key, JSON.stringify(['start', id]), id, () => {
-      const mission = this.requiredMission(id);
+      const mission = pinMissionModels(this.requiredMission(id), models);
       if (!['draft', 'failed', 'cancelled', 'needs_review'].includes(mission.status)) throw new ApiError(409, 'MISSION_ACTIVE', 'Cancel the active attempt or revoke its approval before starting again.');
-      if (mission.epoch > 0) this.archive(mission, 'retry');
       const repository = this.getRepository(mission.repositoryId);
+      if (mission.skillChange && repository?.headSha !== mission.skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill and submit a new edit proposal.');
+      if (mission.epoch > 0) this.archive(mission, 'retry');
       if (authorization) mission.authorization = { ...authorization, creatorId: mission.authorization?.creatorId ?? authorization.creatorId };
       mission.status = 'queued';
       mission.epoch += 1;
@@ -250,7 +392,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.selectedRunId;
       delete mission.raceChecks;
       delete mission.raceChanges;
-      mission.runs = mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, status: 'queued', changedFiles: [] }));
+      mission.runs = mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, status: 'queued', changedFiles: [] }));
       this.queueDispatch(mission);
       return this.saveMission(mission, `Execution attempt ${mission.epoch} queued.`);
     });
@@ -259,8 +401,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return started;
   }
 
-  async startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<Mission> {
-    return this.startMission(key, id, authorization);
+  async startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
+    return this.startMission(key, id, authorization, models);
   }
 
   private failDispatch(id: string, epoch: number): Mission {
@@ -491,7 +633,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (this.getRepository(mission.repositoryId)?.headSha !== baseSha) throw new ApiError(409, 'STALE_APPROVAL', 'The repository changed after approval. Run and review the change again.');
       if (!mission.integrationForkName || !mission.checks.some((check) => check.candidateSha === candidateSha && check.status === 'passed') || mission.checks.some((check) => check.status !== 'passed')) throw new ApiError(409, 'CHECKS_REQUIRED', 'The exact candidate must have passing verification and an integration fork.');
       const claimId = crypto.randomUUID();
-      this.store.put('integration:claim', { claimId, missionId: id, epoch: mission.epoch, candidateSha, baseSha, claimedAt: Date.now() });
+      this.store.put('integration:claim', { claimId, missionId: id, epoch: mission.epoch, candidateSha, baseSha, claimedAt: Date.now(), phase: 'preparing' });
       this.store.put(`request:${key}`, { fingerprint, result: true });
       mission.status = 'integrating';
       delete mission.error;
@@ -517,15 +659,26 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
+  claimIntegrationPush(id: string, epoch: number, claimId: string): void {
+    this.ctx.storage.transactionSync(() => {
+      const mission = this.requiredMission(id);
+      const claim = this.store.get<IntegrationClaim>('integration:claim');
+      if (!claim || claim.claimId !== claimId || claim.missionId !== id || claim.epoch !== epoch || mission.epoch !== epoch || mission.status !== 'integrating' || claim.phase !== 'preparing') throw new ApiError(409, 'STALE_EXECUTION', 'This integration no longer owns a preparation claim.');
+      if (claim.claimedAt === undefined || Date.now() - claim.claimedAt >= INTEGRATION_PREPARATION_MS) throw new ApiError(409, 'INTEGRATION_DEADLINE', 'Landing preparation expired before the canonical push.');
+      claim.phase = 'pushing';
+      this.store.put('integration:claim', claim);
+    });
+  }
+
   releaseStaleIntegration(id: string, claimId: string): Mission | null {
     return this.ctx.storage.transactionSync(() => {
       const mission = this.requiredMission(id);
       const claim = this.store.get<IntegrationClaim>('integration:claim');
       if (!claim || claim.claimId !== claimId || claim.missionId !== id || claim.epoch !== mission.epoch || mission.status !== 'integrating') return null;
-      if (Date.now() - (claim.claimedAt ?? 0) < STALE_INTEGRATION_CLAIM_MS) return null;
+      if (claim.phase !== 'preparing' || claim.claimedAt === undefined || Date.now() - claim.claimedAt < INTEGRATION_PREPARATION_MS) return null;
       this.store.delete('integration:claim');
       mission.status = 'approved';
-      mission.error = 'An earlier landing attempt ended without updating the canonical branch. Its repository claim was released; retry landing.';
+      mission.error = 'Landing preparation expired before permission to push. Its fenced repository claim was released; retry landing.';
       this.saveMission(mission, mission.error, 'warning');
       this.archive(mission, 'integration_failed');
       return mission;
@@ -541,7 +694,11 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         this.store.delete('integration:claim');
         mission.status = 'approved';
         mission.error = 'Integration stopped before attempting a canonical push. Retry integration, or revoke approval to rerun this mission.';
-      } else mission.error = 'Integration could not be confirmed. Recheck the canonical commit before retrying; other integrations remain blocked.';
+      } else {
+        claim.phase = 'pushing';
+        this.store.put('integration:claim', claim);
+        mission.error = 'Integration could not be confirmed. Recheck the canonical commit before retrying; other integrations remain blocked.';
+      }
       this.saveMission(mission, mission.error, 'warning');
       this.archive(mission, outcome === 'not_pushed' ? 'integration_failed' : 'integration_uncertain');
       return mission;

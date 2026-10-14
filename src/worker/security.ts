@@ -22,7 +22,7 @@ interface Team { id: string; workspaceId: string; name: string; userIds: string[
 interface Grant { id: string; workspaceId: string; subjectType: 'user' | 'team'; subjectId: string; resourceType: string; resourceId: string; actions: Action[] }
 interface Credential { id: string; workspaceId: string; userId: string; name: string; hash: string; repositoryId: string; missionId?: string; actions: Action[]; expiresAt: number; maxRequests: number; maxExecutions: number; requests: number; executions: number; revoked?: boolean; scope?: 'workspace-read' }
 interface Protection { requiredApprovals: number; requiredChecks: string[]; preventSelfApproval: boolean }
-interface Audit { id: string; workspaceId: string; actorId: string; action: string; timestamp: string; resourceId?: string }
+interface Audit { id: string; workspaceId: string; actorId: string; action: string; timestamp: string; resourceId?: string; sequence?: number }
 export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string }
 interface MfaRecord { id: string; encryptedSecret: string; enabled: boolean; lastStep: number; recoveryHashes: string[] }
 interface AuthChallenge { id: string; userId: string; kind: 'setup' | 'enroll' | 'login'; workspaceId?: string; expiresAt: number; used?: boolean }
@@ -48,10 +48,12 @@ function fail(code = 'FORBIDDEN', message = 'Your workspace permissions do not a
 function publicValue<T extends { hash: string }>(value: T): Omit<T, 'hash'> { const { hash: _hash, ...rest } = value; return rest; }
 const AUDIT_LIMIT_PER_WORKSPACE = 1000;
 const MAX_DERIVED_SESSION_AGE_MS = 86_400_000;
-// Storage lists records by random ID, so order and retention must come from timestamps
-function boundedAudit<T extends { workspaceId: string; timestamp: string }>(audit: T[]): T[] {
+function activeSession(session: Session, now: number): boolean {
+  return !session.revoked && session.expiresAt > now && (session.authenticatedAt === undefined || session.authenticatedAt <= now && now - session.authenticatedAt < MAX_DERIVED_SESSION_AGE_MS);
+}
+function boundedAudit(audit: Audit[]): Audit[] {
   const kept = new Map<string, number>();
-  const newestFirst = [...audit].sort((a, b) => a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0);
+  const newestFirst = [...audit].sort((a, b) => a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : (b.sequence ?? 0) - (a.sequence ?? 0) || b.id.localeCompare(a.id));
   return newestFirst.filter(entry => { const count = (kept.get(entry.workspaceId) ?? 0) + 1; kept.set(entry.workspaceId, count); return count <= AUDIT_LIMIT_PER_WORKSPACE; }).reverse();
 }
 const RETENTION_MS = 7 * 86_400_000;
@@ -133,8 +135,12 @@ export class SecurityService {
       try {
         prune(state, Date.now());
         const audited = state.audit.length;
+        let auditSequence = state.audit.reduce((latest, entry) => Math.max(latest, entry.sequence ?? 0), 0);
         const result = await operation(state);
-        if (state.audit.length !== audited) state.audit = boundedAudit(state.audit);
+        if (state.audit.length !== audited) {
+          for (const entry of state.audit.slice(audited)) entry.sequence = ++auditSequence;
+          state.audit = boundedAudit(state.audit);
+        }
         const next = serializeState(state, this.persisted);
         const writes = [...next].filter(([key, serialized]) => this.persisted.get(key) !== serialized);
         const removals = [...this.persisted.keys()].filter(key => !next.has(key));
@@ -264,16 +270,21 @@ export class SecurityService {
     });
     if (!user) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
     const enrolled = await this.read(state => state.mfa.find(m => m.id === user.id)?.enabled);
-    if (enrolled || this.options.EDITION === 'self-hosted') return this.beginMfa(user.id);
+    if (enrolled || this.options.EDITION === 'self-hosted') return this.beginMfa(user.id, undefined, { user });
     const value = token(); const sessionHash = await hashToken(value);
-    return this.mutate(state => { const membership = state.members.find(member => member.userId === user.id); if (!membership) fail(); state.sessions.push({ id: crypto.randomUUID(), userId: user.id, workspaceId: membership.workspaceId, hash: sessionHash, expiresAt: Date.now() + 28800000, authenticatedAt: Date.now() }); return { token: value, user: safeUser(user), workspaceId: membership.workspaceId }; });
+    return this.mutate(state => {
+      const current = this.passwordUser(state, user);
+      const membership = state.members.find(member => member.userId === current.id); if (!membership) fail();
+      if (state.mfa.some(record => record.id === current.id && record.enabled)) throw new ApiError(401, 'AUTH_REQUIRED', 'Sign in again with your authenticator.');
+      return this.session(state, current, membership.workspaceId, value, sessionHash);
+    });
   }
   async legacySession() { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); const value = token(); const hash = await hashToken(value); return this.mutate(state => { if (state.workspaces.find(w => w.id === 'legacy')?.bootstrapDisabled) fail(); state.sessions.push({ id: crypto.randomUUID(), userId: 'bootstrap-owner', workspaceId: 'legacy', hash, expiresAt: Date.now() + 28800000, authenticatedAt: Date.now() }); return value; }); }
   async bootstrap(): Promise<Principal> { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); return this.read(state => { if (state.workspaces.find(workspace => workspace.id === 'legacy')?.bootstrapDisabled) fail('BOOTSTRAP_DISABLED', 'The legacy owner key was retired by ownership transfer.'); return { userId: 'bootstrap-owner', workspaceId: 'legacy', role: 'Owner', bootstrap: true }; }); }
   async authenticate(value: string, workspaceId?: string): Promise<Principal> {
     const hash = await hashToken(value);
     return this.read(state => {
-      const session = state.sessions.find(item => item.hash === hash && !item.revoked && item.expiresAt > Date.now());
+      const session = state.sessions.find(item => item.hash === hash && activeSession(item, Date.now()));
       if (session?.userId === 'bootstrap-owner') { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); if (workspaceId && workspaceId !== 'legacy' || state.workspaces.find(w => w.id === 'legacy')?.bootstrapDisabled) fail(); return { userId: 'bootstrap-owner', workspaceId: 'legacy', role: 'Owner', bootstrap: true, sessionId: session.id }; }
       if (session && this.options.EDITION === 'self-hosted' && (!state.installations.self?.workspaceId || !state.mfa.some(m => m.id === session.userId && m.enabled))) fail('MFA_REQUIRED');
       if (session) { const member = state.members.find(item => item.userId === session.userId && item.workspaceId === (workspaceId ?? session.workspaceId)); if (!member) fail(); return { userId: member.userId, workspaceId: member.workspaceId, role: member.role, sessionId: session.id }; }
@@ -306,10 +317,10 @@ export class SecurityService {
     return this.roleAllows(state, p, action, resourceType, resourceId) || state.grants.some(grant => grant.workspaceId === p.workspaceId && (grant.resourceType === resourceType && grant.resourceId === resourceId || grant.resourceType === 'stream' && grant.resourceId === missionId) && grant.actions.includes(action) && (grant.subjectType === 'user' ? grant.subjectId === p.userId : state.teams.some(team => team.id === grant.subjectId && team.workspaceId === p.workspaceId && team.userIds.includes(p.userId))));
   }
   private validate(state: State, p: Principal) {
-    if (p.bootstrap) { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); if (p.sessionId && !state.sessions.some(s => s.id === p.sessionId && s.userId === p.userId && !s.revoked && s.expiresAt > Date.now())) fail(); if (p.workspaceId !== 'legacy' || state.workspaces.find(w => w.id === 'legacy')?.bootstrapDisabled) fail(); return; }
+    if (p.bootstrap) { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); if (p.sessionId && !state.sessions.some(s => s.id === p.sessionId && s.userId === p.userId && activeSession(s, Date.now()))) fail(); if (p.workspaceId !== 'legacy' || state.workspaces.find(w => w.id === 'legacy')?.bootstrapDisabled) fail(); return; }
     if (this.options.EDITION === 'self-hosted' && (state.installations.self?.workspaceId !== p.workspaceId || !state.mfa.some(m => m.id === p.userId && m.enabled))) fail('MFA_REQUIRED');
     const member = state.members.find(m => m.workspaceId === p.workspaceId && m.userId === p.userId); if (!member || member.role !== p.role) fail();
-    if (p.sessionId && !state.sessions.some(s => s.id === p.sessionId && s.userId === p.userId && !s.revoked && s.expiresAt > Date.now())) fail();
+    if (p.sessionId && !state.sessions.some(s => s.id === p.sessionId && s.userId === p.userId && activeSession(s, Date.now()))) fail();
     if (p.credentialId && !state.credentials.some(c => c.id === p.credentialId && c.userId === p.userId && c.workspaceId === p.workspaceId && !c.revoked && c.expiresAt > Date.now())) fail();
   }
   async check(p: Principal, action: Action, resourceType = 'workspace', resourceId = p.workspaceId, missionId?: string): Promise<void> {
@@ -324,7 +335,14 @@ export class SecurityService {
     const raw = token(); const hash = await hashToken(raw);
     return this.mutate(state => {
       this.validate(state, p); if (p.credentialId) fail(); const workspaceId = p.workspaceId; state.audit.push({ id: crypto.randomUUID(), workspaceId, actorId: p.userId, action: `access:${action}`, timestamp: new Date().toISOString() });
-      if (action === 'session-create') { if (p.bootstrap) fail('ACCOUNT_REQUIRED'); const authenticatedAt = state.sessions.find(s => s.id === p.sessionId)?.authenticatedAt ?? 0; if (Date.now() - authenticatedAt > MAX_DERIVED_SESSION_AGE_MS) fail('RECENT_AUTH_REQUIRED', 'Sign in again before creating another session.'); const session = { id: crypto.randomUUID(), userId: p.userId, workspaceId, hash, expiresAt: Date.now() + 28800000, authenticatedAt }; state.sessions.push(session); return { token: raw, session: publicValue(session) }; }
+      if (action === 'session-create') {
+        if (p.bootstrap) fail('ACCOUNT_REQUIRED');
+        const authenticatedAt = state.sessions.find(s => s.id === p.sessionId)?.authenticatedAt;
+        const now = Date.now();
+        if (authenticatedAt === undefined || authenticatedAt > now || now - authenticatedAt >= MAX_DERIVED_SESSION_AGE_MS) fail('RECENT_AUTH_REQUIRED', 'Sign in again before creating another session.');
+        const session = { id: crypto.randomUUID(), userId: p.userId, workspaceId, hash, expiresAt: Math.min(now + 28800000, authenticatedAt + MAX_DERIVED_SESSION_AGE_MS), authenticatedAt };
+        state.sessions.push(session); return { token: raw, session: publicValue(session) };
+      }
       if (action === 'session-revoke') { const session = state.sessions.find(s => s.id === body.id && s.userId === p.userId); if (!session) fail(); session.revoked = true; return { ok: true }; }
       if (p.role !== 'Owner') fail();
       const member = (userId: unknown) => { const found = state.members.find(m => m.workspaceId === workspaceId && m.userId === userId); if (!found) throw new ApiError(404, 'MEMBER_NOT_FOUND', 'Select an existing workspace member.'); return found; };
@@ -394,10 +412,17 @@ export class SecurityService {
     });
     return { mfaRequired: true, enrollmentRequired: true, challengeId, secret, otpauthUri: authenticatorUri(secret, input.email), expiresAt };
   }
-  private async beginMfa(userId: string, workspaceId?: string): Promise<MfaChallengeResult> {
+  private passwordUser(state: State, authenticated: User): User {
+    const current = state.users.find(user => user.id === authenticated.id && user.email === authenticated.email && user.salt === authenticated.salt && user.hash === authenticated.hash && !user.machine);
+    if (!current) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
+    return current;
+  }
+  private async beginMfa(userId: string, workspaceId?: string, authentication?: { user?: User; principal?: Principal }): Promise<MfaChallengeResult> {
     const challengeId = token(); const challengeHash = await hashToken(challengeId); const expiresAt = Date.now() + 300000;
     const secret = mfaSecret(); const encryptedSecret = await encryptAuth(secret, this.options.AUTH_ENCRYPTION_KEY, `mfa:${userId}`);
     const result = await this.mutate(state => {
+      if (authentication?.user) this.passwordUser(state, authentication.user);
+      if (authentication?.principal) this.validate(state, authentication.principal);
       if (this.options.EDITION === 'self-hosted' && !state.installations.self?.workspaceId) fail('SETUP_REQUIRED', 'Complete protected administrator setup first.');
       const user = state.users.find(u => u.id === userId); const member = state.members.find(m => m.userId === userId && (!workspaceId || m.workspaceId === workspaceId));
       if (!user || user.machine || !member) fail();
@@ -416,7 +441,7 @@ export class SecurityService {
       if (!session?.authenticatedAt || Date.now() - session.authenticatedAt > 300000) fail('RECENT_AUTH_REQUIRED', 'Sign in again before setting up an authenticator.');
       if (state.mfa.some(m => m.id === p.userId && m.enabled)) throw new ApiError(409, 'MFA_ALREADY_ENABLED', 'This account already has an authenticator.');
     });
-    return this.beginMfa(p.userId, p.workspaceId);
+    return this.beginMfa(p.userId, p.workspaceId, { principal: p });
   }
   async verifyMfa(body: Record<string, unknown>, setupOnly = false) {
     const challengeId = requireString(body.challengeId, 'Authentication challenge', 128); const id = await hashToken(challengeId);
@@ -474,12 +499,7 @@ export class SecurityService {
       const invite = state.invitations.find(i => i.hash === invitationHash && !i.accepted && i.expiresAt > Date.now());
       if (!invite || this.options.EDITION === 'self-hosted' && invite.workspaceId !== state.installations.self?.workspaceId) throw new ApiError(410, 'INVITATION_EXPIRED', 'This invitation is invalid, expired, or already used.');
       if (invite.email !== input.email) fail('INVITATION_IDENTITY');
-      const holder = state.users.find(u => u.email === input.email);
-      if (holder && (holder.emailVerified || holder.machine || this.options.EDITION === 'self-hosted')) throw new ApiError(409, 'ACCOUNT_EXISTS', 'This email is already registered. Sign in instead.');
-      if (holder) {
-        this.releaseEmail(state, holder);
-        state.audit.push({ id: crypto.randomUUID(), workspaceId: invite.workspaceId, actorId: userId, action: 'account:unverified-email-released', resourceId: holder.id, timestamp: new Date().toISOString() });
-      }
+      if (state.users.some(u => u.email === input.email)) throw new ApiError(409, 'ACCOUNT_EXISTS', 'This email is already registered. Sign in instead.');
       const user = { id: userId, name: input.name, email: input.email, salt, hash };
       state.users.push(user); state.members.push({ userId, workspaceId: invite.workspaceId, role: invite.role }); invite.accepted = true;
       if (this.options.EDITION === 'self-hosted') return { workspaceId: invite.workspaceId };
@@ -488,15 +508,6 @@ export class SecurityService {
     });
     if ('token' in registered) return registered;
     return this.beginMfa(userId);
-  }
-  // An address nobody proved control of is not reserved: the account keeps its data but loses the address and every way to sign in
-  private releaseEmail(state: State, user: User) {
-    user.email = `${user.id}@released.gitflare.invalid`; user.salt = ''; user.hash = '';
-    for (const session of state.sessions) if (session.userId === user.id) session.revoked = true;
-    for (const credential of state.credentials) if (credential.userId === user.id) credential.revoked = true;
-    state.challenges = state.challenges.filter(challenge => challenge.userId !== user.id);
-    state.emailTokens = state.emailTokens.filter(item => item.userId !== user.id);
-    clearLoginFailures(state, user.id);
   }
   private auditAccount(state: State, userId: string, action: string) {
     for (const member of state.members) if (member.userId === userId) state.audit.push({ id: crypto.randomUUID(), workspaceId: member.workspaceId, actorId: userId, action, timestamp: new Date().toISOString() });
