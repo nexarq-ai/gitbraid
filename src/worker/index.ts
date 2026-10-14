@@ -103,7 +103,7 @@ async function authorize(request: Request, env: AppEnv, bearerOnly = false): Pro
 async function landingReviewRule(env: AppEnv, repository: Repository) { return landingRule(await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getBranchProtection(), repository.defaultBranch); }
 function gitDependencies(env: AppEnv): GitHttpDependencies {
   return {
-    authenticate: (token) => security(env).authenticate(token),
+    authenticate: async (token) => env.EDITION !== 'self-hosted' && env.OWNER_TOKEN && env.OWNER_TOKEN.length >= 32 && await tokenMatches(token, env.OWNER_TOKEN) ? security(env).bootstrap() : security(env).authenticate(token),
     authorize: (principal, action, repositoryId) => security(env).authorize(principal, action, 'repository', repositoryId),
     repository: async (principal, name) => (await env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId)).listRepositories()).find(item => item.name === name || principal.workspaceId !== 'legacy' && item.name === `w-${principal.workspaceId.replace(/-/g, '')}-${name.slice(0, 29)}`),
     rules: async (repository) => effectiveRules(await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getBranchProtection(), repository.defaultBranch),
