@@ -64,6 +64,10 @@ export function missionInput(body: Record<string, unknown>): CreateMissionInput 
     const attachments = validateAttachments(body.attachments, (message) => { throw new ApiError(400, 'INVALID_ATTACHMENTS', message); });
     if (attachments.length) input.attachments = attachments;
   }
+  if (body.issueNumber !== undefined) {
+    if (!Number.isInteger(body.issueNumber) || (body.issueNumber as number) < 1 || (body.issueNumber as number) > 5_000) throw new ApiError(400, 'INVALID_ISSUE_NUMBER', 'Provide a valid issue number.');
+    input.issueNumber = body.issueNumber as number;
+  }
   if (body.mode !== undefined) {
     if (body.mode !== 'combine' && body.mode !== 'race') throw new ApiError(400, 'INVALID_MODE', 'Choose combine or race.');
     input.mode = body.mode;

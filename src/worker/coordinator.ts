@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import type { BranchChangeResult, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
@@ -9,7 +9,7 @@ import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
 import type { ImportReceipt, ImportResult } from './repository-import';
 import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './releases';
 import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
-import { applyIssueChange, issueFingerprint, listIssues, readIssue, type IssueActor, type IssueChange, type IssueQuery } from './issues';
+import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readIssue, recordIssueOutcome, type IssueActor, type IssueChange, type IssueQuery } from './issues';
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 
 interface Receipt<T> { fingerprint: string; result: T }
@@ -85,6 +85,21 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   getIssue(number: number): IssueDetail | undefined { return readIssue(this.store, number); }
 
   changeIssue(key: string, change: IssueChange, actor: IssueActor): IssueDetail { return readIssue(this.store, this.mutate(key, issueFingerprint(change, actor), () => applyIssueChange(this.store, change, actor)))!; }
+  getBranchRequest(key: string, fingerprint: string): BranchChangeResult | undefined {
+    const receipt = this.store.get<Receipt<BranchChangeResult>>(`branch-request:${key}`);
+    if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
+    return receipt?.result;
+  }
+
+  recordBranchRequest(key: string, fingerprint: string, result: BranchChangeResult): BranchChangeResult {
+    return this.ctx.storage.transactionSync(() => {
+      const receipt = this.store.get<Receipt<BranchChangeResult>>(`branch-request:${key}`);
+      if (receipt) { assertReplayFingerprint(receipt.fingerprint, fingerprint); return receipt.result; }
+      this.store.put(`branch-request:${key}`, { fingerprint, result });
+      return result;
+    });
+  }
+
   getBranchProtection(): StoredBranchProtection | undefined { return this.store.get<StoredBranchProtection>('branch-protection'); }
 
   setBranchProtection(key: string, rules: unknown, actorId: string): StoredBranchProtection {
@@ -393,6 +408,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (skillChange && repository.headSha !== skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill before proposing this edit.');
       const revertChange = input.revertChange;
       if (revertChange && (!/^[a-f0-9]{40}$/.test(revertChange.landedSha) || !/^[a-f0-9]{40}$/.test(revertChange.previousSha))) throw new ApiError(400, 'INVALID_COMMIT', 'A revert needs the exact landed and previous commits.');
+      if (input.issueNumber !== undefined && !readIssue(this.store, input.issueNumber)) throw new ApiError(404, 'ISSUE_NOT_FOUND', `Issue #${input.issueNumber} could not be found in this repository.`);
       const branchChange = input.branchChange ? { ...input.branchChange, branch: branchName(input.branchChange.branch), targetBranch: repository.defaultBranch } : undefined;
       if (branchChange && (!/^[a-f0-9]{40}$/.test(branchChange.headSha) || branchChange.branch === repository.defaultBranch)) throw new ApiError(400, 'INVALID_PULL_REQUEST', 'A pull request needs the exact head commit of a branch other than the default branch.');
       const race = input.mode === 'race' && !revertChange && !branchChange;
@@ -405,12 +421,13 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       ]);
       const mission: Mission = {
         id: crypto.randomUUID(), repositoryId: repository.id, title: input.title, prompt: input.prompt,
-        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(race ? { mode: 'race' as const } : {}),
+        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(input.issueNumber !== undefined ? { issueNumber: input.issueNumber } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
         runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
       };
-      return this.saveMission(pinMissionModels(mission, models), 'Mission created. Agent execution has not started.');
+      if (mission.issueNumber !== undefined) linkIssueMission(this.store, mission.issueNumber, mission.id, now);
+      return this.saveMission(pinMissionModels(mission, models), `Mission created${mission.issueNumber !== undefined ? ` for issue #${mission.issueNumber}` : ''}. Agent execution has not started.`);
   }
 
   getSkillEditRequest(key: string, repositoryId: string, supplied: RepositorySkillChange): Mission | undefined {
@@ -741,8 +758,15 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.error;
       this.saveMission(mission, `Verified canonical branch at approved commit ${sha.slice(0, 12)}. No production deployment was triggered.`, 'success');
       this.archive(mission, 'integrated');
+      this.recordLinkedIssues(mission, sha);
       return mission;
     });
+  }
+
+  private recordLinkedIssues(mission: Mission, sha: string): void {
+    if (mission.issueNumber !== undefined) recordIssueOutcome(this.store, mission.issueNumber, 'closed', `Closed by mission ${mission.title} (${sha.slice(0, 7)}).`);
+    const reverted = mission.revertChange ? this.getMission(mission.revertChange.missionId) : undefined;
+    if (reverted?.issueNumber !== undefined) recordIssueOutcome(this.store, reverted.issueNumber, 'open', `Reopened because mission ${reverted.title} was reverted (${sha.slice(0, 7)}).`);
   }
 
   claimIntegrationPush(id: string, epoch: number, claimId: string): void {
