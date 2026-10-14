@@ -110,8 +110,8 @@
     },
     {
       "path": "src/ui/AccessSettings.tsx",
-      "size": 21686,
-      "sha256": "822b8a97b248667bf11fb6653e2535d57f3cac58c7d9505a796538fc7219bcdb"
+      "size": 21721,
+      "sha256": "b7cc7599c0f8311b100627442d852be48480824309b2f92ab78613da05cc6d62"
     },
     {
       "path": "src/ui/AgentAssignment.tsx",
@@ -125,8 +125,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 68136,
-      "sha256": "9fc4e4c858ffe05a5dc3ce5942b7030db06be1ed301060d55e67e07fb7673ea4"
+      "size": 69395,
+      "sha256": "027d4066b381a5c3df331169fe7ee7c4821ad05e96e54e120b01a96e04dc953f"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -185,13 +185,13 @@
     },
     {
       "path": "src/ui/AttemptHistory.tsx",
-      "size": 9158,
-      "sha256": "92fca5024501ad77a5a7a41fd523f2e5aaecd7b5d1983d6b48d597503b6c047a"
+      "size": 9164,
+      "sha256": "d9600f9d14040c615d59ef5b34a23218e5083da4bc9e9aae04e50517e0bc02ba"
     },
     {
       "path": "src/ui/auth-loading.css",
-      "size": 1792,
-      "sha256": "f9f80ab2c510cac5bd3c070a01659f57752a07d14e18a27b1555094bcec4818f"
+      "size": 2304,
+      "sha256": "fc7ee24f99a1585b7778253d2a1e9bed4518d747b667f335429158e75d41aff3"
     },
     {
       "path": "src/ui/AuthScreen.tsx",
@@ -205,8 +205,8 @@
     },
     {
       "path": "src/ui/CloudflareConnection.tsx",
-      "size": 28330,
-      "sha256": "701851847da10a295da97897bc01501f3596045a2f758b41877e1d604da669c9"
+      "size": 28364,
+      "sha256": "c4c332bfbe6dfcd46d8a673b8c155b01196feee7871136f570ac3eaac433020a"
     },
     {
       "path": "src/ui/components.tsx",
@@ -225,8 +225,8 @@
     },
     {
       "path": "src/ui/Documentation.tsx",
-      "size": 13777,
-      "sha256": "9b77b7e1477f0447a52a993e68503a645d60643a4cb03ae9ab9a3fcb18b437d1"
+      "size": 13806,
+      "sha256": "5a3c59fa3d743ca26f3a4b649a87906ed83f86e34ba807ad295efbbde3bd0f54"
     },
     {
       "path": "src/ui/InvitationScreen.tsx",
@@ -245,8 +245,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 48062,
-      "sha256": "c0ee881ac482fd3334d4caca0e062f31e8f8135dc202b809616b1c606cc08060"
+      "size": 48075,
+      "sha256": "7600fb4708403f5b947f0bd01139aff4cee2e0f82011aedd504ef6e9f09fab3a"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -255,8 +255,8 @@
     },
     {
       "path": "src/ui/ModelConnections.tsx",
-      "size": 8188,
-      "sha256": "0beb7c1449ed1cbe64c9b401cf73b02be652d175acf90e3712230f4f48fff1a2"
+      "size": 8207,
+      "sha256": "9e42367f30521799fed1ed945759fc747105571189bbcdb4b507c17aa80beb62"
     },
     {
       "path": "src/ui/proposal-create.css",
@@ -265,8 +265,8 @@
     },
     {
       "path": "src/ui/ProposalCreate.tsx",
-      "size": 25237,
-      "sha256": "6d356d21a23d95d050b27dd474253919955b6d40dfe24af0278e32bb2623e583"
+      "size": 25537,
+      "sha256": "7716a5dbab59b898087582aea6b90c9f4ee249e784203c50f3ea956b265aea53"
     },
     {
       "path": "src/ui/public-install.css",
@@ -300,8 +300,8 @@
     },
     {
       "path": "src/ui/RepositoryBrowser.tsx",
-      "size": 11047,
-      "sha256": "897a87048ca2134ec008314a0dbfd9fab2cce99d52571002cdc8fd8a6d5f0324"
+      "size": 10999,
+      "sha256": "b72f425a83ea6e7c810d56cdbc23d2b9f475d152e56bb5138b2901d33047eb2b"
     },
     {
       "path": "src/ui/RepositoryImport.tsx",
@@ -310,8 +310,8 @@
     },
     {
       "path": "src/ui/RepositorySkills.tsx",
-      "size": 18610,
-      "sha256": "ba757cd85a8e3e307eccb043ff1abfa770421b526804f63e41fa92b7666d5c4c"
+      "size": 18607,
+      "sha256": "5a1a998605ed22ccf0c94fd0983696e9d9255568599e925472d09d10733494d6"
     },
     {
       "path": "src/ui/RepositoryWork.tsx",
@@ -330,13 +330,13 @@
     },
     {
       "path": "src/ui/styles.css",
-      "size": 62196,
-      "sha256": "db5f9a3c57d20e4321f9b89f414f4eac6b08b9679c6e24eadd06d5169d16aa94"
+      "size": 62120,
+      "sha256": "773090ec6d35eec0177cb33d43f25852413e33b5279680089c80893dbc856fc5"
     },
     {
       "path": "src/ui/WorkspaceLoader.tsx",
-      "size": 1224,
-      "sha256": "ee86900f6ded9a2cc5cc67c93e0162b71a27ca25403720ee648b23e61a94cbfa"
+      "size": 1380,
+      "sha256": "39ef2429c355d51d122bc39145f827895d0b70d2b95cb298e3c60c1aba66223d"
     },
     {
       "path": "src/worker/anthropic-adapter.ts",

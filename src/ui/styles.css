@@ -2943,7 +2943,6 @@ a svg {
 @media (max-width: 640px) { .mission-mode { grid-template-columns: 1fr; } }
 
 .route-loading { min-height: 100vh; background: #fff; }
-.route-loading-inline { padding: 24px 0; color: #59616c; font-size: 13px; }
 .agent-usage{margin-top:8px;font-size:12px;color:var(--muted,#6b6b6b);overflow-wrap:anywhere}
 .mission-attachments pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 @media (max-width:768px){

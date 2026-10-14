@@ -9,6 +9,7 @@ import { ErrorNotice } from "./components";
 import { diagrams, type DocumentationDiagram } from "./doc-diagrams";
 import "./documentation.css";
 import { navigate as goTo } from "./router";
+import { RouteProgress } from "./WorkspaceLoader";
 
 type DocumentItem = {
   id: string;
@@ -142,7 +143,7 @@ export default function Documentation({ id, publicMode = false }: { id: string; 
             const documents = items.filter((item) => item.audience === group.audience || (group.audience === "reference" && !["human", "agent"].includes(item.audience)));
             return documents.length > 0 && <section key={group.audience}><h2>{group.label}</h2>{documents.map((item) => <a key={item.id} href={`/docs/${item.id}`} aria-current={id === item.id ? "page" : undefined} className={id === item.id ? "selected" : ""}><BookOpenIcon size={16} /><span>{item.title}</span></a>)}</section>;
           })}
-          {!items.length && !error && <p role="status">Loading library…</p>}
+          {!items.length && !error && <RouteProgress />}
         </aside>
         <article className="documentation-article" ref={article} aria-busy={loading}>
           {loading ? <p role="status">Opening document…</p> : document ? <>

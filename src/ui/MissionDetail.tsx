@@ -27,6 +27,7 @@ import { EmptyState, ErrorNotice, relativeTime, Status } from "./components";
 import AgentAssignment from "./AgentAssignment";
 import AttemptHistory from "./AttemptHistory";
 import { navigate as goTo } from "./router";
+import { RouteProgress } from "./WorkspaceLoader";
 
 type Props = {
   id: string;
@@ -297,7 +298,7 @@ export default function MissionDetail({
         {loadError ? (
           <ErrorNotice message={loadError} />
         ) : (
-          <div className="loading-state">Loading mission…</div>
+          <RouteProgress />
         )}
       </>
     );

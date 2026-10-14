@@ -25,3 +25,7 @@ export default function WorkspaceLoader() {
     </main>
   );
 }
+
+export function RouteProgress() {
+  return <div className="route-progress" role="progressbar" aria-label="Loading page" aria-busy="true"><span /></div>;
+}

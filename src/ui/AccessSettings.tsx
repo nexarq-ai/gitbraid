@@ -3,6 +3,7 @@ import { Button } from "@cloudflare/kumo/components/button";
 import type { AccessSnapshot, Repository } from "../shared/types";
 import { request, selectWorkspace } from "./api";
 import { VerifyEmailNotice } from "./AuthScreen";
+import { RouteProgress } from "./WorkspaceLoader";
 
 type RecordItem = { id: string; [key: string]: unknown };
 type Access = { user: { id: string; name: string; email: string; emailVerified?: boolean }; workspace: { id: string; name: string }; role: string; permissions: string[]; members: RecordItem[]; teams: RecordItem[]; invitations: RecordItem[]; grants: RecordItem[]; credentials: RecordItem[]; sessions?: RecordItem[]; protection: { requiredApprovals: number; requiredChecks: string[]; preventSelfApproval: boolean }; audit: RecordItem[]; workspaces: RecordItem[] };
@@ -45,7 +46,7 @@ export default function AccessSettings({ repositories, onWorkspaceChanged, selfH
   return <section className="access-settings">
     <div className="access-heading"><div><h2>Workspace settings</h2><p>People, permissions, and the boundaries around your work.</p></div>{data && <span className="pill">{data.role}</span>}</div>
     {error && <div className="form-error" role="alert">{error}<button className="access-text-button" onClick={() => void load()}>Retry</button></div>}
-    {!data ? <p className="access-empty" role="status">{error ? "Settings unavailable." : "Loading workspace settings…"}</p> : <>
+    {!data ? (error ? <p className="access-empty" role="status">Settings unavailable.</p> : <RouteProgress />) : <>
       {data.workspaces.length > 1 && <Field label="Workspace"><select value={data.workspace.id} disabled={busy} onChange={async event => { selectWorkspace(event.target.value); await onWorkspaceChanged(); await load(); }}>{data.workspaces.map(item => <option key={item.id} value={item.id}>{string(item.name)}</option>)}</select></Field>}
       <div className="access-tabs" role="tablist" aria-label="Settings sections">{tabs.map(item => <button key={item} role="tab" aria-selected={tab === item} onClick={() => { setTab(item); setSecret(""); setNotice(""); }}>{item}</button>)}</div>
       {notice && <p className="access-notice" role="status">{notice}</p>}

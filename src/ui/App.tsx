@@ -6,6 +6,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useTransition,
   type FormEvent,
 } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
@@ -51,22 +52,33 @@ import {
 import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
-import WorkspaceLoader from "./WorkspaceLoader";
+import WorkspaceLoader, { RouteProgress } from "./WorkspaceLoader";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
 import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
 
-const MissionDetail = lazy(() => import("./MissionDetail"));
-const RepositoryBrowser = lazy(() => import("./RepositoryBrowser"));
-const Documentation = lazy(() => import("./Documentation"));
-const RepositorySkills = lazy(() => import("./RepositorySkills"));
-const CloudflareConnection = lazy(() => import("./CloudflareConnection"));
-const McpConnections = lazy(() => import("./McpConnections"));
+const loadMissionDetail = () => import("./MissionDetail");
+const MissionDetail = lazy(loadMissionDetail);
+const loadRepositoryBrowser = () => import("./RepositoryBrowser");
+const RepositoryBrowser = lazy(loadRepositoryBrowser);
+const loadDocumentation = () => import("./Documentation");
+const Documentation = lazy(loadDocumentation);
+const loadRepositorySkills = () => import("./RepositorySkills");
+const RepositorySkills = lazy(loadRepositorySkills);
+const loadCloudflareConnection = () => import("./CloudflareConnection");
+const CloudflareConnection = lazy(loadCloudflareConnection);
+const loadMcpConnections = () => import("./McpConnections");
+const McpConnections = lazy(loadMcpConnections);
 const loadHomepage = () => import("./SelfHostedHome");
 const Homepage = lazy(loadHomepage);
-const AccessSettings = lazy(() => import("./AccessSettings"));
-const RepositoryWork = lazy(() => import("./RepositoryWork"));
-const ProposalCreate = lazy(() => import("./ProposalCreate"));
-const ModelConnections = lazy(() => import("./ModelConnections"));
+const loadAccessSettings = () => import("./AccessSettings");
+const AccessSettings = lazy(loadAccessSettings);
+const loadRepositoryWork = () => import("./RepositoryWork");
+const RepositoryWork = lazy(loadRepositoryWork);
+const loadProposalCreate = () => import("./ProposalCreate");
+const ProposalCreate = lazy(loadProposalCreate);
+const loadModelConnections = () => import("./ModelConnections");
+const ModelConnections = lazy(loadModelConnections);
+const workspacePages = [loadMissionDetail, loadRepositoryBrowser, loadDocumentation, loadRepositorySkills, loadCloudflareConnection, loadMcpConnections, loadAccessSettings, loadRepositoryWork, loadProposalCreate, loadModelConnections];
 // Start the homepage chunk alongside the main bundle instead of after it
 if (currentRoute() === "home") void loadHomepage();
 
@@ -104,6 +116,7 @@ function Workspace() {
   const [route, setRoute] = useState(
     () => { canonicalizeLegacyHash(); return currentRoute(); },
   );
+  const [routePending, startRouteTransition] = useTransition();
   const [modal, setModal] = useState<Modal>(null);
   const [sidebar, setSidebar] = useState(false);
   const [quickSearchOpen, setQuickSearchOpen] = useState(false);
@@ -172,6 +185,13 @@ function Workspace() {
   }, [clearSession]);
 
   useEffect(() => {
+    if (authState !== "authenticated") return;
+    const prefetch = () => { for (const load of workspacePages) void load().catch(() => {}); };
+    const idle = (window as { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback;
+    if (idle) idle(prefetch); else setTimeout(prefetch, 1500);
+  }, [authState]);
+
+  useEffect(() => {
     window.addEventListener("gitflare:session-required", clearSession);
     return () =>
       window.removeEventListener("gitflare:session-required", clearSession);
@@ -189,10 +209,12 @@ function Workspace() {
   useEffect(() => {
     return onRouteChange(() => {
       const next = currentRoute();
-      setRoute(next === "home" && hasWorkspace.current ? "overview" : next);
       setSidebar(false);
-      setSearch("");
-      setFilter("all");
+      startRouteTransition(() => {
+        setRoute(next === "home" && hasWorkspace.current ? "overview" : next);
+        setSearch("");
+        setFilter("all");
+      });
     });
   }, []);
 
@@ -243,7 +265,7 @@ function Workspace() {
 
   function navigate(target: string) {
     goTo(target);
-    setRoute(target);
+    startRouteTransition(() => setRoute(target));
     setSidebar(false);
   }
 
@@ -494,11 +516,12 @@ function Workspace() {
             </div>
           </div>
         </header>
+        {routePending && <RouteProgress />}
         <main className="page-content" id="main-content" tabIndex={-1}>
           {error && (
             <ErrorNotice message={error} onRetry={() => void refresh()} />
           )}
-          <Suspense fallback={<p className="route-loading-inline" role="status">Loading…</p>}>
+          <Suspense fallback={<RouteProgress />}>
             {importingRepository ? importRepository ? <RepositoryImport key={importRepository.id} repository={importRepository} canManage={permissions.includes("manage")} canContribute={permissions.includes("contribute")} onBack={() => navigate(`repository/${importRepository.id}/code`)} onImported={item => setWorkspace(current => ({ ...current, repositories: current.repositories.map(repo => repo.id === item.id ? item : repo) }))} onCreateProposal={() => createMission(importRepository.id)} /> : <ErrorNotice message="This repository could not be found." /> : creatingProposal ? <ProposalCreate key={route} repositories={workspace.repositories} repositoryId={proposalRepositoryId} canContribute={permissions.includes("contribute")} canManage={permissions.includes("manage")} onImportRepository={id => navigate(`repository/${id}/import`)} onBack={() => navigate(proposalRepositoryId ? `repository/${proposalRepositoryId}/proposals` : "missions")} onCreateRepository={() => setModal("repository")} onCreated={async proposal => { await load(); navigate(`mission/${proposal.id}`); notify("Mission draft created."); }} /> : route === "settings/models" ? <ModelConnections canManage={permissions.includes("manage")} /> : route === "settings/cloudflare" ? <CloudflareConnection canManage={permissions.includes("manage")} /> : page === "connect" ? <McpConnections /> : page === "docs" ? (
               <Documentation publicMode={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5))} id={route.slice("docs/".length) || "how-it-works"} />
             ) : page === "mission" ? (

@@ -17,6 +17,7 @@ import type {
 import { request } from "./api";
 import { EmptyState, ErrorNotice } from "./components";
 import "./repository-browser.css";
+import { RouteProgress } from "./WorkspaceLoader";
 
 type Selection = { path: string; kind: "directory" | "file" };
 
@@ -186,9 +187,7 @@ export default function RepositoryBrowser({
           </span>
         </div>
         {busy ? (
-          <div className="loading-state" role="status" style={{ padding: 45 }}>
-            Loading source…
-          </div>
+          <RouteProgress />
         ) : file ? (
           <>
             <div className="source-file-actions">
