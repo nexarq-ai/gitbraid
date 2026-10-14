@@ -299,7 +299,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     if (repositoryMatch[2] === 'skills') return Response.json(await listRepositorySkills(env.ARTIFACTS, repository, url.searchParams.get('ref') ?? undefined));
     return browseRepository(env, repository, repositoryMatch[2], url);
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select))?$/.exec(url.pathname);
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -445,7 +445,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const { mission, repository } = await findMission(env, match[1], principal.workspaceId);
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
     const reviewInput = match[2] === 'review' ? reviewMissionInput(body) : undefined;
-    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
+    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'revert' ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
     try { await access.authorize(principal, action, 'repository', repository.id, mission.id); }
     catch (error) {
       if (reviewInput?.action !== 'comment' || publicError(error).code !== 'FORBIDDEN') throw error;
@@ -503,8 +503,19 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       await env.GITFLARE_COORDINATOR.getByName('catalog:owner').savePreviewCapability(await capabilityHash(token), { workspaceId: principal.workspaceId, principal, repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, sandboxName, expiresAt });
       return Response.json({ previewUrl: `${previewOrigin.origin}/open/${token}`, candidateSha: mission.candidateSha, expiresAt: new Date(expiresAt).toISOString() });
     }
+    if (match[2] === 'revert') {
+      await access.authorize(principal, 'contribute', 'repository', repository.id);
+      if (mission.status !== 'integrated' || !mission.candidateSha || !mission.baseSha) throw new ApiError(409, 'NOT_LANDED', 'Only a landed mission can be reverted.');
+      if (!env.MISSION_WORKFLOW || !executionReadiness(env, 'skill-edit').ready) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect the required services before reverting.');
+      const current = await currentRepository(env, repository);
+      const models = await coordinatorRead('getModelConnections', () => catalog.getModelConnections());
+      const authorization = { principal, workspaceId: principal.workspaceId, creatorId: principal.userId };
+      const draft = await coordinator.createMission(key, { repositoryId: repository.id, expectedBaseSha: current.headSha ?? undefined, title: `Revert: ${mission.title}`.slice(0, 120), prompt: `Undo the change that mission "${mission.title}" landed as commit ${mission.candidateSha}, restoring the files it changed to commit ${mission.baseSha}. Later commits stay in place.`, revertChange: { missionId: mission.id, title: mission.title.slice(0, 120), landedSha: mission.candidateSha, previousSha: mission.baseSha } }, authorization, models);
+      const started = await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models);
+      return Response.json(started, { status: 202 });
+    }
     if (match[2] === 'start') {
-      const readiness = executionReadiness(env, mission.skillChange ? 'skill-edit' : 'agent');
+      const readiness = executionReadiness(env, mission.skillChange || mission.revertChange ? 'skill-edit' : 'agent');
       if (!readiness.ready || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', `Connect the required services before running agents: ${[...readiness.missing, ...(!env.MISSION_WORKFLOW ? ['Mission Workflow'] : [])].join(', ')}.`);
       const current = await currentRepository(env, repository);
       if (!current.headSha) throw new ApiError(409, 'EMPTY_REPOSITORY', 'Push an initial commit before starting a mission.');

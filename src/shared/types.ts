@@ -109,6 +109,7 @@ export interface MissionAttachment { name: string; content: string }
 export interface Mission {
   attachments?: MissionAttachment[];
   skillChange?: RepositorySkillChange;
+  revertChange?: RevertChange;
   authorization?: { principal: import('../worker/security').Principal; workspaceId: string; creatorId: string };
   id: string;
   repositoryId: string;
@@ -160,8 +161,9 @@ export interface Workspace {
 }
 
 export interface AgentTask { name: string; role: string; task: string; model?: string }
+export interface RevertChange { missionId: string; title: string; landedSha: string; previousSha: string }
 export interface RepositorySkillChange { action: 'create' | 'update'; path: string; content: string; baseSha: string }
-export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; expectedBaseSha?: string; mode?: MissionMode }
+export interface CreateMissionInput { attachments?: MissionAttachment[]; title: string; prompt: string; repositoryId: string; acceptanceCriteria?: string[]; tasks?: AgentTask[]; skillChange?: RepositorySkillChange; revertChange?: RevertChange; expectedBaseSha?: string; mode?: MissionMode }
 export interface CreateRepositoryInput { name: string; description?: string }
 export interface ApproveMissionInput { candidateSha: string; baseSha: string }
 export interface ApiError { error: { code: string; message: string } }

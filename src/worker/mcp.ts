@@ -16,7 +16,7 @@ export const mcpToolNames = [
   'gitflare_proposal_base', 'gitflare_repository_import_status', 'gitflare_import_repository_archive',
   'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_list_missions',
   'gitflare_inspect_mission', 'gitflare_draft_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
-  'gitflare_review_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
+  'gitflare_review_mission', 'gitflare_revert_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
   'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
 ] as const;
@@ -257,6 +257,10 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     title: 'Discuss or request changes to a proposal revision', description: 'Comment on an exact candidate, request changes that block approval and landing, or resolve your own reviewer request. Comments require contribution or review access; requests and resolution require review access. Only the original reviewer can resolve a request. All actions are pinned to the exact candidate, base, and execution epoch.',
     inputSchema: z.object({ mission_id: identifier, action: z.enum(['comment', 'request_changes', 'resolve']), epoch: z.number().int().min(1), candidate_sha: commit, base_sha: commit, body: z.string().min(1).max(8000).optional(), review_id: identifier.optional(), idempotency_key: requestKey }).strict(), annotations: mutation,
   }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/review`, { action: input.action, epoch: input.epoch, candidateSha: input.candidate_sha, baseSha: input.base_sha, body: input.body, reviewId: input.review_id }, input.idempotency_key))));
+  server.registerTool('gitflare_revert_mission', {
+    title: 'Revert a landed mission', description: 'Start a new mission that undoes exactly what a landed mission changed, as a new revert commit on top of the current default branch. No model is used. The revert is checked like any change and still needs approval and landing; history is never rewritten. Fails clearly if later commits changed the same lines.',
+    inputSchema: z.object({ mission_id: identifier, idempotency_key: requestKey }).strict(), annotations: mutation,
+  }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/revert`, {}, input.idempotency_key))));
   server.registerTool('gitflare_select_candidate', {
     title: 'Select a race candidate for review', description: 'In a race mission, choose which agent\'s passing candidate becomes the exact revision under review. Compare raceCandidates, changes, and checks first. Requires review access and the current attempt epoch. Selection clears recorded approvals and can be changed until the candidate is approved.',
     inputSchema: z.object({ mission_id: identifier, run_id: identifier, epoch: z.number().int().min(1), idempotency_key: requestKey }).strict(), annotations: mutation,

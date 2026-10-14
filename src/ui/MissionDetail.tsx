@@ -10,6 +10,7 @@ import {
   FileCodeIcon,
   GitBranchIcon,
   GitCommitIcon,
+  ArrowCounterClockwiseIcon,
   GitMergeIcon,
   InfoIcon,
   PlayIcon,
@@ -145,6 +146,29 @@ export default function MissionDetail({
         failure instanceof Error
           ? failure.message
           : "The mission could not be updated.",
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function revert() {
+    if (!mission || busy) return;
+    setBusy("revert");
+    setError("");
+    try {
+      const started = await request<Mission>(
+        `/api/missions/${encodeURIComponent(id)}/revert`,
+        {},
+        crypto.randomUUID(),
+      );
+      onUpdate();
+      goTo(`mission/${started.id}`);
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "The revert could not be started.",
       );
     } finally {
       setBusy("");
@@ -408,6 +432,18 @@ export default function MissionDetail({
               Cancel mission
             </Button>
           )}
+          {mission.status === "integrated" && (
+            <Button
+              variant="secondary"
+              size="base"
+              icon={ArrowCounterClockwiseIcon}
+              loading={busy === "revert"}
+              disabled={!!busy || !permissions.includes("contribute") || !permissions.includes("execute")}
+              onClick={() => void revert()}
+            >
+              Revert
+            </Button>
+          )}
           {mission.status === "approved" && (
             <Button
               variant="secondary"
@@ -521,7 +557,8 @@ export default function MissionDetail({
         <div className="alert info">
           <GitMergeIcon size={17} />
           <div className="alert-text">
-            The approved candidate has landed in the repository.
+            The approved candidate has landed in the repository. Revert creates a
+            new commit that undoes it, checked and approved like any change.
           </div>
         </div>
       )}

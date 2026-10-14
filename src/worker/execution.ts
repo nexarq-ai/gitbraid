@@ -1,4 +1,4 @@
-import type { AgentRun, Check, FileChange, Mission, Repository, RepositorySkillChange, ModelConnection, ModelUsage } from '../shared/types';
+import type { AgentRun, Check, FileChange, Mission, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
 import { forkRepository, validGitSha, type ArtifactInfo, type ArtifactsBinding } from './artifacts';
 import type { CommandResult, GitPermission } from '../../runner/sandbox';
 import { loadRepositorySkillContext } from './repository-skills';
@@ -362,10 +362,61 @@ async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string,
   } finally { await sandbox.destroy(); }
 }
 
+async function landedPaths(sandbox: SandboxRunner, change: RevertChange): Promise<string[]> {
+  return (await checked(sandbox, ['git', 'diff', '--no-renames', '--name-only', change.previousSha, change.landedSha])).split('\n').filter(Boolean);
+}
+
+export async function applyRevert(sandbox: SandboxRunner, change: RevertChange): Promise<string[]> {
+  if (!validGitSha(change.previousSha) || !validGitSha(change.landedSha)) throw new Error('A revert needs exact landed and previous commits');
+  await checked(sandbox, ['git', 'merge-base', '--is-ancestor', change.landedSha, 'HEAD']);
+  const paths = await landedPaths(sandbox, change);
+  if (!paths.length) throw new Error('The landed change has no file differences to revert');
+  await checked(sandbox, ['/bin/bash', '-c', `git diff --binary --no-renames ${change.previousSha} ${change.landedSha} > /tmp/gitflare-revert.patch`]);
+  const applied = await sandbox.command(['git', 'apply', '-R', '--index', '--3way', '/tmp/gitflare-revert.patch'], '/workspace/repo');
+  if (applied.exitCode !== 0) throw new Error(`The landed change no longer reverts cleanly, because later commits changed the same lines: ${(applied.stderr || applied.stdout).trim().slice(0, 600)}`);
+  return paths;
+}
+
+async function verifyRevert(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, change: RevertChange, defaultTestCommand: string, assertAuthority: AuthorityGuard, isActive: () => Promise<boolean>): Promise<{ check: Check; changes: FileChange[] }> {
+  const sandbox = env.SANDBOX.getByName(`${key}-verify`);
+  try {
+    await assertAuthority();
+    await sandbox.prepare([{ ...fork, write: false }]);
+    // The restored revision was itself approved and landed, so its tests define what the revert must keep passing
+    await clone(sandbox, fork, change.previousSha);
+    const policy = await loadPolicy(sandbox, change.previousSha, defaultTestCommand);
+    if (policy.install && !policy.untested) await installDependencies(sandbox, assertAuthority, isActive);
+    const baseline = policy.evidence === 'tap' && !policy.untested ? await runCheck(sandbox, policy) : undefined;
+    await checked(sandbox, ['git', 'checkout', '--detach', sha]);
+    const head = (await checked(sandbox, ['git', 'rev-parse', `${sha}^`]));
+    const changedFiles = (await checked(sandbox, ['git', 'diff', '--no-renames', '--name-only', head, sha])).split('\n').filter(Boolean);
+    const allowed = await landedPaths(sandbox, change);
+    if (changedFiles.some((path) => !allowed.includes(path))) throw new Error('Revert candidate changed files outside the landed change');
+    const changes: FileChange[] = [];
+    for (const path of changedFiles) {
+      const patch = await checked(sandbox, ['git', 'diff', '--no-renames', head, sha, '--', path]);
+      changes.push({ path, patch: patch.slice(0, outputLimit), additions: patch.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).length, deletions: patch.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length, runIds: [] });
+    }
+    await assertAuthority();
+    if (policy.untested) {
+      const differing = (await checked(sandbox, ['git', 'diff', '--no-renames', '--name-only', change.previousSha, sha, '--', ...allowed])).split('\n').filter(Boolean);
+      const output = differing.length
+        ? `The restored revision ${change.previousSha.slice(0, 12)} has no tests, and later commits also changed: ${differing.join(', ')}. Review the diff before approving.`
+        : `The restored revision ${change.previousSha.slice(0, 12)} has no tests. All ${allowed.length} file(s) the landed change touched now match that revision exactly.`;
+      return { check: { id: key, name: 'Revert restores the previous files', candidateSha: sha, status: differing.length ? 'failed' : 'passed', output }, changes };
+    }
+    const start = Date.now();
+    const result = await runCheck(sandbox, policy);
+    const check = checkFromCommand(key, 'Repository test suite', sha, result, Date.now() - start, baseline, policy.evidence);
+    check.name = `${check.name} (tests of the restored revision ${change.previousSha.slice(0, 12)})`;
+    return { check, changes };
+  } finally { await sandbox.destroy(); }
+}
+
 export async function executeMission(input: ExecutionInput, env: ExecutionEnv, report: ReportExecution = async () => {}, isActive: () => Promise<boolean> = async () => true, assertAuthority: AuthorityGuard = unrestricted): Promise<ExecutionResult> {
   if (input.mission.authorization && assertAuthority === unrestricted) throw new Error('Execution authority guard is required');
   await assertAuthority();
-  const readiness = executionReadiness({ ...env, MODEL: DEFAULT_MODEL }, input.mission.skillChange ? 'skill-edit' : 'agent');
+  const readiness = executionReadiness({ ...env, MODEL: DEFAULT_MODEL }, input.mission.skillChange || input.mission.revertChange ? 'skill-edit' : 'agent');
   if (!readiness.ready || !env.ARTIFACTS || !env.SANDBOX) throw new Error(`Execution unavailable: ${readiness.missing.join(', ')}`);
   const { ARTIFACTS, SANDBOX } = env;
   const { mission, repository } = input;
@@ -373,7 +424,10 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   const baseSha = mission.baseSha;
   const skillChange = mission.skillChange ? validateRepositorySkillChange(mission.skillChange) : undefined;
   if (skillChange && (skillChange.baseSha !== baseSha || mission.runs.length !== 1)) throw new Error('Skill proposals require one trusted editor at the exact recorded base commit');
-  if (!skillChange && (mission.runs.length < 1 || mission.runs.length > 8)) throw new Error('A proposal requires one to eight agent tasks');
+  const revertChange = mission.revertChange;
+  if (revertChange && (mission.runs.length !== 1 || !validGitSha(revertChange.landedSha) || !validGitSha(revertChange.previousSha))) throw new Error('A revert requires one trusted editor and exact landed and previous commits');
+  const trusted = !!skillChange || !!revertChange;
+  if (!trusted && (mission.runs.length < 1 || mission.runs.length > 8)) throw new Error('A proposal requires one to eight agent tasks');
   if (!await isActive()) throw new Error('Mission cancelled');
   using skillSource = await ARTIFACTS.get(repository.name);
   if (skillChange && (await skillSource.log({ ref: repository.defaultBranch, limit: 1 }))[0]?.hash !== baseSha) throw new Error('Repository changed after the skill proposal was created');
@@ -394,7 +448,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     return reports;
   };
   const models = input.modelConnections ?? defaultModelConnections();
-  if (!skillChange) for (const run of result.runs) {
+  if (!trusted) for (const run of result.runs) {
     const model = run.modelConfig ?? resolveModelConnection(models, run.model ?? selectedModel(env, models));
     assertPinnedModel(models, model);
     run.modelConfig = structuredClone(model);
@@ -418,7 +472,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     const sandbox = SANDBOX.getByName(key);
     run.status = 'running';
     run.startedAt = new Date().toISOString();
-    run.model = skillChange ? undefined : run.modelConfig!.id;
+    run.model = trusted ? undefined : run.modelConfig!.id;
     run.skills = repositorySkills.skills.map(({ name, path, commitSha, sha256 }) => ({ name, path, commitSha, sha256 }));
     run.skillWarnings = [...repositorySkills.warnings];
     run.summary = 'Allocating an isolated Git fork';
@@ -442,7 +496,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
         await publish();
         await installDependencies(sandbox, assertAuthority, isActive);
       }
-      run.summary = skillChange ? 'Repository ready. Writing the exact requested skill' : `Repository ready. Loaded ${repositorySkills.skills.length} pinned skills${repositorySkills.warnings.length ? ` with ${repositorySkills.warnings.length} discovery warnings` : ''}. Requesting the agent’s first action`;
+      run.summary = skillChange ? 'Repository ready. Writing the exact requested skill' : revertChange ? 'Repository ready. Applying the exact inverse of the landed change' : `Repository ready. Loaded ${repositorySkills.skills.length} pinned skills${repositorySkills.warnings.length ? ` with ${repositorySkills.warnings.length} discovery warnings` : ''}. Requesting the agent’s first action`;
       await publish();
       const attachments = ((mission as { attachments?: { name: string; content: string }[] }).attachments ?? []).filter((file) => file && typeof file.name === 'string' && typeof file.content === 'string');
       const agentContext = JSON.stringify({
@@ -456,11 +510,15 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
         repositorySkills,
       }, null, 2);
       let agentSummary: string;
+      let revertPaths: string[] = [];
       if (!await active()) throw new Error('Mission cancelled');
       if (skillChange) {
         await writeRepositorySkill(sandbox, skillChange);
         await verifySkillBytes(sandbox, skillChange);
         agentSummary = `${skillChange.action === 'create' ? 'Created' : 'Updated'} ${skillChange.path} with the exact requested content using the trusted editor. No model was called.`;
+      } else if (revertChange) {
+        revertPaths = await applyRevert(sandbox, revertChange);
+        agentSummary = `Reverted ${revertPaths.length} file${revertPaths.length === 1 ? '' : 's'} changed by "${revertChange.title}" (${revertChange.previousSha.slice(0, 12)} to ${revertChange.landedSha.slice(0, 12)}) using the trusted editor. No model was called.`;
       } else agentSummary = await runAgentLoop(env, sandbox, agentContext, active, async (command) => {
         run.summary = `Running tool: ${command.slice(0, 300)}`;
         await publish();
@@ -494,22 +552,22 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       const changed = await checked(sandbox, ['git', 'diff', '--no-renames', '--cached', '--name-only']);
       if (!changed) throw new Error('Agent finished without changing any files');
       const staged = changed.split('\n').filter(Boolean);
-      if (protectedChanges(await changesWithStatus(sandbox, ['--cached']), policy).length) throw new Error('Agent changed a protected test or dependency file');
+      if (revertChange ? staged.some((path) => !revertPaths.includes(path)) : protectedChanges(await changesWithStatus(sandbox, ['--cached']), policy).length) throw new Error(revertChange ? 'Revert changed files outside the landed change' : 'Agent changed a protected test or dependency file');
       if (skillChange && (staged.length !== 1 || staged[0] !== skillChange.path)) throw new Error('Skill editor changed files outside the requested skill');
-      await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', `Gitflare: ${run.name}`]);
+      await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', revertChange ? `Revert "${revertChange.title.replace(/[\r\n]+/g, ' ')}"\n\nThis reverts ${revertChange.previousSha}..${revertChange.landedSha}.` : `Gitflare: ${run.name}`]);
       const sha = await checked(sandbox, ['git', 'rev-parse', 'HEAD']);
       if (!validGitSha(sha)) throw new Error('Runner returned an invalid commit');
       await checked(sandbox, ['git', 'merge-base', '--is-ancestor', baseSha, sha]);
       run.changedFiles = (await checked(sandbox, ['git', 'diff', '--no-renames', '--name-only', baseSha, sha])).split('\n').filter(Boolean);
       run.touchedFiles = run.changedFiles;
-      if (protectedChanges(await changesWithStatus(sandbox, [baseSha, sha]), policy).length) throw new Error('Agent changed a protected test or dependency file');
+      if (revertChange ? run.changedFiles.some((path) => !revertPaths.includes(path)) : protectedChanges(await changesWithStatus(sandbox, [baseSha, sha]), policy).length) throw new Error(revertChange ? 'Revert changed files outside the landed change' : 'Agent changed a protected test or dependency file');
       if (!await active()) throw new Error('Mission cancelled');
       await checked(sandbox, ['git', 'push', 'origin', `HEAD:refs/heads/gitflare-candidate`]);
       run.commitSha = sha;
       run.branch = 'gitflare-candidate';
       run.summary = 'Candidate pushed. Preparing a fresh verification runner';
       await publish();
-      const { check, changes } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive);
+      const { check, changes } = revertChange ? await verifyRevert({ SANDBOX }, key, fork, sha, revertChange, input.testCommand, assertAuthority, isActive) : await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive);
       run.changedFiles = changes.map((change) => change.path);
       run.touchedFiles = run.changedFiles;
       result.changes.push(...changes.map((change) => ({ ...change, runIds: [run.id] })));
@@ -528,7 +586,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       await publish();
     }
   });
-  const settled = skillChange ? await Promise.allSettled(jobs.map(job => job())) : await runConcurrent(jobs);
+  const settled = trusted ? await Promise.allSettled(jobs.map(job => job())) : await runConcurrent(jobs);
   if (race) {
     if (!result.runs.some((run) => run.status === 'completed')) result.error = 'No agent produced a passing candidate.';
     return result;

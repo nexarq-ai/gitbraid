@@ -310,8 +310,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const criteria = input.acceptanceCriteria ?? [];
       const skillChange = input.skillChange ? validateRepositorySkillChange(input.skillChange) : undefined;
       if (skillChange && repository.headSha !== skillChange.baseSha) throw new ApiError(409, 'STALE_SKILL_BASE', 'The repository changed. Refresh the skill before proposing this edit.');
-      const race = input.mode === 'race';
-      const tasks = skillChange ? [{ name: 'Skill editor', role: 'Trusted skill editor', task: `Apply exactly the submitted Markdown to ${skillChange.path}.` }] : input.tasks ?? (race ? [
+      const revertChange = input.revertChange;
+      if (revertChange && (!/^[a-f0-9]{40}$/.test(revertChange.landedSha) || !/^[a-f0-9]{40}$/.test(revertChange.previousSha))) throw new ApiError(400, 'INVALID_COMMIT', 'A revert needs the exact landed and previous commits.');
+      const race = input.mode === 'race' && !revertChange;
+      const tasks = skillChange ? [{ name: 'Skill editor', role: 'Trusted skill editor', task: `Apply exactly the submitted Markdown to ${skillChange.path}.` }] : revertChange ? [{ name: 'Revert editor', role: 'Trusted revert editor', task: `Undo exactly the change landed by "${revertChange.title}" (${revertChange.previousSha.slice(0, 12)} to ${revertChange.landedSha.slice(0, 12)}) with a new revert commit.` }] : input.tasks ?? (race ? [
         { name: 'Candidate A', role: 'Independent attempt', task: 'Complete the whole mission with the smallest change that satisfies every criterion.' },
         { name: 'Candidate B', role: 'Independent attempt', task: 'Complete the whole mission, favouring clarity and explicit error handling.' },
       ] : [
@@ -320,7 +322,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       ]);
       const mission: Mission = {
         id: crypto.randomUUID(), repositoryId: repository.id, title: input.title, prompt: input.prompt,
-        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(race ? { mode: 'race' as const } : {}),
+        acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
         runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,

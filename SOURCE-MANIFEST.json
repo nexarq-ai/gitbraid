@@ -35,8 +35,8 @@
     },
     {
       "path": "docs/public/mcp.md",
-      "size": 9334,
-      "sha256": "69df26262c9261fb38dc8beaaf16d1207da5b2c4b04ab179cf56f5db58124c1c"
+      "size": 9362,
+      "sha256": "02d2d91e5f834198de0c9e433e8ca3aca6b555f32501782b554a7638a1e2ff60"
     },
     {
       "path": "docs/public/overview.md",
@@ -105,8 +105,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 5553,
-      "sha256": "968a47cb98f7cb09c3153d861e5f7e9b5b6b1a6c3d31eabacf78363b5adc1299"
+      "size": 5720,
+      "sha256": "505e9781fd275ada6398dd332f2f877b40b7bfc851eb60863d63a3554d7cd84f"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -245,8 +245,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 45269,
-      "sha256": "df40a8f51ecc905c0721333233551e41549044ed06a4845cc39dca13e2145cb1"
+      "size": 46356,
+      "sha256": "7a3615cd441d221092144e0bb3ecb238fcec2985812e46ac265bca5f5186335d"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -360,8 +360,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 45787,
-      "sha256": "db01d7045239604a3e2944ef307b8d2722dc2780bed4b24d5f9e3690b792b911"
+      "size": 46397,
+      "sha256": "1d5bd05e7f779085d0d537192760e50ab7aac99c2586f4e9dbb11f1676330472"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -395,8 +395,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 48015,
-      "sha256": "f08137446eadd84193f2867e3af2baa8ab3ee3b2e8887fe6b69748aaaec204b2"
+      "size": 53659,
+      "sha256": "8a538568a6da5dd1535ad1946ab6edba75cb491b5130a5937fa8322243cde1f2"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -410,13 +410,13 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 52337,
-      "sha256": "c6b17e727e6af11a3e5f6801cace5d4cbf5a15f4889f25fdbdf6f59f66fa34e0"
+      "size": 53871,
+      "sha256": "a3b7eae7f0512fcc930772b3f58ae7cb6c65c9b64af5edf72efeb946f5a236f5"
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 41300,
-      "sha256": "0abf55bcaa21814ebeea2d4fd68744d9ccdafba605eeee13c7064d2f55af2928"
+      "size": 42003,
+      "sha256": "2d427e4c42a32e296e8a5d28617ef8bb3da298170729ae082ab015bf17083c33"
     },
     {
       "path": "src/worker/mfa.ts",
