@@ -153,6 +153,13 @@ export function normalizeModelMessage(body: unknown, protocol: ModelConnection['
 }
 
 // Provider error bodies carry the actionable reason (bad key, no model access, billing); credentials are never echoed
+async function cloudflareLocation(): Promise<string | null> {
+  try {
+    const trace = await (await fetch('https://cloudflare.com/cdn-cgi/trace', { signal: AbortSignal.timeout(2000) })).text();
+    return /^colo=([A-Z]{3})$/m.exec(trace)?.[1] ?? null;
+  } catch { return null; }
+}
+
 export async function gatewayRejection(response: Response, modelId: string): Promise<string> {
   let reason = '';
   try {
@@ -165,7 +172,8 @@ export async function gatewayRejection(response: Response, modelId: string): Pro
   } catch {}
   reason = reason.replace(/\s+/g, ' ').replace(/(sk-|key-|Bearer\s+)[\w-]{6,}/gi, '$1[redacted]').trim().slice(0, 240);
   const advice = response.status === 401 || response.status === 403 ? ' Check this provider key in the AI Gateway (BYOK) and that the account can use this model, or choose another model for the mission and retry.' : '';
-  return `AI Gateway rejected ${modelId} with status ${response.status}${reason ? `: ${reason}` : ''}.${advice}`;
+  const location = response.status === 403 ? await cloudflareLocation() : null;
+  return `AI Gateway rejected ${modelId} with status ${response.status}${reason ? `: ${reason}` : ''}.${location ? ` The call came from Cloudflare location ${location}; some providers refuse requests from locations they do not serve.` : ''}${advice}`;
 }
 
 export async function inferenceMessage(env: ModelEnv, model: ModelConnection, input: InputItem[], tools: InputItem[], timeoutMs: number, maxTokens = 4096, onUsage?: (usage: ModelUsage | undefined) => Promise<void>): Promise<ModelMessage> {

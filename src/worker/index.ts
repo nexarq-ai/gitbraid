@@ -635,6 +635,7 @@ const application = {
       } else response = await api(request, env, ctx);
     } catch (error) {
       const failure = publicError(error);
+      if (failure.code === 'INTERNAL_ERROR') console.error(JSON.stringify({ event: 'api_unexpected_error', method: request.method, route: path.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/g, ':id'), name: error instanceof Error ? error.name : typeof error, message: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 200), stack: error instanceof Error ? error.stack?.split('\n').slice(1, 6).join(' | ') : undefined }));
       response = Response.json({ error: { code: failure.code, message: failure.message } }, { status: failure.status });
     }
     response.headers.set('Cache-Control', 'no-store');

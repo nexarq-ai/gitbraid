@@ -445,8 +445,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 56465,
-      "sha256": "b013a50f3111b6d6288a4dbc4aad115a014a2a047a87ca0c31f3ce168cc0556d"
+      "size": 56904,
+      "sha256": "002647513fbf4ddf433d8df165dba6d64cf9a911ec7c3a1f7df00d47e42ddef1"
     },
     {
       "path": "src/worker/issues.ts",
@@ -475,8 +475,8 @@
     },
     {
       "path": "src/worker/model-adapter.ts",
-      "size": 14736,
-      "sha256": "93d810e2831e7f16e0ec790fc53f63da937e95a8b48ade16d8f15a2bbb08f909"
+      "size": 15237,
+      "sha256": "f3e096777bc19cc6b916547194882258449988a6dd0014bf6c05bacdfc93fabb"
     },
     {
       "path": "src/worker/model-config.ts",
