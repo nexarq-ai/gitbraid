@@ -125,8 +125,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 67999,
-      "sha256": "de03072846405e10111c91709f140a5fff7f9ebc30ba64f760112ec2cd01b395"
+      "size": 68136,
+      "sha256": "9fc4e4c858ffe05a5dc3ce5942b7030db06be1ed301060d55e67e07fb7673ea4"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -235,8 +235,8 @@
     },
     {
       "path": "src/ui/main.tsx",
-      "size": 275,
-      "sha256": "60911837637fa51df4268d8a2265a02548704716583301b80cf8eef2851cb7bb"
+      "size": 815,
+      "sha256": "ca034afa7194c12129f6189ccbd190cdd70f0d271798e25a633b3a72cbec46cc"
     },
     {
       "path": "src/ui/McpConnections.tsx",
@@ -319,6 +319,11 @@
       "sha256": "c52d37b45e35b36cfa8ada8f4015c9f0e2afa1465818ca2d2a90930cdcd658ce"
     },
     {
+      "path": "src/ui/router.ts",
+      "size": 3492,
+      "sha256": "f9c23266715c03ec37c770628b3874dc9a485d67498f88391dbf4ad367fe5a5d"
+    },
+    {
       "path": "src/ui/SelfHostedHome.tsx",
       "size": 368,
       "sha256": "526477b097c6557be192eb7ee14f575040b50aa4a7ced524b9b1ab976874e5b0"
@@ -327,6 +332,11 @@
       "path": "src/ui/styles.css",
       "size": 61821,
       "sha256": "28bb2b75380340dc649849b4bed540a28836d45a1f1b346efe958ed78f044c15"
+    },
+    {
+      "path": "src/ui/WorkspaceLoader.tsx",
+      "size": 1224,
+      "sha256": "ee86900f6ded9a2cc5cc67c93e0162b71a27ca25403720ee648b23e61a94cbfa"
     },
     {
       "path": "src/worker/anthropic-adapter.ts",

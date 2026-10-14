@@ -51,6 +51,7 @@ import {
 import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
+import WorkspaceLoader from "./WorkspaceLoader";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
 import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
 
@@ -81,7 +82,7 @@ const runningStates = ["queued", "running", "checking", "integrating"];
 
 export default function App() {
   return (
-    <Suspense fallback={<main className="route-loading" aria-busy="true" />}>
+    <Suspense fallback={currentRoute() === "home" ? <main className="route-loading" aria-busy="true" /> : <WorkspaceLoader />}>
       <Workspace />
     </Suspense>
   );
@@ -279,7 +280,8 @@ function Workspace() {
   const publicDocs = route.startsWith("docs") && authState !== "authenticated";
   if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="/" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="/docs/overview">Guides</a><a href="/connect">Connect MCP</a><a href="/signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
   if (route === "home" && (!authConfig || (authConfig.edition === "hosted" && !authConfig.setupRequired))) return <Homepage authenticated={authState === "authenticated"} />;
-  if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError || "Loading installation…"}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
+  if (!authConfig && !authConfigError) return <WorkspaceLoader />;
+  if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
   if (isAccountRoute(route) && !authConfig.setupRequired) return <AccountScreen key={route} route={route} config={authConfig} authenticated={authState === "authenticated"} onChanged={load}/>;
   if (route.startsWith("invite?")) return <InvitationScreen route={route} config={authConfig} state={authState} error={error} onRetry={load} onSignedIn={load} onFlowChange={(active) => {authFlowActive.current=active;}}/>;
 
