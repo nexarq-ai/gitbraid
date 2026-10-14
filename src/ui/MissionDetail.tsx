@@ -116,14 +116,6 @@ export default function MissionDetail({
     action: "start" | "cancel" | "approve" | "integrate" | "revoke",
   ) {
     if (!mission || busy) return;
-    if (
-      action === "integrate" &&
-      mission.status === "approved" &&
-      !window.confirm(
-        `Land commit ${mission.candidateSha} on the default branch of ${repository?.name ?? "this repository"}? This updates the canonical repository and cannot be undone here.`,
-      )
-    )
-      return;
     setBusy(action);
     setError("");
     const body =
