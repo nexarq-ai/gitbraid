@@ -72,7 +72,7 @@ export default function ProposalCreate({ repositories, repositoryId, canContribu
     let active = true;
     setImportEligible(false);
     if (!repoId || !canManage) return;
-    void request<{ allowed: boolean }>(`/api/repositories/${repoId}/import-status`).then(result => { if (active) setImportEligible(!!result.allowed); }).catch(() => { if (active) setImportEligible(false); });
+    void request<{ allowed: boolean }>(`/api/repositories/${encodeURIComponent(repoId)}/import`).then(result => { if (active) setImportEligible(!!result.allowed); }).catch(() => { if (active) setImportEligible(false); });
     return () => { active = false; };
   }, [repoId, canManage, baseRefresh]);
 
