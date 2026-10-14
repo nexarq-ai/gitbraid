@@ -551,6 +551,7 @@ a svg {
   gap: 24px;
   align-items: start;
 }
+.workspace-columns > * { min-width: 0; }
 .section-heading {
   display: flex;
   align-items: center;
@@ -2940,3 +2941,16 @@ a svg {
 .race-card p { margin: 0; }
 .race-card .race-stats { display: flex; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 640px) { .mission-mode { grid-template-columns: 1fr; } }
+
+.agent-usage{margin-top:8px;font-size:12px;color:var(--muted,#6b6b6b);overflow-wrap:anywhere}
+.mission-attachments pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+@media (max-width:768px){
+  main,section,.panel,.page-heading,.proposal-create-layout,.summary-grid,.detail-summary,.agent-grid{min-width:0;max-width:100%}
+  .proposal-create-layout,.detail-summary,.summary-grid{grid-template-columns:minmax(0,1fr)!important}
+  .workspace-columns{grid-template-columns:minmax(0,1fr)}
+  .workspace-columns>*{min-width:0}
+  .table-scroll{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  pre,code{overflow-wrap:anywhere}
+  .proposal-create-footer,.proposal-create-footer>div{flex-wrap:wrap}
+  .proposal-agent-grid{grid-template-columns:minmax(0,1fr)!important}
+}

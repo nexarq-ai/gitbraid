@@ -273,10 +273,20 @@ async function loadPolicy(sandbox: SandboxRunner, baseSha: string, defaultTestCo
   return parseRepositoryPolicy(file.exitCode === 0 && file.stdout.trim() ? file.stdout : null, defaultTestCommand);
 }
 
-async function installDependencies(sandbox: SandboxRunner): Promise<void> {
+const TRANSIENT_INSTALL = /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|ENETUNREACH/;
+
+async function installDependencies(sandbox: SandboxRunner, assertAuthority: AuthorityGuard = unrestricted, isActive: () => Promise<boolean> = async () => true): Promise<void> {
   if (!sandbox.install) throw new Error('This runner cannot install dependencies');
-  const result = await sandbox.install();
-  if (result.exitCode !== 0) throw new Error(`Dependency installation failed (${result.exitCode}): ${result.stderr.slice(-1000)}`);
+  let result: CommandResult | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!await isActive()) throw new Error('Mission cancelled');
+    await assertAuthority();
+    result = await sandbox.install();
+    if (result.exitCode === 0) return;
+    if (attempt === 1 || !TRANSIENT_INSTALL.test(`${result.stderr}\n${result.stdout}`)) break;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error(`Dependency installation failed (${result!.exitCode}): ${result!.stderr.slice(-1000)}`);
 }
 
 async function touchedFiles(sandbox: SandboxRunner): Promise<string[] | null> {
@@ -285,13 +295,13 @@ async function touchedFiles(sandbox: SandboxRunner): Promise<string[] | null> {
   return status.stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean).sort().slice(0, 200);
 }
 
-async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, baseSha: string, policy: RepositoryPolicy, assertAuthority: AuthorityGuard, skillChange?: RepositorySkillChange): Promise<{ check: Check; changes: FileChange[] }> {
+async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, baseSha: string, policy: RepositoryPolicy, assertAuthority: AuthorityGuard, skillChange?: RepositorySkillChange, isActive: () => Promise<boolean> = async () => true): Promise<{ check: Check; changes: FileChange[] }> {
   const sandbox = env.SANDBOX.getByName(`${key}-verify`);
   try {
     await assertAuthority();
     await sandbox.prepare([{ ...fork, write: false }]);
     await clone(sandbox, fork, baseSha);
-    if (policy.install) await installDependencies(sandbox);
+    if (policy.install) await installDependencies(sandbox, assertAuthority, isActive);
     const baseline = policy.evidence === 'tap' ? await sandbox.command(['/bin/bash', '-lc', policy.testCommand], '/workspace/repo', 120_000) : undefined;
     await checked(sandbox, ['git', 'checkout', '--detach', sha]);
     await checked(sandbox, ['git', 'merge-base', '--is-ancestor', baseSha, sha]);
@@ -391,7 +401,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       if (policy.install) {
         run.summary = 'Installing dependencies from the base commit lockfile';
         await publish();
-        await installDependencies(sandbox);
+        await installDependencies(sandbox, assertAuthority, isActive);
       }
       run.summary = skillChange ? 'Repository ready. Writing the exact requested skill' : `Repository ready. Loaded ${repositorySkills.skills.length} pinned skills${repositorySkills.warnings.length ? ` with ${repositorySkills.warnings.length} discovery warnings` : ''}. Requesting the agent’s first action`;
       await publish();
@@ -456,7 +466,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       run.branch = 'gitflare-candidate';
       run.summary = 'Candidate pushed. Preparing a fresh verification runner';
       await publish();
-      const { check, changes } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange);
+      const { check, changes } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive);
       run.changedFiles = changes.map((change) => change.path);
       run.touchedFiles = run.changedFiles;
       result.changes.push(...changes.map((change) => ({ ...change, runIds: [run.id] })));
@@ -621,7 +631,7 @@ export async function prepareCandidatePreview(env: ExecutionEnv, { mission, prev
     await sandbox.prepare([{ ...fork, write: false }]);
     await clone(sandbox, fork, mission.candidateSha);
     const policy = mission.baseSha ? await loadPolicy(sandbox, mission.baseSha, '') : undefined;
-    if (policy?.install) await installDependencies(sandbox);
+    if (policy?.install) await installDependencies(sandbox, assertAuthority);
     await assertAuthority();
     await sandbox.startPreview(policy?.previewCommand);
     return { sandboxName, candidateSha: mission.candidateSha };

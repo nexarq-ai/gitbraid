@@ -245,8 +245,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 44428,
-      "sha256": "64a4096e95b1ca5566874630b3a8bbd28b146aaa3586d917d60c2dbc30b95f52"
+      "size": 45551,
+      "sha256": "9d5f899b5e4b33b584d1ca275ee0762022d91ebf1fd2ec122ea829c39922a3a8"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -260,13 +260,13 @@
     },
     {
       "path": "src/ui/proposal-create.css",
-      "size": 5975,
-      "sha256": "30a98260aa24a9c6f5cb59cb9b1523eee2dc69acbddd9ac474523e691e116b38"
+      "size": 6258,
+      "sha256": "ab007f8593ef386353f009e2dc75e1e80bbfb72017441385355cdcbe5d73c877"
     },
     {
       "path": "src/ui/ProposalCreate.tsx",
-      "size": 16542,
-      "sha256": "b573dce9d0a2efc34b9f86fef4232f6ab9604934259fcb90edc9d5441385d21d"
+      "size": 21560,
+      "sha256": "7b2fbe36a01542586f7f33a05615eb015e311fd7a8438aba7316cdcb45b162dd"
     },
     {
       "path": "src/ui/public-install.css",
@@ -305,8 +305,8 @@
     },
     {
       "path": "src/ui/RepositoryImport.tsx",
-      "size": 15500,
-      "sha256": "131120076f81210bc31c481b65cb15eb747f028f39fcdcff1878de2048f4a3f8"
+      "size": 15612,
+      "sha256": "52f2ba2e328368966a52789daa61ec78832c00a59af5686787d999097c075a50"
     },
     {
       "path": "src/ui/RepositorySkills.tsx",
@@ -325,8 +325,8 @@
     },
     {
       "path": "src/ui/styles.css",
-      "size": 60841,
-      "sha256": "090c1bd96589833452d0bdd689993d17b4e6b6d92f2f2fed44fd585b9d89240c"
+      "size": 61689,
+      "sha256": "f3d4ba4ec49e78d63adb7e9d1a399cbadfcf006357897a25b32f94540da174da"
     },
     {
       "path": "src/worker/anthropic-adapter.ts",
@@ -385,8 +385,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 41787,
-      "sha256": "f16a49b6e8ae8e289d958444e21248663b3a8f36f952bb195921eb946c35a5bd"
+      "size": 42465,
+      "sha256": "7671c06df4b7f777ba1bd432bb3f05295ba2423c80458321906dfdfe1c6842dc"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -440,8 +440,8 @@
     },
     {
       "path": "src/worker/repository-import.ts",
-      "size": 23404,
-      "sha256": "9dcd25e144967e5e20f11c4b95c07038f35b9b9be65723a3ac0720c916d4df71"
+      "size": 23375,
+      "sha256": "d168cbe0d1a4ac37c8bf54f79a2711afcca4adeac2f43ac391c5aa37c5d7c19f"
     },
     {
       "path": "src/worker/repository-initialization.ts",
