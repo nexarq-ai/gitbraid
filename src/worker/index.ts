@@ -675,7 +675,7 @@ const application = {
     const path = new URL(request.url).pathname;
     if (path.startsWith('/git/')) {
       try { return (await handleGitRequest(request, gitDependencies(env)))!; }
-      catch { return new Response('Gitflare could not complete this Git request. Try again shortly.\n', { status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } }); }
+      catch (error) { console.error(JSON.stringify({ event: 'git_request_failed', name: error instanceof Error ? error.name : typeof error, message: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 200), stack: error instanceof Error ? error.stack?.split('\n').slice(1, 6).join(' | ') : undefined })); return new Response('Gitflare could not complete this Git request. Try again shortly.\n', { status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } }); }
     }
     const publicGit = await publicGitResponse(request, env);
     if (publicGit) return publicGit;

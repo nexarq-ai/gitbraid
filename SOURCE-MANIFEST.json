@@ -485,8 +485,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 64332,
-      "sha256": "500327c37867d3d8def9bb180dbfa0a612ab3d34594b39df115d3339423db84e"
+      "size": 64649,
+      "sha256": "fb103bf73bdd1f08d7f304fd88d9ab7990d5eed12172ca50f4ec9de393c93d63"
     },
     {
       "path": "src/worker/issues.ts",
