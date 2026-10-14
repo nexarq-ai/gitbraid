@@ -125,8 +125,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 67717,
-      "sha256": "fb6a3e9625308a2246174ce72ede7f8e69f2dfef3161851c341a81569b9d1b52"
+      "size": 67449,
+      "sha256": "20455096fdb567002209d140346b53dcba4c3845b10c1adc26a08478b9660818"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
