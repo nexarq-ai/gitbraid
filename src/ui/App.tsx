@@ -78,7 +78,9 @@ const loadProposalCreate = () => import("./ProposalCreate");
 const ProposalCreate = lazy(loadProposalCreate);
 const loadModelConnections = () => import("./ModelConnections");
 const ModelConnections = lazy(loadModelConnections);
-const workspacePages = [loadMissionDetail, loadRepositoryBrowser, loadDocumentation, loadRepositorySkills, loadCloudflareConnection, loadMcpConnections, loadAccessSettings, loadRepositoryWork, loadProposalCreate, loadModelConnections];
+const loadReleases = () => import("./Releases");
+const Releases = lazy(loadReleases);
+const workspacePages = [loadMissionDetail, loadRepositoryBrowser, loadDocumentation, loadRepositorySkills, loadCloudflareConnection, loadMcpConnections, loadAccessSettings, loadRepositoryWork, loadProposalCreate, loadModelConnections, loadReleases];
 // Start the homepage chunk alongside the main bundle instead of after it
 if (currentRoute() === "home") void loadHomepage();
 
@@ -547,6 +549,8 @@ function Workspace() {
                 onMission={createMission}
                 onOpenMission={(id, tab, runId) => navigate(`mission/${id}/${tab || "overview"}${runId ? `/${runId}` : ""}`)}
                 tab={route.split("/")[2] || "code"}
+                releaseId={route.split("/")[3]}
+                canLand={permissions.includes("land")}
                 onTabChange={(tab) => navigate(`repository/${route.split("/")[1]}/${tab}`)}
                 onImport={() => navigate(`repository/${route.split("/")[1]}/import`)}
                 canManage={permissions.includes("manage")}
@@ -1172,6 +1176,8 @@ function RepositoryDetail({
   tab,
   onTabChange,
   onImport,
+  releaseId,
+  canLand,
 }: {
   repository?: Repository;
   workspace: Workspace;
@@ -1185,6 +1191,8 @@ function RepositoryDetail({
   tab: string;
   onTabChange: (tab: string) => void;
   onImport: () => void;
+  releaseId?: string;
+  canLand: boolean;
 }) {
   if (!repository)
     return (
@@ -1233,11 +1241,12 @@ function RepositoryDetail({
             { value: "agents", label: `Agents (${missions.reduce((count, mission) => count + (mission.epoch > 0 ? mission.runs.length : 0), 0)})` },
             { value: "checks", label: `Checks (${missions.reduce((count, mission) => count + mission.checks.length, 0)})` },
             { value: "skills", label: "Skills" },
+            { value: "releases", label: "Releases" },
             { value: "cloudflare", label: "Cloudflare" },
             { value: "overview", label: "Overview" },
           ].map((item) => <button key={item.value} aria-current={tab === item.value ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
-      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
+      {["proposals", "agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "releases" ? <Releases key={repository.id} repository={repository} releaseId={releaseId} canLand={canLand} onNotify={onNotify} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
         <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} /></>
       ) : tab === "overview" ? (
         <>
