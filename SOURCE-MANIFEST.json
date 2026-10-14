@@ -35,8 +35,8 @@
     },
     {
       "path": "docs/public/mcp.md",
-      "size": 9379,
-      "sha256": "ffa4fad6c8b6ca2d24c23cea1b3a91e5f7b2c7e6eae5ff8715efda790bb5b7d2"
+      "size": 9334,
+      "sha256": "69df26262c9261fb38dc8beaaf16d1207da5b2c4b04ab179cf56f5db58124c1c"
     },
     {
       "path": "docs/public/overview.md",
@@ -260,13 +260,13 @@
     },
     {
       "path": "src/ui/proposal-create.css",
-      "size": 6661,
-      "sha256": "e82d1bd88b187f8fd33bd0cf9acb92671219adf51a872140a8d74dd0bc113972"
+      "size": 7164,
+      "sha256": "28d8e1edf7896c77c2519cb7ab9b72da75e08c90c16697cfc00ba2ccf8611a43"
     },
     {
       "path": "src/ui/ProposalCreate.tsx",
-      "size": 22586,
-      "sha256": "8f72c81431219e05b09eb0ea101c96aa3fbabc3a57f71efd8210fdba8f2300d2"
+      "size": 25237,
+      "sha256": "6d356d21a23d95d050b27dd474253919955b6d40dfe24af0278e32bb2623e583"
     },
     {
       "path": "src/ui/public-install.css",
@@ -410,13 +410,13 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 51136,
-      "sha256": "e2f8c4b3444a0ffc859a48d1121eae9b6a9fdad55f41c014a5f7080a9e9185d8"
+      "size": 52337,
+      "sha256": "c6b17e727e6af11a3e5f6801cace5d4cbf5a15f4889f25fdbdf6f59f66fa34e0"
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 40245,
-      "sha256": "c4b91080c9faa3a8a33c24ace2c84e370e806e562502d0a8c5e6f0d3211a746d"
+      "size": 41300,
+      "sha256": "0abf55bcaa21814ebeea2d4fd68744d9ccdafba605eeee13c7064d2f55af2928"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -427,6 +427,11 @@
       "path": "src/worker/mission-context.ts",
       "size": 2280,
       "sha256": "d7002c0bd6636ae2101a30b7231fc8b52ab9a1d39dc06797fd4f02bfaef4c264"
+    },
+    {
+      "path": "src/worker/mission-draft.ts",
+      "size": 7405,
+      "sha256": "3113eb36cad21a843aad5747bb3c10945eb8bdc8209b6fde5ac6ddafb0c3c20c"
     },
     {
       "path": "src/worker/model-adapter.ts",
