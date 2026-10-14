@@ -225,13 +225,13 @@
     },
     {
       "path": "src/ui/cloudflare-connection.css",
-      "size": 11256,
-      "sha256": "5f4bda3d5f456e3a60f1cb98a9e266a471beaaf1d68735832cf8cc90c4fc702b"
+      "size": 11342,
+      "sha256": "37b275f248cbc4ab334a400515bdee07456c6f70bf183ae62854a194464aa7a8"
     },
     {
       "path": "src/ui/CloudflareConnection.tsx",
-      "size": 39094,
-      "sha256": "49d071b469044d33ff9101800e604575991b0abd2e055b96158b51d55da7b458"
+      "size": 39565,
+      "sha256": "8f9300d9054e0cda999976c81dcfd9c0aca0384daf7dd470216c334ecfd587fa"
     },
     {
       "path": "src/ui/components.tsx",

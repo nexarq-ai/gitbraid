@@ -49,6 +49,7 @@ const scopeLabels: Record<string, string> = {
 function CloudflareAccount({ status, accounts, resources, repositories, busy, accountId, onAccount, onUseAccount, onConnect, onDisconnect }: { status: Connection; accounts: Account[]; resources: Resources | null; repositories: Repository[]; busy: string; accountId: string; onAccount: (id: string) => void; onUseAccount: () => void; onConnect: () => void; onDisconnect: () => void }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ResourceType | "all">("all");
+  const [page, setPage] = useState(0);
   const [links, setLinks] = useState<{ repository: Repository; resources: ProjectResource[] }[] | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   useEffect(() => {
@@ -70,7 +71,10 @@ function CloudflareAccount({ status, accounts, resources, repositories, busy, ac
   const counts = Object.fromEntries(resourceTypes.map((item) => [item.type, catalog.filter((resource) => resource.type === item.type).length])) as Record<ResourceType, number>;
   const linkedKeys = new Map<string, string[]>();
   for (const link of links ?? []) for (const resource of link.resources) linkedKeys.set(resourceKey(resource), [...(linkedKeys.get(resourceKey(resource)) ?? []), link.repository.name]);
-  const shown = catalog.filter((item) => (filter === "all" || item.type === filter) && `${item.name} ${item.id}`.toLowerCase().includes(search.trim().toLowerCase())).slice(0, 100);
+  const matches = catalog.filter((item) => (filter === "all" || item.type === filter) && `${item.name} ${item.id}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const pages = Math.max(1, Math.ceil(matches.length / 15));
+  const current = Math.min(page, pages - 1);
+  const shown = matches.slice(current * 15, (current + 1) * 15);
   const unavailable = Object.entries(resources?.availability ?? {}).filter(([, value]) => !value.available);
   return <>
     <section className="panel">
@@ -90,11 +94,11 @@ function CloudflareAccount({ status, accounts, resources, repositories, busy, ac
       <div className="panel-header"><h2>Account resources</h2><span className="cf-state">{resources ? `${catalog.length} found` : "Loading…"}</span></div>
       <div className="panel-body">
         {!resources ? <RouteProgress /> : <>
-          <div className="cf-resource-stats">{resourceTypes.map((item) => <button key={item.type} type="button" aria-pressed={filter === item.type} onClick={() => setFilter(filter === item.type ? "all" : item.type)}><span className={`cf-resource-symbol cf-symbol-${item.type}`} aria-hidden="true">{item.type === "d1" ? "D1" : item.type === "durable_object" ? "DO" : item.type === "worker" ? "W" : item.type === "container" ? "C" : "WF"}</span><strong>{counts[item.type]}</strong><span>{item.plural}</span></button>)}</div>
+          <div className="cf-resource-stats">{resourceTypes.map((item) => <button key={item.type} type="button" aria-pressed={filter === item.type} onClick={() => { setFilter(filter === item.type ? "all" : item.type); setPage(0); }}><span className={`cf-resource-symbol cf-symbol-${item.type}`} aria-hidden="true">{item.type === "d1" ? "D1" : item.type === "durable_object" ? "DO" : item.type === "worker" ? "W" : item.type === "container" ? "C" : "WF"}</span><strong>{counts[item.type]}</strong><span>{item.plural}</span></button>)}</div>
           {unavailable.map(([type, value]) => <p key={type} className="cf-field-hint"><strong>{resourceTypes.find((item) => item.type === (availabilityTypes[type] ?? type))?.plural ?? type}:</strong> {value.reason || "Listing is unavailable with this authorization."}</p>)}
-          <div className="cf-catalog-toolbar"><div className="cf-resource-search"><MagnifyingGlassIcon size={17} aria-hidden="true" /><Input aria-label="Search account resources" placeholder="Search by name or ID" value={search} onChange={(event) => setSearch(event.target.value)} /></div>{filter !== "all" && <Button variant="secondary" size="base" onClick={() => setFilter("all")}>Show all types</Button>}</div>
+          <div className="cf-catalog-toolbar"><div className="cf-resource-search"><MagnifyingGlassIcon size={17} aria-hidden="true" /><Input aria-label="Search account resources" placeholder="Search by name or ID" value={search} onChange={(event) => { setSearch(event.target.value); setPage(0); }} /></div>{filter !== "all" && <Button variant="secondary" size="base" onClick={() => { setFilter("all"); setPage(0); }}>Show all types</Button>}</div>
           {shown.length ? <div className="table-scroll"><table className="resource-table cf-account-table"><thead><tr><th>Name</th><th>Type</th><th>Used by</th></tr></thead><tbody>{shown.map((item) => <tr key={resourceKey(item)}><td><div className="cf-resource-identity"><strong>{item.name}</strong>{item.id !== item.name && <span className="cf-resource-id">{item.id}</span>}</div></td><td>{resourceLabel(item.type)}</td><td>{linkedKeys.get(resourceKey(item))?.join(", ") ?? <span className="cf-muted">—</span>}</td></tr>)}</tbody></table></div> : <p className="cf-muted">No resources match this search.</p>}
-          {catalog.length > shown.length && shown.length === 100 && <p className="cf-field-hint">Showing the first 100 matches. Search to narrow the list.</p>}
+          {pages > 1 && <div className="cf-catalog-pagination"><span>{matches.length} matches · page {current + 1} of {pages}</span><Button variant="secondary" size="base" disabled={current === 0} onClick={() => setPage(current - 1)}>Previous</Button><Button variant="secondary" size="base" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>Next</Button></div>}
         </>}
       </div>
     </section>}

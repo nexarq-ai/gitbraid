@@ -126,3 +126,4 @@
 .cf-repository-links a:hover { border-color: #b9c2ce; }
 .cf-repository-links span { font-size: 12px; color: #77818d; }
 @media (max-width: 900px) { .cf-resource-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.cf-account-table td, .cf-account-table th { padding-top: 9px; padding-bottom: 9px; }
