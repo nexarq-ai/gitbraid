@@ -87,6 +87,15 @@ export function missingBaselineTests(baselineStdout: string, candidateStdout: st
   return [...reportedTests(baselineStdout, false)].filter(([name, count]) => (passing.get(name) ?? 0) < count).map(([name]) => name);
 }
 
+const FAILURE_LINE = /^\s*not ok\b|^\s*(npm ERR!|npm error)|\b(Error|ERR_[A-Z_]+|FAIL|failed|Cannot find|not found|No test files|exceeded its execution deadline)\b/;
+
+export function checkFailureSummary(output: string): string {
+  const lines = output.split('\n').map((line) => line.trim()).filter((line) => line && !/^# (tests|suites|pass|cancelled|skipped|todo|duration_ms) /.test(line) && !/^(TAP version|1\.\.\d+|---|\.\.\.)$/.test(line));
+  const picked = lines.filter((line) => FAILURE_LINE.test(line)).slice(0, 3);
+  const summary = (picked.length ? picked : lines.slice(-3)).join(' · ');
+  return summary ? summary.slice(0, 400) : 'the test command produced no output. Open Checks for details.';
+}
+
 export function checkFromCommand(id: string, name: string, candidateSha: string, result: CommandResult, durationMs: number, baseline?: CommandResult, evidence: RepositoryPolicy['evidence'] = 'tap'): Check {
   const tests = result.stdout.match(/^# tests (\d+)$/m);
   const passed = result.stdout.match(/^# pass (\d+)$/m);
@@ -509,7 +518,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       result.checks.push(check);
       run.summary = agentSummary;
       run.status = check.status === 'passed' ? 'completed' : 'failed';
-      if (check.status !== 'passed') run.error = 'Candidate checks failed';
+      if (check.status !== 'passed') run.error = `Candidate checks failed: ${checkFailureSummary(check.output ?? '')}`;
     } catch (error) {
       run.status = 'failed';
       run.error = error instanceof Error ? error.message : 'Agent execution failed';

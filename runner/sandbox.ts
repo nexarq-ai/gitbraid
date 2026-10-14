@@ -191,7 +191,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const execution = (async () => {
       const process = await container.exec(['timeout', '--kill-after=2s', `${seconds}s`, ...argv], {
         cwd,
-        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', CI: 'true' },
       });
       const [stdout, stderr, exitCode] = await Promise.all([collect(process.stdout), collect(process.stderr), process.exitCode]);
       return { stdout, stderr, exitCode };
