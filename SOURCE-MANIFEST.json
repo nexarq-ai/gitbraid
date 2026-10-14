@@ -435,8 +435,8 @@
     },
     {
       "path": "src/worker/model-adapter.ts",
-      "size": 13554,
-      "sha256": "cc97480a9574db055ec8be3aef3f7f6c04309a863ebf28b4bea11ddc134dff6b"
+      "size": 14736,
+      "sha256": "93d810e2831e7f16e0ec790fc53f63da937e95a8b48ade16d8f15a2bbb08f909"
     },
     {
       "path": "src/worker/model-config.ts",
