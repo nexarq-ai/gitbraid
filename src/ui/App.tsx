@@ -115,8 +115,9 @@ export default function App() {
     setToast("");
   }, []);
 
-  const load = useCallback(async () => {
-    const generation = ++loadGeneration.current;
+  const inflight = useRef<{ generation: number; promise: Promise<void> } | null>(null);
+
+  const runLoad = useCallback(async (generation: number) => {
     try {
       const [data, access] = await Promise.all([request<Workspace>("/api/workspace"), request<AccessSnapshot>("/api/access")]);
       if (generation !== loadGeneration.current) return;
@@ -149,6 +150,18 @@ export default function App() {
       }
     }
   }, [clearSession]);
+
+  const load = useCallback((): Promise<void> => {
+    const current = inflight.current;
+    if (current && current.generation === loadGeneration.current) return current.promise;
+    const generation = ++loadGeneration.current;
+    const promise = runLoad(generation).finally(() => {
+      if (inflight.current?.promise === promise) inflight.current = null;
+    });
+    inflight.current = { generation, promise };
+    return promise;
+  }, [runLoad]);
+
 
   useEffect(() => {
     window.addEventListener("gitflare:session-required", clearSession);

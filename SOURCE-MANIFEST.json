@@ -120,13 +120,13 @@
     },
     {
       "path": "src/ui/api.ts",
-      "size": 1564,
-      "sha256": "084ecd4d1d5d8c28fe615af5bd06383d86149768349c0576717b4f469df0cba9"
+      "size": 1637,
+      "sha256": "2ed9f3a8758e618c49e9915e0db51b8f0d7f656abafdd09fb73613b1e6dfb530"
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 67204,
-      "sha256": "3e5bb341566ee8db28fea61db196b18f5684e1f2ea315172b5dde0b18f8bdc57"
+      "size": 67717,
+      "sha256": "fb6a3e9625308a2246174ce72ede7f8e69f2dfef3161851c341a81569b9d1b52"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
