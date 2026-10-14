@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
+import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import {
   ArrowLeftIcon,
@@ -75,6 +76,7 @@ export default function MissionDetail({
   } | null>(null);
   const mutation = useRef<{ signature: string; key: string } | null>(null);
   const revision = useRef(0);
+  const [confirming, setConfirming] = useState<"approve" | "integrate" | null>(null);
   const pollSequence = useRef(0);
   const repository = workspace.repositories.find(
     (item) => item.id === mission?.repositoryId,
@@ -466,7 +468,7 @@ export default function MissionDetail({
                 !permissions.includes("land") ||
                 unresolvedRequests.length > 0
               }
-              onClick={() => void act("integrate")}
+              onClick={() => mission.status === "integrating" ? void act("integrate") : setConfirming("integrate")}
             >
               {mission.status === "integrating"
                 ? "Recheck landing"
@@ -480,7 +482,7 @@ export default function MissionDetail({
               icon={ShieldCheckIcon}
               loading={busy === "approve"}
               disabled={!!busy || !permissions.includes("review")}
-              onClick={() => void act("approve")}
+              onClick={() => setConfirming("approve")}
             >
               Approve candidate
             </Button>
@@ -1200,6 +1202,24 @@ export default function MissionDetail({
       {tab === "attempts" && (
         <AttemptHistory key={mission.id} mission={mission} />
       )}
+      <Dialog.Root open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
+        <Dialog size="sm" className="dialog-content">
+          <Dialog.Title className="dialog-title">
+            {confirming === "approve" ? "Approve this candidate?" : "Land these changes?"}
+          </Dialog.Title>
+          <Dialog.Description className="dialog-description">
+            {confirming === "approve"
+              ? <>Approve commit <code>{mission.candidateSha?.slice(0, 12)}</code> after {mission.checks.length} passing check{mission.checks.length === 1 ? "" : "s"}. Approval does not change the repository; landing is a separate step.</>
+              : <>Land commit <code>{mission.candidateSha?.slice(0, 12)}</code> on <strong>{repository?.defaultBranch ?? "the default branch"}</strong> of <strong>{repository?.name ?? "this repository"}</strong>. You can undo it later with Revert.</>}
+          </Dialog.Description>
+          <div className="dialog-actions">
+            <Button variant="secondary" size="base" type="button" onClick={() => setConfirming(null)}>Cancel</Button>
+            <Button variant="primary" size="base" type="button" icon={confirming === "approve" ? ShieldCheckIcon : GitMergeIcon} onClick={() => { const action = confirming; setConfirming(null); if (action) void act(action); }}>
+              {confirming === "approve" ? "Approve" : "Land changes"}
+            </Button>
+          </div>
+        </Dialog>
+      </Dialog.Root>
     </>
   );
 }
