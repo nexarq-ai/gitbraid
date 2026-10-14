@@ -196,3 +196,10 @@ export interface ModelConnectionsSnapshot {
   workersAICatalog: ModelConnection[];
   discovery: 'manual';
 }
+
+export type IssueState = 'open' | 'closed';
+export type IssueCloseReason = 'completed' | 'not_planned';
+export interface IssueComment { id: string; authorId: string; body: string; createdAt: string; editedAt?: string }
+export interface Issue { repositoryId: string; number: number; title: string; body: string; state: IssueState; closedReason?: IssueCloseReason; labels: string[]; assignees: string[]; missionIds: string[]; authorId: string; createdAt: string; updatedAt: string; closedAt?: string; commentCount: number }
+export interface IssueDetail extends Issue { comments: IssueComment[] }
+export interface IssueList { items: Issue[]; total: number; openCount: number; closedCount: number; labels: string[]; offset: number; nextOffset: number | null }

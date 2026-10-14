@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { CreateMissionInput, Mission, MissionAttempt, MissionEvent, ModelConnection, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import type { CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, ModelConnection, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
@@ -8,6 +8,7 @@ import { assertReviewClear, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
 import type { ImportReceipt, ImportResult } from './repository-import';
 import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
+import { applyIssueChange, issueFingerprint, listIssues, readIssue, type IssueActor, type IssueChange, type IssueQuery } from './issues';
 
 interface Receipt<T> { fingerprint: string; result: T }
 interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
@@ -76,6 +77,12 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   saveRepository(repository: Repository): void {
     this.store.put(`repository:${repository.id}`, repository);
   }
+
+  listIssues(query: IssueQuery): IssueList { return listIssues(this.store, query); }
+
+  getIssue(number: number): IssueDetail | undefined { return readIssue(this.store, number); }
+
+  changeIssue(key: string, change: IssueChange, actor: IssueActor): IssueDetail { return readIssue(this.store, this.mutate(key, issueFingerprint(change, actor), () => applyIssueChange(this.store, change, actor)))!; }
 
   getModelConnections(): ModelConnection[] { return this.store.get<ModelConnection[]>('model-connections') ?? defaultModelConnections(); }
 
