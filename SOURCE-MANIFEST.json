@@ -275,8 +275,8 @@
     },
     {
       "path": "src/ui/main.tsx",
-      "size": 924,
-      "sha256": "e4be291600e316a582d154925ad84a0011dd2c54d5243b8dca7975b549a47cb9"
+      "size": 824,
+      "sha256": "f6aab85eed23135740d7f294d0412a4b25c05024aa40248712abdee74de9879d"
     },
     {
       "path": "src/ui/McpConnections.tsx",
@@ -460,8 +460,8 @@
     },
     {
       "path": "src/worker/env.ts",
-      "size": 1598,
-      "sha256": "1899c53cb12b81cac08f671187c2d4ed9058025d7a2440c26ba45b0079384690"
+      "size": 1614,
+      "sha256": "ea3d4d11f03603596d999595ea038b66dbd73edb0e9afe4b32de7ae73fb63bfc"
     },
     {
       "path": "src/worker/execution.ts",
