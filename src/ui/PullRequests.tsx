@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
-import { ArrowClockwiseIcon, ArrowRightIcon, GitPullRequestIcon, PlusIcon, ShieldCheckIcon, XCircleIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, ArrowRightIcon, GitPullRequestIcon, PlusIcon, RobotIcon, ShieldCheckIcon, XCircleIcon } from "@phosphor-icons/react";
 import type { Mission, PullRequestState } from "../shared/types";
 import { pullRequestState } from "../shared/pull-requests";
 import { request } from "./api";
-import { EmptyState, relativeTime } from "./components";
+import { EmptyState, Status, relativeTime } from "./components";
 import { navigate as goTo } from "./router";
 import "./pull-requests.css";
 
@@ -22,36 +22,46 @@ export function PullRequestBadge({ mission }: { mission: Mission }) {
   return <span className={`pill ${tone}`}><span className="pill-dot" />{label}</span>;
 }
 
+type Source = "all" | "agents" | "branches";
+
+const isOpen = (mission: Mission) => mission.branchChange ? !["landed", "closed"].includes(pullRequestState(mission)) : !["integrated", "cancelled"].includes(mission.status);
+
 export default function PullRequests({ repositoryId, missions, canContribute }: { repositoryId: string; missions: Mission[]; canContribute: boolean }) {
   const [filter, setFilter] = useState<"open" | "closed" | "all">("open");
-  const pulls = missions.filter(mission => mission.branchChange).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const isOpen = (mission: Mission) => !["landed", "closed"].includes(pullRequestState(mission));
+  const [source, setSource] = useState<Source>("all");
+  const pulls = missions.filter(mission => source === "all" || (source === "branches") === !!mission.branchChange).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const shown = pulls.filter(mission => filter === "all" || (filter === "open") === isOpen(mission));
+  const agentCount = missions.filter(mission => !mission.branchChange).length;
+  const newPull = <Button variant="primary" size="base" icon={PlusIcon} disabled={!canContribute} onClick={() => goTo(`repository/${repositoryId}/pulls/new`)}>New pull request</Button>;
   return (
     <>
       <div className="repository-work-heading">
-        <div><h2>Pull requests</h2><p>Propose a pushed branch for review. Checks run on the exact head, and approval pins that revision before it lands.</p></div>
-        <Button variant="primary" size="base" icon={PlusIcon} disabled={!canContribute} onClick={() => goTo(`repository/${repositoryId}/pulls/new`)}>New pull request</Button>
+        <div><h2>Pull requests</h2><p>Every proposed change to this repository. AI agents open one when you start a mission; people open one from a pushed branch. Both run checks, need approval of the exact commit, and land the same way.</p></div>
+        {newPull}
       </div>
       <div className="repository-work-toolbar">
-        <div className="pull-filter" role="group" aria-label="Filter pull requests">
+        <div className="pull-filter" role="group" aria-label="Filter by state">
           {(["open", "closed", "all"] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{value === "open" ? `Open (${pulls.filter(isOpen).length})` : value === "closed" ? `Closed (${pulls.filter(mission => !isOpen(mission)).length})` : "All"}</button>)}
+        </div>
+        <div className="pull-filter ai-only" role="group" aria-label="Filter by author">
+          {([["all", "Everyone"], ["agents", `AI agents (${agentCount})`], ["branches", `Branches (${missions.length - agentCount})`]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={source === value} onClick={() => setSource(value)}>{label}</button>)}
         </div>
         <a className="text-link" href={`/repository/${repositoryId}/settings/branches`}><ShieldCheckIcon size={13} />Branches &amp; protection</a>
       </div>
       <section className="panel">
         {!shown.length ? (
-          <EmptyState icon={<GitPullRequestIcon size={25} />} title={pulls.length ? "No matching pull requests" : "No pull requests yet"} description={pulls.length ? "Choose another filter." : "Push a branch, then open a pull request to run checks and request review."} action={pulls.length ? <Button onClick={() => setFilter("all")}>Show all</Button> : <Button disabled={!canContribute} onClick={() => goTo(`repository/${repositoryId}/pulls/new`)}>New pull request</Button>} />
+          <EmptyState icon={<GitPullRequestIcon size={25} />} title={pulls.length ? "No matching pull requests" : "No pull requests yet"} description={pulls.length ? "Choose another filter." : "Ask AI agents to make a change, or push a branch and open a pull request from it."} action={pulls.length ? <Button onClick={() => { setFilter("all"); setSource("all"); }}>Show all</Button> : newPull} />
         ) : (
           <div className="table-scroll">
             <table className="resource-table">
-              <thead><tr><th>Pull request</th><th>State</th><th>Head</th><th>Checks</th><th>Updated</th></tr></thead>
+              <thead><tr><th>Pull request</th><th>State</th><th>Checks</th><th>Updated</th></tr></thead>
               <tbody>
                 {shown.map(mission => (
                   <tr key={mission.id}>
-                    <td><div className="resource-name"><GitPullRequestIcon size={18} /><div><a href={`/mission/${mission.id}`}>{mission.title}</a><small className="pull-branches"><code>{mission.branchChange!.branch}</code><ArrowRightIcon size={11} /><code>{mission.branchChange!.targetBranch}</code></small></div></div></td>
-                    <td><PullRequestBadge mission={mission} /></td>
-                    <td><code>{mission.branchChange!.headSha.slice(0, 12)}</code></td>
+                    <td><div className="resource-name">{mission.branchChange ? <GitPullRequestIcon size={18} /> : <RobotIcon size={18} />}<div><a href={`/mission/${mission.id}`}>{mission.title}</a>{mission.branchChange
+                      ? <small className="pull-branches"><code>{mission.branchChange.branch}</code><ArrowRightIcon size={11} /><code>{mission.branchChange.targetBranch}</code><span>head <code>{mission.branchChange.headSha.slice(0, 12)}</code></span></small>
+                      : <small className="pull-branches"><span>{mission.skillChange ? "Skill change" : mission.revertChange ? "Revert" : `AI mission${mission.runs.length ? ` · ${mission.runs.length} agent${mission.runs.length === 1 ? "" : "s"}` : ""}`}</span>{mission.candidateSha && <span>candidate <code>{mission.candidateSha.slice(0, 12)}</code></span>}</small>}</div></div></td>
+                    <td>{mission.branchChange ? <PullRequestBadge mission={mission} /> : <Status status={mission.status} />}</td>
                     <td><a className="text-link" href={`/mission/${mission.id}/checks`}>{mission.checks.length ? `${mission.checks.filter(check => check.status === "passed").length}/${mission.checks.length} passed` : "Not run"}</a></td>
                     <td>{relativeTime(mission.updatedAt)}</td>
                   </tr>

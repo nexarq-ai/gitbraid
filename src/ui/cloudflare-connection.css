@@ -101,3 +101,28 @@
 .cf-environment-field input[aria-invalid="true"] { border-color: #b42318; }
 
 .cf-reconnect-help { color: #77818d; font-size: 12px; }
+.cf-state-on { display: inline-flex; align-items: center; gap: 7px; color: #2f7a46; font-weight: 500; }
+.cf-account-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px 24px; margin: 0 0 20px; }
+.cf-account-facts dt { font-size: 12px; color: #77818d; margin-bottom: 4px; }
+.cf-account-facts dd { margin: 0; font-size: 14px; color: #252b32; overflow-wrap: anywhere; }
+.cf-account-facts code { font-size: 12px; }
+.cf-scopes { border-top: 1px solid #e7ebf1; padding-top: 16px; }
+.cf-scopes h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: #343b45; }
+.cf-scopes ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; }
+.cf-scopes li { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #f3f5f8; color: #454f5b; }
+.cf-resource-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.cf-resource-stats button { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 10px; align-items: center; text-align: left; padding: 12px 14px; border: 1px solid #e1e5ea; border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
+.cf-resource-stats button:hover { border-color: #b9c2ce; }
+.cf-resource-stats button[aria-pressed="true"] { border-color: #f38020; box-shadow: 0 0 0 1px #f38020; }
+.cf-resource-stats .cf-resource-symbol { grid-row: span 2; }
+.cf-resource-stats strong { font-size: 20px; font-weight: 600; color: #252b32; line-height: 1.1; }
+.cf-resource-stats span:last-child { font-size: 12px; color: #77818d; }
+.cf-account-table td { vertical-align: middle; }
+.cf-account-table .cf-resource-identity { display: flex; flex-direction: column; gap: 2px; }
+.cf-account-table .cf-resource-id { font-size: 11px; color: #8a939e; font-family: ui-monospace, monospace; }
+.cf-muted { color: #8a939e; font-size: 13px; }
+.cf-repository-links { display: grid; gap: 8px; }
+.cf-repository-links a { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid #e1e5ea; border-radius: 6px; text-decoration: none; color: #252b32; }
+.cf-repository-links a:hover { border-color: #b9c2ce; }
+.cf-repository-links span { font-size: 12px; color: #77818d; }
+@media (max-width: 900px) { .cf-resource-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

@@ -145,8 +145,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 73288,
-      "sha256": "20cfb7a4ac6dd4460ca091f827df83b0c285ce548090ce9651a8c3e3f75cd5f8"
+      "size": 73347,
+      "sha256": "c041246fd6be58d9d74f715ed26f6a62c57cd5de628a68c0a330394952665746"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -225,13 +225,13 @@
     },
     {
       "path": "src/ui/cloudflare-connection.css",
-      "size": 8884,
-      "sha256": "64afa92fa7c3271ea62b3d00202223d3a46907ae6c4601f8a5c61cb409cbe5f8"
+      "size": 11256,
+      "sha256": "5f4bda3d5f456e3a60f1cb98a9e266a471beaaf1d68735832cf8cc90c4fc702b"
     },
     {
       "path": "src/ui/CloudflareConnection.tsx",
-      "size": 28364,
-      "sha256": "c4c332bfbe6dfcd46d8a673b8c155b01196feee7871136f570ac3eaac433020a"
+      "size": 39287,
+      "sha256": "94944bea21c3ae889026eff334118c7241b193246a2b1990cd7be165cc0f328f"
     },
     {
       "path": "src/ui/components.tsx",
@@ -285,8 +285,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 48382,
-      "sha256": "758248134f8f5d73f840e69df01797e94fcf466249d49e91abd161f1c89c8468"
+      "size": 48368,
+      "sha256": "8cc6c91fdee905f37983331de125dcf330bfa5ee63843ea7ee1da0da9ab270b2"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -315,18 +315,18 @@
     },
     {
       "path": "src/ui/pull-requests.css",
-      "size": 3752,
-      "sha256": "e7c08f22a47a982cd222193296155686fb6afec4972c716d5f0b8f0ae367320f"
+      "size": 4746,
+      "sha256": "c325a28ba086c0a6c7b123850df33113ee8e6ddd5b9668403a26e9373f2f565b"
     },
     {
       "path": "src/ui/PullRequestCreate.tsx",
-      "size": 5995,
-      "sha256": "73099148bd13769f8d631072ed9eb942b39283a97e2161a2a408e6914edda7f7"
+      "size": 7244,
+      "sha256": "3eac7f67021d280055ac1c2b9615461a487daf2bbb9a9f57ba4b30cc13156652"
     },
     {
       "path": "src/ui/PullRequests.tsx",
-      "size": 7758,
-      "sha256": "d8ebee14e6db723f5c4ddd4061796936934d7c3f904f301284eb81d27d6623cf"
+      "size": 9001,
+      "sha256": "d6e425e6defac5d066b61ee0d76248ff44c9b2eb0bfdf7f5ae6e67ad3f7b8a2a"
     },
     {
       "path": "src/ui/QuickSearch.tsx",
@@ -385,8 +385,8 @@
     },
     {
       "path": "src/ui/router.ts",
-      "size": 3496,
-      "sha256": "e85ce3e3f9401198acaea56861b04555b9836083f1bbc4f06c094fe9426115d9"
+      "size": 3715,
+      "sha256": "525fe568d29ce93a00cac5aaa9c8c4ec146c44289fdab626e06bfe7ca1a1001a"
     },
     {
       "path": "src/ui/SelfHostedHome.tsx",

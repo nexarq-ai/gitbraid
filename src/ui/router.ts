@@ -22,6 +22,8 @@ export function routeFromLocation(pathname: string, hash: string): string {
 
 export function routeUrl(route: string): string {
   if (!route || route === "home") return "/";
+  const query = route.indexOf("?");
+  if (query > 0 && !route.startsWith("invite?")) return `${routeUrl(route.slice(0, query))}${route.slice(query)}`;
   if (route.startsWith("invite?")) return `/invite#${route.slice("invite?".length)}`;
   const [head, ...rest] = route.split("/");
   if (head in TOKEN_ROUTES && rest.length) return `/${head}#${rest.join("/")}`;
@@ -34,7 +36,7 @@ export function currentRoute(): string {
 
 export function navigate(route: string, replace = false): void {
   const url = routeUrl(route);
-  if (url !== `${window.location.pathname}${window.location.hash}`) window.history[replace ? "replaceState" : "pushState"](null, "", url);
+  if (url !== `${window.location.pathname}${window.location.search}${window.location.hash}`) window.history[replace ? "replaceState" : "pushState"](null, "", url);
   window.dispatchEvent(new Event(ROUTE_EVENT));
 }
 
@@ -62,7 +64,8 @@ export function onRouteChange(listener: () => void): () => void {
     const samePage = url.pathname === window.location.pathname && url.search === window.location.search;
     if (samePage && url.hash && !(trimSlashes(url.pathname) in TOKEN_ROUTES)) return;
     event.preventDefault();
-    if (`${url.pathname}${url.hash}` !== `${window.location.pathname}${window.location.hash}`) window.history.pushState(null, "", `${url.pathname}${url.hash}`);
+    const target = `${url.pathname}${url.search}${url.hash}`;
+    if (target !== `${window.location.pathname}${window.location.search}${window.location.hash}`) window.history.pushState(null, "", target);
     window.scrollTo(0, 0);
     listener();
   };

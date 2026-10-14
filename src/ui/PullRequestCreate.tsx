@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
-import { GitBranchIcon, GitPullRequestIcon, LockSimpleIcon } from "@phosphor-icons/react";
+import { GitBranchIcon, GitPullRequestIcon, LockSimpleIcon, RobotIcon } from "@phosphor-icons/react";
 import type { BranchList, CreatePullRequestInput, Mission, Repository } from "../shared/types";
 import { request } from "./api";
 import { EmptyState, ErrorNotice } from "./components";
@@ -10,7 +10,16 @@ import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 import "./pull-requests.css";
 
-export default function PullRequestCreate({ repository, canContribute, canExecute, onCreated }: { repository: Repository; canContribute: boolean; canExecute: boolean; onCreated: () => void }) {
+function PullChoice({ repository, onAskAgents }: { repository: Repository; onAskAgents: () => void }) {
+  return (
+    <div className="pull-choice" role="group" aria-label="How to make this change">
+      <button type="button" className="ai-only" aria-pressed="false" onClick={onAskAgents}><RobotIcon size={20} /><div><strong>Ask AI agents</strong><span>Describe the change. Agents write it in isolated forks of {repository.name}, and their result becomes this pull request.</span></div></button>
+      <button type="button" aria-pressed="true"><GitBranchIcon size={20} /><div><strong>From a branch</strong><span>Propose a branch you pushed with Git or created on the Branches page.</span></div></button>
+    </div>
+  );
+}
+
+export default function PullRequestCreate({ repository, canContribute, canExecute, onCreated, onAskAgents }: { repository: Repository; canContribute: boolean; canExecute: boolean; onCreated: () => void; onAskAgents: () => void }) {
   const [list, setList] = useState<BranchList | null>(null);
   const [loadError, setLoadError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -25,7 +34,7 @@ export default function PullRequestCreate({ repository, canContribute, canExecut
     let active = true;
     setLoadError("");
     request<BranchList>(`/api/repositories/${encodeURIComponent(repository.id)}/branches`)
-      .then(result => { if (!active) return; setList(result); setBranch(current => current || result.branches.find(item => !item.default)?.name || ""); })
+      .then(result => { if (!active) return; setList(result); const requested = new URLSearchParams(window.location.search).get("branch"); setBranch(current => current || (requested && result.branches.some(item => item.name === requested && !item.default) ? requested : "") || result.branches.find(item => !item.default)?.name || ""); })
       .catch(failure => { if (active) setLoadError(failure instanceof Error ? failure.message : "Branches could not be loaded."); });
     return () => { active = false; };
   }, [repository.id, attempt]);
@@ -57,13 +66,17 @@ export default function PullRequestCreate({ repository, canContribute, canExecut
   const gitUrl = list.gitUrl || `${location.origin}/git/${repository.name}.git`;
   if (!candidates.length)
     return (
-      <section className="panel pull-create">
+      <div className="pull-create">
+      <PullChoice repository={repository} onAskAgents={onAskAgents} />
+      <section className="panel">
         <EmptyState icon={<GitBranchIcon size={25} />} title="Push a branch first" description={`A pull request proposes a branch other than ${list.defaultBranch}. Push your work to a new branch, then come back.`} />
-        <div className="pull-git-steps"><pre className="code-output">{`git push ${quoteGitArgument(gitUrl)} HEAD:refs/heads/my-branch`}</pre><p>Use any username. The password is a personal session token from <a href="/settings">Settings → Account</a>.</p></div>
+        <div className="pull-git-steps"><pre className="code-output">{`git push ${quoteGitArgument(gitUrl)} HEAD:refs/heads/my-branch`}</pre><p>Use any username. The password is a personal session token from <a href="/settings">Settings → Account</a>. You can also create a branch on the <a href={`/repository/${repository.id}/settings/branches`}>Branches</a> page.</p></div>
       </section>
+      </div>
     );
   return (
     <form className="pull-create" onSubmit={event => void submit(event)}>
+      <PullChoice repository={repository} onAskAgents={onAskAgents} />
       <section className="panel">
         <div className="panel-header"><h2>Open a pull request</h2></div>
         <div className="panel-body">

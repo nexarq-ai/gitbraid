@@ -294,7 +294,7 @@ export default function MissionDetail({
       <>
         <button className="header-back" onClick={onBack}>
           <ArrowLeftIcon size={13} />
-          Repository missions
+          Pull requests
         </button>
         {loadError ? (
           <ErrorNotice message={loadError} />
@@ -373,14 +373,14 @@ export default function MissionDetail({
     <>
       <button className="header-back" onClick={onBack}>
         <ArrowLeftIcon size={13} />
-        Repository missions
+        Pull requests
       </button>
       <div className="page-heading detail-heading">
         <div>
           <h1>{mission.title}</h1>
           <div className="detail-meta">
             <Status status={mission.status} />
-            <span>{mission.branchChange ? "Pull request" : mission.mode === "race" ? "Race mission" : "Mission"}</span>
+            <span>{mission.branchChange ? "Pull request" : mission.mode === "race" ? "AI race" : "AI mission"}</span>
             <span>
               <GitBranchIcon size={13} />
               {repository?.name ?? "Repository"}

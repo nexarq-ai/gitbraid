@@ -5,7 +5,19 @@
 .repository-work-toolbar > .text-link { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: 13px; }
 .resource-name a { color: #222; font-weight: 600; text-decoration: none; }
 .resource-name a:hover { text-decoration: underline; }
-.pull-branches { display: inline-flex; align-items: center; gap: 5px; }
+.pull-branches { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #626b79; }
+.pull-branches span { margin-left: 4px; }
+.pull-branches > span:first-child { margin-left: 0; }
+.repository-work-toolbar { flex-wrap: wrap; }
+.pull-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+.pull-choice button { display: flex; gap: 12px; align-items: flex-start; text-align: left; padding: 16px 18px; border: 1px solid #e1e5ea; border-radius: 8px; background: #fff; font: inherit; cursor: pointer; color: #222; }
+.pull-choice button[aria-pressed="true"] { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb; }
+.pull-choice button:hover { border-color: #b9c2ce; }
+.pull-choice strong { display: block; font-size: 14px; margin-bottom: 3px; }
+.pull-choice span { font-size: 13px; color: #626b79; line-height: 1.5; }
+.pull-choice svg { flex-shrink: 0; margin-top: 2px; color: #2563eb; }
+.ai-off .pull-choice { grid-template-columns: 1fr; }
+@media (max-width: 640px) { .pull-choice { grid-template-columns: 1fr; } }
 .pull-branches code, .pull-panel-header code, .pull-create-meta code { font-size: 12px; }
 .pull-panel { margin-bottom: 20px; padding: 14px 18px; }
 .pull-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
