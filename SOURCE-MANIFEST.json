@@ -85,8 +85,8 @@
     },
     {
       "path": "README.md",
-      "size": 2299,
-      "sha256": "f8c5245ecdaa4ac55b7aebb31277422d20043ef5839981d70756dcbb9126a3df"
+      "size": 4768,
+      "sha256": "a25af1c91806744df8dab5cd365f54149bf8f70d91568bdaf3a1bb030b3a5471"
     },
     {
       "path": "runner/Dockerfile",
