@@ -85,8 +85,8 @@
     },
     {
       "path": "runner/sandbox.ts",
-      "size": 14045,
-      "sha256": "830ae9c5dacb4a3e122153706b633f69c5102292c39013e6ab97b6dd21a666b3"
+      "size": 14074,
+      "sha256": "2d8178a3165671230d75026f19386e27391a7b059c5ed13248697f4699b57b14"
     },
     {
       "path": "scripts/deploy-self-hosted.mjs",
@@ -385,8 +385,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 42834,
-      "sha256": "57a42ff1080cdc514b1c2fd4d7debe3f2c69fd6cfd7d3e44599e09f3e7685359"
+      "size": 45677,
+      "sha256": "579137307916fd0281bc8e40777dd1488af278bfb471afbd2bba9a2993ae574d"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -455,8 +455,8 @@
     },
     {
       "path": "src/worker/repository-policy.ts",
-      "size": 3850,
-      "sha256": "9ca57508449811068b0dd0d5674719366a55cf492a946a33bb5c22ab954f96da"
+      "size": 5854,
+      "sha256": "125ea9a1e9253f89f061088e8cb6a2c1c9f9576f6becce86f4b4f8789a830c93"
     },
     {
       "path": "src/worker/repository-skills.ts",

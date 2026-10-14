@@ -128,7 +128,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     await container.interceptOutboundHttps('*', outbound);
   }
 
-  async install(): Promise<CommandResult> {
+  async install(mode: 'ci' | 'install' = 'ci'): Promise<CommandResult> {
     const container = this.ctx.container;
     const repositories = this.#repositories;
     if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
@@ -139,7 +139,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     await container.interceptOutboundHttps('*', registry);
     try {
       // --ignore-scripts: package lifecycle scripts must not run while the registry is reachable
-      return await this.#executeCommand(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
+      return await this.#executeCommand(['npm', mode, '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
     } finally { await this.#restrictToGit(repositories); }
   }
 
