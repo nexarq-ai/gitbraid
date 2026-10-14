@@ -198,7 +198,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     finally { clearTimeout(timer); }
   }
 
-  async startPreview(command = 'node src/preview.mjs'): Promise<void> {
+  async startPreview(command: string | string[] = 'node src/preview.mjs', readinessMs = 15_000): Promise<void> {
     const container = this.ctx.container;
     if (!container?.running) throw new Error('Preview container is not running');
     const controller = new AbortController();
@@ -207,12 +207,12 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         controller.abort();
-        reject(new Error('Preview did not become HTTP-ready within 15 seconds'));
-      }, 15_000);
+        reject(new Error(`Preview did not answer HTTP on port 8080 within ${Math.round(readinessMs / 1000)} seconds`));
+      }, readinessMs);
     });
     try {
       const process = await Promise.race([
-        container.exec(['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
+        container.exec(Array.isArray(command) ? command : ['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
         timeout,
       ]);
       const exited = process.exitCode.then((code) => { throw new Error(`Preview process exited before readiness (exit ${code})`); });

@@ -6,7 +6,7 @@ import type { IntegrationStatus, Mission, Repository, Workspace } from '../share
 import { createArtifactsRepository, repositoryHead } from './artifacts';
 import { ApiError, assertMutationOrigin, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString } from './domain';
 import type { AppEnv } from './env';
-import { executionReadiness, integrateCandidate, IntegrationFailure, prepareCandidatePreview } from './execution';
+import { executionReadiness, integrateCandidate, IntegrationFailure, prepareCandidatePreview, PreviewFailure } from './execution';
 import { handleMcp, mcpToolNames } from './mcp';
 import { PREVIEW_HEARTBEAT_MS, startWithDurableDispatch } from './coordinator';
 import type { Principal, Action } from './security';
@@ -471,6 +471,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
         } catch (error) {
           try { await coordinator.previewFailed(mission.id, claim.claimId); } catch {}
           if (sandboxName) await env.SANDBOX.getByName(sandboxName).destroy().catch(() => {});
+          if (error instanceof PreviewFailure) throw new ApiError(502, 'PREVIEW_FAILED', error.message);
           throw error;
         } finally {
           finished = true;

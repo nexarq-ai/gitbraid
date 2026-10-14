@@ -6,6 +6,7 @@ import { validateRepositorySkillChange } from './skill-edit';
 import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { inferenceMessage, ModelResponseError, type InputItem, type ModelMessage } from './model-adapter';
 export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
+import { previewPlan } from './preview-plan';
 import { DEFAULT_EDITABLE, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
 
 export interface SandboxRunner {
@@ -14,7 +15,7 @@ export interface SandboxRunner {
   destroy(): Promise<void>;
   install?(mode?: 'ci' | 'install'): Promise<CommandResult>;
   check?(script: string, timeoutMs: number): Promise<CommandResult>;
-  startPreview?(command?: string): Promise<void>;
+  startPreview?(command?: string | string[], readinessMs?: number): Promise<void>;
   preview?(request: Request): Promise<Response>;
 }
 export interface ExecutionEnv {
@@ -646,6 +647,13 @@ export async function integrateCandidate(env: ExecutionEnv, { repository, missio
   }
 }
 
+export class PreviewFailure extends Error {
+  constructor(message: string) {
+    super(message.slice(0, 700));
+    this.name = 'PreviewFailure';
+  }
+}
+
 export async function prepareCandidatePreview(env: ExecutionEnv, { mission, previewAttemptId, assertAuthority = unrestricted }: IntegrationInput & { previewAttemptId: string }): Promise<{ sandboxName: string; candidateSha: string }> {
   if (mission.authorization && assertAuthority === unrestricted) throw new Error('Preview authority guard is required');
   if (!/^[a-f0-9-]{36}$/.test(previewAttemptId)) throw new Error('Invalid preview attempt ID');
@@ -661,9 +669,20 @@ export async function prepareCandidatePreview(env: ExecutionEnv, { mission, prev
     await sandbox.prepare([{ ...fork, write: false }]);
     await clone(sandbox, fork, mission.candidateSha);
     const policy = mission.baseSha ? await loadPolicy(sandbox, mission.baseSha, '') : undefined;
-    if (policy?.install) await installDependencies(sandbox, assertAuthority);
-    await assertAuthority();
-    await sandbox.startPreview(policy?.previewCommand);
+    const files = (await checked(sandbox, ['git', 'ls-files'])).split('\n').filter(Boolean);
+    const manifest = files.includes('package.json') ? await sandbox.command(['cat', 'package.json'], '/workspace/repo') : undefined;
+    const plan = previewPlan(files, manifest?.exitCode === 0 ? manifest.stdout : null, { command: policy?.previewCommand, install: policy?.install });
+    try {
+      if (plan.install) await installDependencies(sandbox, assertAuthority, async () => true, plan.install);
+      await assertAuthority();
+      await sandbox.startPreview(plan.argv, plan.readinessMs);
+    } catch (error) {
+      throw new PreviewFailure(`Preview could not start using ${plan.description}. ${error instanceof Error ? error.message : 'The preview process failed.'}`);
+    }
     return { sandboxName, candidateSha: mission.candidateSha };
-  } catch (error) { await sandbox.destroy(); throw error; }
+  } catch (error) {
+    await sandbox.destroy();
+    if (error instanceof PreviewFailure) throw error;
+    throw new PreviewFailure(`Preview could not prepare the candidate. ${error instanceof Error ? error.message : 'The preview runner failed.'}`);
+  }
 }
