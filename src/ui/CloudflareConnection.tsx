@@ -80,7 +80,6 @@ function CloudflareAccount({ status, accounts, resources, repositories, busy, ac
           <div><dt>Account</dt><dd><strong>{status.account.name}</strong></dd></div>
           <div><dt>Account ID</dt><dd><code>{status.account.id}</code></dd></div>
           {status.identity?.email && <div><dt>Signed in as</dt><dd>{status.identity.email}</dd></div>}
-          {status.expiresAt && <div><dt>Authorization renews</dt><dd>{new Date(status.expiresAt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}</dd></div>}
         </dl> : <p>Signed in to Cloudflare. Choose which account this workspace uses.</p>}
         {(!status.account || accounts.length > 1) && <div className="cf-form-row"><label htmlFor="cf-account">{status.account ? "Switch account" : "Cloudflare account"}<select id="cf-account" value={accountId} onChange={(event) => onAccount(event.target.value)} disabled={!!busy}><option value="">Choose an account</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><Button variant="secondary" size="base" disabled={!accountId || accountId === status.account?.id || !!busy} onClick={onUseAccount}>Use account</Button></div>}
         {!!status.scopes?.length && <div className="cf-scopes"><h3>What Gitflare may do</h3><ul>{status.scopes.map((scope) => <li key={scope}>{scopeLabels[scope] ?? scope}</li>)}</ul></div>}

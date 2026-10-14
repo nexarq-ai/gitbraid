@@ -1279,6 +1279,7 @@ function RepositoryDetail({
           size="base"
           icon={PlusIcon}
           disabled={!canContribute}
+          className={tab === "pulls" || tab === "proposals" ? "is-hidden" : undefined}
           onClick={() => onTabChange("pulls/new")}
         >
           New pull request

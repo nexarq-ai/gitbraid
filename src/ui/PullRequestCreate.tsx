@@ -59,8 +59,7 @@ export default function PullRequestCreate({ repository, canContribute, canExecut
     }
   }
 
-  if (loadError) return <ErrorNotice message={loadError} onRetry={() => setAttempt(value => value + 1)} />;
-  if (!list) return <RouteProgress />;
+  if (loadError || !list) return <div className="pull-create"><PullChoice repository={repository} onAskAgents={onAskAgents} />{loadError ? <ErrorNotice message={loadError} onRetry={() => setAttempt(value => value + 1)} /> : <RouteProgress />}</div>;
   const candidates = list.branches.filter(item => !item.default);
   const selected = candidates.find(item => item.name === branch);
   const gitUrl = list.gitUrl || `${location.origin}/git/${repository.name}.git`;

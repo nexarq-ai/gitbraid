@@ -2972,3 +2972,4 @@ a svg {
 .confirm-dialog .dialog-description code {
   font-size: 13px;
 }
+.is-hidden { visibility: hidden; }

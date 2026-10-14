@@ -145,8 +145,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 73347,
-      "sha256": "c041246fd6be58d9d74f715ed26f6a62c57cd5de628a68c0a330394952665746"
+      "size": 73434,
+      "sha256": "28fa22bc11a641ddcfa9b128ac098129080ceb34b99be8fd92b2ec85b4d2af6f"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -230,8 +230,8 @@
     },
     {
       "path": "src/ui/CloudflareConnection.tsx",
-      "size": 39287,
-      "sha256": "94944bea21c3ae889026eff334118c7241b193246a2b1990cd7be165cc0f328f"
+      "size": 39094,
+      "sha256": "49d071b469044d33ff9101800e604575991b0abd2e055b96158b51d55da7b458"
     },
     {
       "path": "src/ui/components.tsx",
@@ -320,8 +320,8 @@
     },
     {
       "path": "src/ui/PullRequestCreate.tsx",
-      "size": 7244,
-      "sha256": "3eac7f67021d280055ac1c2b9615461a487daf2bbb9a9f57ba4b30cc13156652"
+      "size": 7347,
+      "sha256": "dc830d2973e2030ac84a9722b04225765e031ae0341c56e6ba8bd67b0ccb5faa"
     },
     {
       "path": "src/ui/PullRequests.tsx",
@@ -395,8 +395,8 @@
     },
     {
       "path": "src/ui/styles.css",
-      "size": 62362,
-      "sha256": "66465de497c88fe6754eed0cf7735829fb3ef9a7468bc1340e12cce2a1334f92"
+      "size": 62397,
+      "sha256": "4c941847a7aa9d5187be5373ae86916f77fa67e1ac05c1bd44334ba7bfc4a0ed"
     },
     {
       "path": "src/ui/WorkspaceLoader.tsx",
