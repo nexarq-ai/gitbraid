@@ -7,6 +7,8 @@ interface RunnerEnv { ARTIFACTS: ArtifactsBinding; RUNNER_IMAGE?: string }
 interface OutboundProps { repositories: GitPermission[] }
 
 const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
+// Vite-based dev and preview servers reject any Host other than localhost
+const PREVIEW_HOST = 'http://localhost:8080';
 
 export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
   async fetch(request: Request): Promise<Response> {
@@ -219,13 +221,13 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
       const port = container.getTcpPort(8080);
       for (;;) {
         const response = await Promise.race([
-          port.fetch(new Request('http://preview.internal/', { signal: controller.signal, redirect: 'manual' })).catch(() => null),
+          port.fetch(new Request(`${PREVIEW_HOST}/`, { signal: controller.signal, redirect: 'manual' })).catch(() => null),
           exited,
           timeout,
         ]);
         if (response) {
           await Promise.race([response.body?.cancel(), exited, timeout]);
-          if (response.ok) return;
+          if (response.status < 500) return;
         }
         await Promise.race([new Promise((resolve) => { retryTimer = setTimeout(resolve, 250); }), exited, timeout]);
       }
@@ -243,7 +245,8 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const headers = new Headers(request.headers);
     headers.delete('authorization');
     headers.delete('cookie');
-    return container.getTcpPort(8080).fetch(new Request(`http://preview.internal${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
+    headers.delete('host');
+    return container.getTcpPort(8080).fetch(new Request(`${PREVIEW_HOST}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
   }
 
   async destroy(): Promise<void> {

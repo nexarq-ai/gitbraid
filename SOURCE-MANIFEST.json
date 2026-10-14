@@ -85,8 +85,8 @@
     },
     {
       "path": "runner/sandbox.ts",
-      "size": 14193,
-      "sha256": "018320da4cbcdbb2ea7b96ac869603b7a21efb5a61577393c3fbdaecbff978cf"
+      "size": 14336,
+      "sha256": "2481a5dd80bf0385038a9a9f62ad9601f5bba5b84946dce3f4f62bf7eeb2da82"
     },
     {
       "path": "scripts/deploy-self-hosted.mjs",
@@ -235,8 +235,8 @@
     },
     {
       "path": "src/ui/main.tsx",
-      "size": 815,
-      "sha256": "ca034afa7194c12129f6189ccbd190cdd70f0d271798e25a633b3a72cbec46cc"
+      "size": 846,
+      "sha256": "17be1c7577a04cc77d151fa708efe98463cc2a70347e0c5d9680daf92add5025"
     },
     {
       "path": "src/ui/McpConnections.tsx",
@@ -330,8 +330,8 @@
     },
     {
       "path": "src/ui/styles.css",
-      "size": 61821,
-      "sha256": "28bb2b75380340dc649849b4bed540a28836d45a1f1b346efe958ed78f044c15"
+      "size": 62196,
+      "sha256": "db5f9a3c57d20e4321f9b89f414f4eac6b08b9679c6e24eadd06d5169d16aa94"
     },
     {
       "path": "src/ui/WorkspaceLoader.tsx",

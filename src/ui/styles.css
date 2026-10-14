@@ -2956,3 +2956,10 @@ a svg {
   .proposal-create-footer,.proposal-create-footer>div{flex-wrap:wrap}
   .proposal-agent-grid{grid-template-columns:minmax(0,1fr)!important}
 }
+
+/* Kumo buttons and Tailwind's preflight svg are block-level, so text-align alone cannot centre them */
+.skills-empty > svg, .skills-empty > button,
+.proposal-no-repository > svg, .proposal-no-repository > button,
+.repository-import-dropzone > svg, .repository-import-dropzone > button,
+.repository-import-success > svg,
+.cf-resource-empty > button { margin-inline: auto; }
