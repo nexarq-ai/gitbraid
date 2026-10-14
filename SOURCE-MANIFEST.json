@@ -105,8 +105,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 5411,
-      "sha256": "a23a5ad5327079b599fd838c9f20f9b72b87f51aa34528384d8ee32e30709de0"
+      "size": 5553,
+      "sha256": "968a47cb98f7cb09c3153d861e5f7e9b5b6b1a6c3d31eabacf78363b5adc1299"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -350,8 +350,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 45665,
-      "sha256": "3696f0b469a8fff535018ac132ae5650fe1d07793125026322bf2f624e66b2dd"
+      "size": 45787,
+      "sha256": "db01d7045239604a3e2944ef307b8d2722dc2780bed4b24d5f9e3690b792b911"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -370,8 +370,8 @@
     },
     {
       "path": "src/worker/domain.ts",
-      "size": 8153,
-      "sha256": "10fb607daed8f824d9b5e0b0be2dd8304217e16eff1a11b038d8121cf1f6e6a9"
+      "size": 8453,
+      "sha256": "36de380b31a0d9ab3e70d7740eb865411a525d7be92600daafa6021ba0339b63"
     },
     {
       "path": "src/worker/email.ts",
@@ -385,8 +385,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 39464,
-      "sha256": "57e51814d80b7811a6f16aace7713f9ba9875f1139efa0a2e3ad7e811dc93e12"
+      "size": 41787,
+      "sha256": "f16a49b6e8ae8e289d958444e21248663b3a8f36f952bb195921eb946c35a5bd"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -405,8 +405,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 39426,
-      "sha256": "30a22f316a2beaf077af791ba7e01e6489d9f1a60dd733c115d8e10a1896bd86"
+      "size": 40021,
+      "sha256": "efedeb77e0a935b3be8d556edd5ae9fc273d7c02bc694997a70de54dd757f890"
     },
     {
       "path": "src/worker/mfa.ts",

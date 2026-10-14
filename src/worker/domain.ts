@@ -1,4 +1,5 @@
 import type { CreateMissionInput } from '../shared/types';
+import { validateAttachments } from './mission-context';
 import { modelIdentifier } from './model-config';
 
 export const MISSION_REQUEST_MAX_BYTES = 262_144;
@@ -58,6 +59,10 @@ export function missionInput(body: Record<string, unknown>): CreateMissionInput 
   if (body.acceptanceCriteria !== undefined) {
     if (!Array.isArray(body.acceptanceCriteria) || body.acceptanceCriteria.length > 12) throw new ApiError(400, 'INVALID_CRITERIA', 'Provide up to 12 acceptance criteria.');
     input.acceptanceCriteria = body.acceptanceCriteria.map((criterion) => requireString(criterion, 'Acceptance criterion', 500));
+  }
+  if (body.attachments !== undefined) {
+    const attachments = validateAttachments(body.attachments, (message) => { throw new ApiError(400, 'INVALID_ATTACHMENTS', message); });
+    if (attachments.length) input.attachments = attachments;
   }
   if (body.mode !== undefined) {
     if (body.mode !== 'combine' && body.mode !== 'race') throw new ApiError(400, 'INVALID_MODE', 'Choose combine or race.');
