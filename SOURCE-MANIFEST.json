@@ -480,8 +480,8 @@
     },
     {
       "path": "src/worker/model-config.ts",
-      "size": 5759,
-      "sha256": "8577b768f22e83b58d82cdaf9760a829760be5a5548cf9899b36479b29504ef4"
+      "size": 5894,
+      "sha256": "a669c7b9c48cbb2a7336286ef334a48e4146bc98b81b2a9af4b13756b8b24078"
     },
     {
       "path": "src/worker/oauth.ts",
