@@ -115,8 +115,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 5806,
-      "sha256": "c4fce20cc9a05ebe3d42f1a42cf73ba57c0ea87d9cf96c7bc78f98188b11d416"
+      "size": 6563,
+      "sha256": "201120a3614b23e94a36f8fe7deb5ba652d77c1e32a8b79479d5814079060289"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -140,8 +140,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 70809,
-      "sha256": "dd32e08ef80ebdfe4d1a3baa85ae0d893e1096e1633b8937e77f85492e22bb8c"
+      "size": 71160,
+      "sha256": "d61789f657dbcc7d8efe6758561473b99dd20c4a4fb00b41f6187877299c6198"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -249,9 +249,19 @@
       "sha256": "d91df9eea14e44efd3639cb7e21f3f16c804041cd5b211ff27fba10bf324ac3b"
     },
     {
+      "path": "src/ui/issues.css",
+      "size": 4590,
+      "sha256": "6f0101f887648549ea138623c424074b07ee194e72517b6226e144cbbd04268b"
+    },
+    {
+      "path": "src/ui/Issues.tsx",
+      "size": 20980,
+      "sha256": "2f587c49e52e5c1c1c6cb210e023d4ad00438fc06eaa69f9edb620c4f5d25bd9"
+    },
+    {
       "path": "src/ui/main.tsx",
-      "size": 846,
-      "sha256": "17be1c7577a04cc77d151fa708efe98463cc2a70347e0c5d9680daf92add5025"
+      "size": 869,
+      "sha256": "714b6d4f58c1d6bb1c42b3bfef69585c48ee9bc161d674485985012c12e86862"
     },
     {
       "path": "src/ui/McpConnections.tsx",
@@ -375,8 +385,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 46584,
-      "sha256": "650e880deed5a684be78ffcd5817b65ed56e704767dd10f6a804fef6966da390"
+      "size": 47145,
+      "sha256": "4f2a51afcb020befc4397b9efb92e9faf032ebf95333bd3d60aacdafa5de94c8"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -425,13 +435,18 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 55654,
-      "sha256": "43781c2fcd01bd26bf909c6161970b5eea3d5301ebaad15a65742469940ef224"
+      "size": 55867,
+      "sha256": "0dd10a4b1cc869bdf677350d6fa442642bd7148d4cea9fa41525fec04ce05841"
+    },
+    {
+      "path": "src/worker/issues.ts",
+      "size": 15220,
+      "sha256": "57c2d215cbb38407482aef384050b4127bb169c6f2ec2416b706642f366eb627"
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 42853,
-      "sha256": "f1c0818231d844e60521953bbaabe87f3d29702b031e200453aa8d217a99e929"
+      "size": 48232,
+      "sha256": "2bbb2d12524a6d2c01d92ef14300e144a7f82c23861024501a0cb0e0f6889e5c"
     },
     {
       "path": "src/worker/mfa.ts",
