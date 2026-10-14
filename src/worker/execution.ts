@@ -1,4 +1,5 @@
-import type { AgentRun, Check, FileChange, Mission, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
+import type { AgentRun, BranchChange, Check, FileChange, Mission, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
+import { branchName } from './branch-protection';
 import { forkRepository, validGitSha, type ArtifactInfo, type ArtifactsBinding } from './artifacts';
 import type { CommandResult, GitPermission } from '../../runner/sandbox';
 import { loadRepositorySkillContext } from './repository-skills';
@@ -323,7 +324,7 @@ async function touchedFiles(sandbox: SandboxRunner): Promise<string[] | null> {
   return status.stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean).sort().slice(0, 200);
 }
 
-async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, baseSha: string, policy: RepositoryPolicy, assertAuthority: AuthorityGuard, skillChange?: RepositorySkillChange, isActive: () => Promise<boolean> = async () => true): Promise<{ check: Check; changes: FileChange[] }> {
+async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, baseSha: string, policy: RepositoryPolicy, assertAuthority: AuthorityGuard, skillChange?: RepositorySkillChange, isActive: () => Promise<boolean> = async () => true, humanBranch = false): Promise<{ check: Check; changes: FileChange[] }> {
   const sandbox = env.SANDBOX.getByName(`${key}-verify`);
   try {
     await assertAuthority();
@@ -336,7 +337,8 @@ async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string,
     await checked(sandbox, ['git', 'merge-base', '--is-ancestor', baseSha, sha]);
     const statuses = await changesWithStatus(sandbox, [baseSha, sha]);
     const changedFiles = statuses.map((change) => change.path);
-    if (protectedChanges(statuses, policy).length) throw new Error('Verified candidate changed a protected test or dependency file');
+    if (!humanBranch && protectedChanges(statuses, policy).length) throw new Error('Verified candidate changed a protected test or dependency file');
+    if (humanBranch && policy.install && !policy.untested && changedFiles.some((path) => ['package.json', 'package-lock.json'].includes(path))) await installDependencies(sandbox, assertAuthority, isActive);
     if (skillChange) {
       if (changedFiles.length !== 1 || changedFiles[0] !== skillChange.path) throw new Error('Skill candidate changed files outside the requested skill');
       await verifySkillBytes(sandbox, skillChange);
@@ -375,6 +377,27 @@ export async function applyRevert(sandbox: SandboxRunner, change: RevertChange):
   const applied = await sandbox.command(['git', 'apply', '-R', '--index', '--3way', '/tmp/gitflare-revert.patch'], '/workspace/repo');
   if (applied.exitCode !== 0) throw new Error(`The landed change no longer reverts cleanly, because later commits changed the same lines: ${(applied.stderr || applied.stdout).trim().slice(0, 600)}`);
   return paths;
+}
+
+export type BranchMergeResult = { mode: 'fast-forward' | 'merge' } | { mode: 'conflict'; conflicts: string[]; output: string };
+
+export async function applyBranchMerge(sandbox: SandboxRunner, remote: string, change: BranchChange): Promise<BranchMergeResult> {
+  if (!validGitSha(change.headSha)) throw new Error('A pull request needs the exact branch head commit');
+  const branch = branchName(change.branch);
+  await checked(sandbox, ['git', 'fetch', '--no-tags', '--', remote, `refs/heads/${branch}`]);
+  const fetched = await checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
+  if (fetched !== change.headSha) throw new Error(`Branch ${branch} moved to ${fetched.slice(0, 12)} after this pull request recorded ${change.headSha.slice(0, 12)}. Use Update from branch to check the new head.`);
+  const target = await checked(sandbox, ['git', 'rev-parse', 'HEAD']);
+  if ((await sandbox.command(['git', 'merge-base', '--is-ancestor', change.headSha, target], '/workspace/repo')).exitCode === 0) throw new Error(`Branch ${branch} has no commits that are not already on ${change.targetBranch}`);
+  if ((await sandbox.command(['git', 'merge-base', '--is-ancestor', target, change.headSha], '/workspace/repo')).exitCode === 0) {
+    await checked(sandbox, ['git', 'merge', '--ff-only', change.headSha]);
+    return { mode: 'fast-forward' };
+  }
+  const merged = await sandbox.command(['git', '-c', 'core.hooksPath=/dev/null', 'merge', '--no-ff', '--no-edit', '-m', `Merge branch '${branch}' into ${change.targetBranch}`, change.headSha], '/workspace/repo');
+  if (merged.exitCode === 0) return { mode: 'merge' };
+  const conflicted = await sandbox.command(['git', 'diff', '--name-only', '--diff-filter=U'], '/workspace/repo');
+  await sandbox.command(['git', 'merge', '--abort'], '/workspace/repo');
+  return { mode: 'conflict', conflicts: conflicted.stdout.split('\n').map((line) => line.trim()).filter(Boolean), output: `${merged.stdout}\n${merged.stderr}`.slice(0, outputLimit) };
 }
 
 async function verifyRevert(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, change: RevertChange, defaultTestCommand: string, assertAuthority: AuthorityGuard, isActive: () => Promise<boolean>): Promise<{ check: Check; changes: FileChange[] }> {
@@ -416,7 +439,7 @@ async function verifyRevert(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: s
 export async function executeMission(input: ExecutionInput, env: ExecutionEnv, report: ReportExecution = async () => {}, isActive: () => Promise<boolean> = async () => true, assertAuthority: AuthorityGuard = unrestricted): Promise<ExecutionResult> {
   if (input.mission.authorization && assertAuthority === unrestricted) throw new Error('Execution authority guard is required');
   await assertAuthority();
-  const readiness = executionReadiness({ ...env, MODEL: DEFAULT_MODEL }, input.mission.skillChange || input.mission.revertChange ? 'skill-edit' : 'agent');
+  const readiness = executionReadiness({ ...env, MODEL: DEFAULT_MODEL }, input.mission.skillChange || input.mission.revertChange || input.mission.branchChange ? 'skill-edit' : 'agent');
   if (!readiness.ready || !env.ARTIFACTS || !env.SANDBOX) throw new Error(`Execution unavailable: ${readiness.missing.join(', ')}`);
   const { ARTIFACTS, SANDBOX } = env;
   const { mission, repository } = input;
@@ -426,12 +449,15 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   if (skillChange && (skillChange.baseSha !== baseSha || mission.runs.length !== 1)) throw new Error('Skill proposals require one trusted editor at the exact recorded base commit');
   const revertChange = mission.revertChange;
   if (revertChange && (mission.runs.length !== 1 || !validGitSha(revertChange.landedSha) || !validGitSha(revertChange.previousSha))) throw new Error('A revert requires one trusted editor and exact landed and previous commits');
-  const trusted = !!skillChange || !!revertChange;
+  const branchChange = mission.branchChange;
+  if (branchChange && (mission.runs.length !== 1 || !validGitSha(branchChange.headSha) || branchChange.closedAt)) throw new Error('A pull request requires one trusted merger, an exact branch head and an open state');
+  const trusted = !!skillChange || !!revertChange || !!branchChange;
   if (!trusted && (mission.runs.length < 1 || mission.runs.length > 8)) throw new Error('A proposal requires one to eight agent tasks');
   if (!await isActive()) throw new Error('Mission cancelled');
   using skillSource = await ARTIFACTS.get(repository.name);
   if (skillChange && (await skillSource.log({ ref: repository.defaultBranch, limit: 1 }))[0]?.hash !== baseSha) throw new Error('Repository changed after the skill proposal was created');
   const repositorySkills = await loadRepositorySkillContext(skillSource, baseSha);
+  const canonical = branchChange ? await skillSource.info() : undefined;
   const race = mission.mode === 'race';
   const result: ExecutionResult = { runs: mission.runs.map((run) => ({ ...run })), checks: [], changes: [], candidateSha: null };
   const active = async () => {
@@ -485,7 +511,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       run.summary = 'Git fork allocated. Preparing the isolated runner';
       await publish();
       await assertAuthority();
-      await sandbox.prepare([{ ...fork, write: true }]);
+      await sandbox.prepare([{ ...fork, write: true }, ...(canonical ? [{ ...canonical, write: false }] : [])]);
       run.summary = 'Runner prepared. Cloning the recorded base commit';
       await publish();
       await clone(sandbox, fork, baseSha);
@@ -496,7 +522,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
         await publish();
         await installDependencies(sandbox, assertAuthority, isActive);
       }
-      run.summary = skillChange ? 'Repository ready. Writing the exact requested skill' : revertChange ? 'Repository ready. Applying the exact inverse of the landed change' : `Repository ready. Loaded ${repositorySkills.skills.length} pinned skills${repositorySkills.warnings.length ? ` with ${repositorySkills.warnings.length} discovery warnings` : ''}. Requesting the agent’s first action`;
+      run.summary = skillChange ? 'Repository ready. Writing the exact requested skill' : branchChange ? `Repository ready. Merging ${branchChange.branch} into ${branchChange.targetBranch}` : revertChange ? 'Repository ready. Applying the exact inverse of the landed change' : `Repository ready. Loaded ${repositorySkills.skills.length} pinned skills${repositorySkills.warnings.length ? ` with ${repositorySkills.warnings.length} discovery warnings` : ''}. Requesting the agent’s first action`;
       await publish();
       const attachments = ((mission as { attachments?: { name: string; content: string }[] }).attachments ?? []).filter((file) => file && typeof file.name === 'string' && typeof file.content === 'string');
       const agentContext = JSON.stringify({
@@ -516,6 +542,13 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
         await writeRepositorySkill(sandbox, skillChange);
         await verifySkillBytes(sandbox, skillChange);
         agentSummary = `${skillChange.action === 'create' ? 'Created' : 'Updated'} ${skillChange.path} with the exact requested content using the trusted editor. No model was called.`;
+      } else if (branchChange && canonical) {
+        const merged = await applyBranchMerge(sandbox, canonical.remote, branchChange);
+        if (merged.mode === 'conflict') {
+          result.checks.push({ id: `${key}-merge`, name: `Merge ${branchChange.branch} into ${branchChange.targetBranch}`, runId: run.id, status: 'failed', output: `Merge conflicts in: ${merged.conflicts.join(', ') || 'unknown files'}\nUpdate ${branchChange.branch} from ${branchChange.targetBranch}, resolve these files, push, then use Update from branch.\n${merged.output}`.slice(0, outputLimit) });
+          throw new Error(`Merging ${branchChange.branch} conflicts in ${merged.conflicts.length} file${merged.conflicts.length === 1 ? '' : 's'}: ${merged.conflicts.slice(0, 10).join(', ')}`);
+        }
+        agentSummary = `${merged.mode === 'fast-forward' ? 'Fast-forwarded' : 'Merged'} ${branchChange.branch} at ${branchChange.headSha.slice(0, 12)} onto ${branchChange.targetBranch} using the trusted merger. No model was called.`;
       } else if (revertChange) {
         revertPaths = await applyRevert(sandbox, revertChange);
         agentSummary = `Reverted ${revertPaths.length} file${revertPaths.length === 1 ? '' : 's'} changed by "${revertChange.title}" (${revertChange.previousSha.slice(0, 12)} to ${revertChange.landedSha.slice(0, 12)}) using the trusted editor. No model was called.`;
@@ -548,26 +581,28 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       run.summary = 'Agent finished editing. Recording its Git candidate';
       await publish();
       if (!await active()) throw new Error('Mission cancelled');
-      await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'add', '-A']);
-      const changed = await checked(sandbox, ['git', 'diff', '--no-renames', '--cached', '--name-only']);
-      if (!changed) throw new Error('Agent finished without changing any files');
-      const staged = changed.split('\n').filter(Boolean);
-      if (revertChange ? staged.some((path) => !revertPaths.includes(path)) : protectedChanges(await changesWithStatus(sandbox, ['--cached']), policy).length) throw new Error(revertChange ? 'Revert changed files outside the landed change' : 'Agent changed a protected test or dependency file');
-      if (skillChange && (staged.length !== 1 || staged[0] !== skillChange.path)) throw new Error('Skill editor changed files outside the requested skill');
-      await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', revertChange ? `Revert "${revertChange.title.replace(/[\r\n]+/g, ' ')}"\n\nThis reverts ${revertChange.previousSha}..${revertChange.landedSha}.` : `Gitflare: ${run.name}`]);
+      if (!branchChange) {
+        await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'add', '-A']);
+        const changed = await checked(sandbox, ['git', 'diff', '--no-renames', '--cached', '--name-only']);
+        if (!changed) throw new Error('Agent finished without changing any files');
+        const staged = changed.split('\n').filter(Boolean);
+        if (revertChange ? staged.some((path) => !revertPaths.includes(path)) : protectedChanges(await changesWithStatus(sandbox, ['--cached']), policy).length) throw new Error(revertChange ? 'Revert changed files outside the landed change' : 'Agent changed a protected test or dependency file');
+        if (skillChange && (staged.length !== 1 || staged[0] !== skillChange.path)) throw new Error('Skill editor changed files outside the requested skill');
+        await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', revertChange ? `Revert "${revertChange.title.replace(/[\r\n]+/g, ' ')}"\n\nThis reverts ${revertChange.previousSha}..${revertChange.landedSha}.` : `Gitflare: ${run.name}`]);
+      }
       const sha = await checked(sandbox, ['git', 'rev-parse', 'HEAD']);
       if (!validGitSha(sha)) throw new Error('Runner returned an invalid commit');
       await checked(sandbox, ['git', 'merge-base', '--is-ancestor', baseSha, sha]);
       run.changedFiles = (await checked(sandbox, ['git', 'diff', '--no-renames', '--name-only', baseSha, sha])).split('\n').filter(Boolean);
       run.touchedFiles = run.changedFiles;
-      if (revertChange ? run.changedFiles.some((path) => !revertPaths.includes(path)) : protectedChanges(await changesWithStatus(sandbox, [baseSha, sha]), policy).length) throw new Error(revertChange ? 'Revert changed files outside the landed change' : 'Agent changed a protected test or dependency file');
+      if (revertChange ? run.changedFiles.some((path) => !revertPaths.includes(path)) : !branchChange && protectedChanges(await changesWithStatus(sandbox, [baseSha, sha]), policy).length) throw new Error(revertChange ? 'Revert changed files outside the landed change' : 'Agent changed a protected test or dependency file');
       if (!await active()) throw new Error('Mission cancelled');
       await checked(sandbox, ['git', 'push', 'origin', `HEAD:refs/heads/gitflare-candidate`]);
       run.commitSha = sha;
       run.branch = 'gitflare-candidate';
       run.summary = 'Candidate pushed. Preparing a fresh verification runner';
       await publish();
-      const { check, changes } = revertChange ? await verifyRevert({ SANDBOX }, key, fork, sha, revertChange, input.testCommand, assertAuthority, isActive) : await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive);
+      const { check, changes } = revertChange ? await verifyRevert({ SANDBOX }, key, fork, sha, revertChange, input.testCommand, assertAuthority, isActive) : await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive, !!branchChange);
       run.changedFiles = changes.map((change) => change.path);
       run.touchedFiles = run.changedFiles;
       result.changes.push(...changes.map((change) => ({ ...change, runIds: [run.id] })));

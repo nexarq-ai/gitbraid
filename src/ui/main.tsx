@@ -16,6 +16,7 @@ import "./repository-work.css";
 import "./proposal-create.css";
 import "./repository-import.css";
 import "./model-connections.css";
+import "./pull-requests.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

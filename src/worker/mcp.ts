@@ -7,6 +7,7 @@ import type { Mission, MissionAttempt, Repository, RepositoryFile, RepositoryTre
 import { ApiError, MISSION_REQUEST_MAX_BYTES, publicError, readJson, repositoryPath, repositoryRef } from './domain';
 import type { DocMetadata, ProductDoc } from './docs';
 import { mutableSkillPath, SKILL_CONTENT_MAX_BYTES, SKILL_REQUEST_MAX_BYTES } from './skill-edit';
+import { pullRequestState } from '../shared/pull-requests';
 
 export type McpApi = (request: Request) => Promise<Response>;
 export const mcpToolNames = [
@@ -19,6 +20,7 @@ export const mcpToolNames = [
   'gitflare_review_mission', 'gitflare_revert_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
   'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
+  'gitflare_list_branches', 'gitflare_create_pull_request', 'gitflare_update_pull_request', 'gitflare_branch_protection',
 ] as const;
 
 const identifier = z.string().min(1).max(100).regex(/^[a-zA-Z0-9-]+$/);
@@ -56,6 +58,7 @@ function missionSummary(mission: Mission) {
     reviewCount: mission.reviews?.length ?? 0,
     skillChange: mission.skillChange ? { action: mission.skillChange.action, path: mission.skillChange.path, baseSha: mission.skillChange.baseSha } : undefined,
     approvedAt: mission.approvedAt, approvedBy: mission.approvedBy,
+    pullRequest: mission.branchChange ? { ...mission.branchChange, description: mission.branchChange.description ? excerpt(mission.branchChange.description, 0, 1600) : undefined, state: pullRequestState(mission) } : undefined,
     review: 'Owner UI and authenticated owner MCP clients share exact-candidate approval and integration checks.',
   };
 }
@@ -288,6 +291,27 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
       return { snapshotId: attempt.id, recordedAt: attempt.recordedAt, reason: attempt.reason, ...missionEvidence(attempt.snapshot, input) };
     }
     return { missionId: input.mission_id, ...page(attempts.map((attempt) => ({ id: attempt.id, epoch: attempt.epoch, recordedAt: attempt.recordedAt, reason: attempt.reason, status: attempt.snapshot.status, candidateSha: attempt.snapshot.candidateSha, baseSha: attempt.snapshot.baseSha, approvedAt: attempt.snapshot.approvedAt, approvedBy: attempt.snapshot.approvedBy })), input.offset, input.limit) };
+  }));
+  server.registerTool('gitflare_list_branches', {
+    title: 'List repository branches', description: 'List branch names, exact head SHAs, protection and approximate ahead/behind counts against the default branch, plus the authenticated Git URL. Clients use a Gitflare personal token as the HTTP password; protected branches reject direct pushes.',
+    inputSchema: z.object({ repository_id: identifier, offset, limit: pageLimit }).strict(), annotations: readOnly,
+  }, input => guarded(async () => { const { branches, ...metadata } = await call<{ branches: unknown[] } & Record<string, unknown>>(`/api/repositories/${input.repository_id}/branches`); return { ...metadata, ...page(branches, input.offset, input.limit) }; }));
+  server.registerTool('gitflare_create_pull_request', {
+    title: 'Open a pull request from a branch', description: 'Record the exact head of a pushed branch and start a model-free trusted merger that fast-forwards or merge-commits it onto the current default branch in an isolated fork, then runs the repository checks. Conflicts produce a failed check listing the files. The result uses the same exact-candidate approve and land tools as missions; nothing is written to the default branch here.',
+    inputSchema: z.object({ repository_id: identifier, branch: z.string().min(1).max(200), title: z.string().min(1).max(120), description: z.string().max(8000).optional(), idempotency_key: requestKey }).strict(), annotations: mutation,
+  }, input => guarded(async () => missionSummary(await call<Mission>(`/api/repositories/${input.repository_id}/pulls`, { branch: input.branch, title: input.title, ...(input.description ? { description: input.description } : {}) }, input.idempotency_key))));
+  server.registerTool('gitflare_update_pull_request', {
+    title: 'Update, close or reopen a pull request', description: 'update re-records the branch head and reruns the merge and checks; the candidate SHA changes, so earlier approvals no longer apply. close cancels pending checks and withdraws approval. reopen re-records the current head and reruns checks. Landed pull requests cannot change.',
+    inputSchema: z.object({ mission_id: identifier, action: z.enum(['update', 'close', 'reopen']), idempotency_key: requestKey }).strict(), annotations: { ...mutation, destructiveHint: true },
+  }, input => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/pull`, { action: input.action }, input.idempotency_key))));
+  server.registerTool('gitflare_branch_protection', {
+    title: 'Read or set branch protection', description: 'Read the repository branch rules, or replace them (Owner only). Rules match an exact branch or a * glob; the default branch is protected even without a matching rule. Fields: requirePullRequest, requiredApprovals 0-6, requiredCheckNames, preventSelfApproval, restrictLanders (Maintainer/Owner). Checks always gate landing, approvals are pinned to the exact candidate SHA, force pushes to protected branches are refused, and tags belong to Releases.',
+    inputSchema: z.object({ repository_id: identifier, action: z.enum(['read', 'set']).default('read'), rules: z.array(z.object({ pattern: z.string().min(1).max(200), requirePullRequest: z.boolean().default(true), requiredApprovals: z.number().int().min(0).max(6).default(1), requiredCheckNames: z.array(z.string().min(1).max(200)).max(20).default([]), preventSelfApproval: z.boolean().default(false), restrictLanders: z.array(z.enum(['Maintainer', 'Owner'])).max(2).default([]) }).strict()).max(20).optional(), idempotency_key: requestKey.optional() }).strict(), annotations: mutation,
+  }, input => guarded(async () => {
+    const path = `/api/repositories/${input.repository_id}/branch-protection`;
+    if (input.action === 'read') return call<Record<string, unknown>>(path);
+    if (!input.rules || !input.idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Setting branch protection requires rules and an idempotency key.');
+    return call<Record<string, unknown>>(path, { rules: input.rules }, input.idempotency_key);
   }));
   server.registerTool('gitflare_workspace_status', {
     title: 'Inspect workspace setup and MCP capabilities', description: 'Read workspace mode, configured service readiness, MCP endpoint, authentication mode, and available tools. Configuration is not proof an external Claude or Codex client connected or an execution succeeded. Does not expose credentials.',

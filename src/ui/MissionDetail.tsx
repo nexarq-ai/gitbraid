@@ -26,6 +26,7 @@ import { request } from "./api";
 import { EmptyState, ErrorNotice, relativeTime, Status } from "./components";
 import AgentAssignment from "./AgentAssignment";
 import AttemptHistory from "./AttemptHistory";
+import { PullRequestPanel } from "./PullRequests";
 import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 
@@ -379,7 +380,7 @@ export default function MissionDetail({
           <h1>{mission.title}</h1>
           <div className="detail-meta">
             <Status status={mission.status} />
-            <span>{mission.mode === "race" ? "Race mission" : "Mission"}</span>
+            <span>{mission.branchChange ? "Pull request" : mission.mode === "race" ? "Race mission" : "Mission"}</span>
             <span>
               <GitBranchIcon size={13} />
               {repository?.name ?? "Repository"}
@@ -403,7 +404,7 @@ export default function MissionDetail({
               {currentPreview ? "Refresh preview" : "Prepare preview"}
             </Button>
           )}
-          {["draft", "failed", "cancelled", "needs_review"].includes(
+          {!mission.branchChange && ["draft", "failed", "cancelled", "needs_review"].includes(
             mission.status,
           ) && (
             <Button
@@ -490,6 +491,7 @@ export default function MissionDetail({
           )}
         </div>
       </div>
+      {mission.branchChange && <PullRequestPanel mission={mission} permissions={permissions} onChange={(result) => { revision.current++; setMission(result); onUpdate(); }} />}
       {currentPreview && (
         <div className="alert info">
           <ArrowSquareOutIcon size={17} />
