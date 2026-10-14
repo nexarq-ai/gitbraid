@@ -23,6 +23,7 @@ import { validateRepositoryInitialization, initializeArtifactsRepository } from 
 import { SKILL_REQUEST_MAX_BYTES, validateRepositorySkillChange, verifyRepositorySkillChange } from './skill-edit';
 import { draftMission, draftRequest, repositorySnapshot } from './mission-draft';
 import { handleIssues } from './issues';
+import { releaseApi } from './releases';
 import { modelConnectionsSnapshot, modelIdentifier, resolveModelConnection, validateModelConnection, verifyModelConnection } from './model-config';
 import { IMPORT_REQUEST_MAX_BYTES, RepositoryImportFailure, buildImportPack, importFingerprint, inspectRepositoryImport, parseImportArchive, pushRepositoryImport, validateImportInput } from './repository-import';
 
@@ -296,6 +297,12 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   }
   const issues = await handleIssues(request, url, principal, access, catalog, (id) => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`));
   if (issues) return issues;
+  const releaseRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/releases(?:\/([a-zA-Z0-9-]+)(?:\/(publish|update|delete))?)?$/.exec(url.pathname);
+  if (releaseRoute) {
+    const repository = await catalog.getRepository(releaseRoute[1]);
+    if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+    return releaseApi(request, { artifacts: env.ARTIFACTS, repository, coordinator: env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`), principal, access }, releaseRoute[2], releaseRoute[3]);
+  }
   const repositoryMatch = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/(tree|file|skills|proposal-base|import)$/.exec(url.pathname);
   if (request.method === 'GET' && repositoryMatch) {
     const repository = await catalog.getRepository(repositoryMatch[1]);

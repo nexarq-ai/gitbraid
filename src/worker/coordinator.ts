@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, ModelConnection, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import type { CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
@@ -7,6 +7,7 @@ import { SqlStore } from './store';
 import { assertReviewClear, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
 import type { ImportReceipt, ImportResult } from './repository-import';
+import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './releases';
 import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
 import { applyIssueChange, issueFingerprint, listIssues, readIssue, type IssueActor, type IssueChange, type IssueQuery } from './issues';
 
@@ -144,6 +145,30 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   repositoryBootstrapSha(): string | undefined { return this.store.get<string>('repository-bootstrap'); }
 
   saveRepositoryBootstrapSha(sha: string): void { this.store.put('repository-bootstrap', sha); }
+
+  listReleases(): Release[] { return this.store.list<Release>('release:'); }
+
+  getRelease(id: string): Release | undefined { return this.store.get<Release>(`release:${id}`); }
+
+  getReleaseRequest(key: string, fingerprint: string): ReleaseReceipt | undefined {
+    const receipt = this.store.get<ReleaseReceipt>(`release-request:${key}`);
+    if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
+    return receipt;
+  }
+
+  changeRelease(key: string, fingerprint: string, change: ReleaseChange): { receipt: ReleaseReceipt; fresh: boolean } {
+    return this.ctx.storage.transactionSync(() => {
+      const reserved = new Map(this.store.list<{ tag: string; key: string }>('release-pending:').map(item => [item.tag, item.key]));
+      const outcome = applyReleaseChange(this.listReleases(), reserved, this.getReleaseRequest(key, fingerprint), key, fingerprint, change);
+      if (!outcome.fresh) return { receipt: outcome.receipt, fresh: false };
+      if (outcome.put) this.store.put(`release:${outcome.put.id}`, outcome.put);
+      if (outcome.remove) this.store.delete(`release:${outcome.remove}`);
+      if (outcome.reserve) this.store.put(`release-pending:${outcome.reserve}`, { tag: outcome.reserve, key });
+      if (outcome.unreserve) this.store.delete(`release-pending:${outcome.unreserve}`);
+      this.store.put(`release-request:${key}`, outcome.receipt);
+      return { receipt: outcome.receipt, fresh: true };
+    });
+  }
 
   getImportRequest(key: string, fingerprint: string): ImportReceipt | undefined {
     const receipt = this.store.get<ImportReceipt>(`repository-import:${key}`);

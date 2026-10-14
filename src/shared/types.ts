@@ -206,3 +206,27 @@ export interface IssueComment { id: string; authorId: string; body: string; crea
 export interface Issue { repositoryId: string; number: number; title: string; body: string; state: IssueState; closedReason?: IssueCloseReason; labels: string[]; assignees: string[]; missionIds: string[]; authorId: string; createdAt: string; updatedAt: string; closedAt?: string; commentCount: number }
 export interface IssueDetail extends Issue { comments: IssueComment[] }
 export interface IssueList { items: Issue[]; total: number; openCount: number; closedCount: number; labels: string[]; offset: number; nextOffset: number | null }
+export interface Release {
+  id: string;
+  repositoryId: string;
+  tag: string;
+  name: string;
+  notes: string;
+  targetSha: string;
+  draft: boolean;
+  prerelease: boolean;
+  authorId: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+}
+
+export interface ReleaseList {
+  releases: Release[];
+  defaultBranch: string;
+  headSha: string | null;
+  commits: { sha: string; message: string }[];
+  limit: number;
+}
+
+export interface ReleaseNotes { markdown: string; targetSha: string; previousTag: string | null; commitCount: number; missionCount: number; truncated: boolean }
