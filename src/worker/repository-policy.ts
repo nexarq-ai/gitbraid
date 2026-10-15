@@ -1,3 +1,5 @@
+import { detectPackageManager, hasInstallableDependencies, runnerFor, testScript, type InstallPlan, type PackageManager } from './package-manager';
+
 export const POLICY_FILE = 'gitflare.json';
 export const DEFAULT_EDITABLE = ['src/', 'docs/', 'README.md'];
 
@@ -5,7 +7,7 @@ export interface RepositoryPolicy {
   testCommand: string;
   evidence: 'tap' | 'exit-code';
   editable: string[];
-  install: boolean;
+  install: InstallPlan | null;
   previewCommand: string;
   testTimeoutMs: number;
   starter: boolean;
@@ -13,10 +15,10 @@ export interface RepositoryPolicy {
 }
 
 export interface PathChange { path: string; status: string }
-export interface StarterCheck { testCommand: string; evidence: RepositoryPolicy['evidence']; install: 'ci' | 'install' | null }
+export interface StarterCheck { testCommand: string; evidence: RepositoryPolicy['evidence']; install: InstallPlan | null }
 
 const DEFAULT_PREVIEW = 'node src/preview.mjs';
-const ALWAYS_PROTECTED = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|gitflare\.json|\.npmrc)$|^\.(git|github)(\/|$)/;
+const ALWAYS_PROTECTED = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.pnpmfile\.c?js|\.yarnrc|\.yarnrc\.yml|\.pnp\.c?js|\.pnp\.loader\.mjs|gitflare\.json|\.npmrc)$|(^|\/)\.yarn\/|^\.(git|github)(\/|$)/;
 const TEST_PATHS = /(^|\/)(__tests__|tests?|node_modules)(\/|$)|\.(test|spec)\.[^.\/]+$|_test\.[^.\/]+$|(^|\/)(test_[^\/]+|conftest)\.py$/;
 
 function command(value: unknown, field: string): string {
@@ -29,13 +31,15 @@ function editablePath(value: unknown): string {
   return value;
 }
 
-export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: string, baseFiles?: string[], basePackageJson?: string | null): RepositoryPolicy {
-  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: false, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: 120_000, starter: false, untested: false };
+const INSTALL_VALUES = ['npm', 'pnpm', 'yarn', 'auto'];
+
+export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: string, baseFiles?: string[], basePackageJson?: string | null, baseLockHead?: string | null): RepositoryPolicy {
+  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: null, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: 120_000, starter: false, untested: false };
   if (raw === null) {
     if (baseFiles === undefined) return fallback;
     const untested = !baseFiles.some((path) => TEST_PATHS.test(path) && !path.includes('node_modules/'));
-    const npm = basePackageJson !== undefined && basePackageJson !== null ? starterCheck(['package.json'], basePackageJson, baseFiles.includes('package-lock.json')) : null;
-    return { ...fallback, starter: isStarterRepository(baseFiles), untested, ...(npm ? { testCommand: npm.testCommand, evidence: npm.evidence, install: true } : {}) };
+    const scripted = basePackageJson !== undefined && basePackageJson !== null ? packageTestCheck(baseFiles, basePackageJson, baseLockHead) : null;
+    return { ...fallback, starter: isStarterRepository(baseFiles), untested, ...(scripted ? { testCommand: scripted.testCommand, evidence: scripted.evidence, install: scripted.install } : {}) };
   }
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Error(`${POLICY_FILE} is not valid JSON`); }
@@ -51,8 +55,8 @@ export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: st
     policy.evidence = fields.evidence;
   }
   if (fields.install !== undefined) {
-    if (fields.install !== 'npm' && fields.install !== false) throw new Error(`${POLICY_FILE}: "install" must be "npm" or false`);
-    policy.install = fields.install === 'npm';
+    if (fields.install !== false && !INSTALL_VALUES.includes(fields.install as string)) throw new Error(`${POLICY_FILE}: "install" must be "npm", "pnpm", "yarn", "auto" or false`);
+    policy.install = fields.install === false ? null : configuredInstall(fields.install as PackageManager | 'auto', baseFiles ?? [], basePackageJson ?? null, baseLockHead);
   }
   if (fields.timeoutSeconds !== undefined) {
     if (!Number.isInteger(fields.timeoutSeconds) || (fields.timeoutSeconds as number) < 10 || (fields.timeoutSeconds as number) > 300) throw new Error(`${POLICY_FILE}: "timeoutSeconds" must be a whole number between 10 and 300`);
@@ -63,6 +67,11 @@ export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: st
     policy.editable = fields.editable.map(editablePath);
   }
   return policy;
+}
+
+function configuredInstall(value: PackageManager | 'auto', files: string[], packageJson: string | null, lockHead: string | null | undefined): InstallPlan | null {
+  if (value === 'auto') return hasInstallableDependencies(files, packageJson) ? detectPackageManager({ files, packageJson, lockHead }) : null;
+  return detectPackageManager({ files, packageJson: packageJson ?? '{}', lockHead, prefer: value });
 }
 
 export function isProtectedPath(path: string, editable: string[] = DEFAULT_EDITABLE): boolean {
@@ -90,11 +99,18 @@ export function parseNameStatus(output: string): PathChange[] {
   });
 }
 
-export function starterCheck(files: string[], packageJson: string | null, hasLockfile: boolean): StarterCheck | null {
+function packageTestCheck(files: string[], packageJson: string, lockHead?: string | null): StarterCheck | null {
+  const script = testScript(packageJson);
+  if (!script || NPM_PLACEHOLDER_TEST.test(script)) return null;
+  const plan = detectPackageManager({ files, packageJson, lockHead });
+  return { testCommand: `${runnerFor(plan)} test`, evidence: 'exit-code', install: hasInstallableDependencies(files, packageJson) ? plan : null };
+}
+
+export function starterCheck(files: string[], packageJson: string | null, lockHead?: string | null): StarterCheck | null {
   if (packageJson !== null) {
-    let script: unknown;
-    try { script = (JSON.parse(packageJson) as { scripts?: Record<string, unknown> }).scripts?.test; } catch { return null; }
-    if (typeof script === 'string' && script.trim() && !NPM_PLACEHOLDER_TEST.test(script)) return { testCommand: 'npm test', evidence: 'exit-code', install: hasLockfile ? 'ci' : 'install' };
+    try { JSON.parse(packageJson); } catch { return null; }
+    const scripted = packageTestCheck(files, packageJson, lockHead);
+    if (scripted) return scripted;
   }
   if (files.some((path) => /\.test\.(mjs|cjs|js)$/.test(path) && !path.includes('node_modules/'))) return { testCommand: 'node --test --test-reporter=tap', evidence: 'tap', install: null };
   return null;

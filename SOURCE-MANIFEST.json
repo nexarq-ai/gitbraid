@@ -100,8 +100,8 @@
     },
     {
       "path": "runner/sandbox.ts",
-      "size": 16833,
-      "sha256": "cb7ef1fe134efe5f42348c63825fdf63b8fc405547a87198178e6ee6421681ea"
+      "size": 17538,
+      "sha256": "0257549e03b0c8f6327f3670f1749d427b5b924e05f9237f21bcb6d9e03fc583"
     },
     {
       "path": "scripts/deploy-self-hosted.mjs",
@@ -545,8 +545,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 61306,
-      "sha256": "679f3474509b9c51eac9f9a8848a4a569025964da9a5363aaf5e9c1de1a22e71"
+      "size": 62789,
+      "sha256": "964fbc23ed6d9232a2c2461726bbc1f42361a58f28a7e9c091f81c2e0ce1df6b"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -624,9 +624,14 @@
       "sha256": "9cabad81ea71ef9d06ae51a9c56df1f2dd6e5f2100ec73c59db7ab56802e087b"
     },
     {
+      "path": "src/worker/package-manager.ts",
+      "size": 7458,
+      "sha256": "7378bcb3bf8542ba3a1b17f4b25e59140788b42526d9eedb3033e5a82170e4ab"
+    },
+    {
       "path": "src/worker/preview-plan.ts",
-      "size": 5081,
-      "sha256": "5a6e1ddd6a2ce9afb5f025686e523f35e5efe0c1ac1a7e005bf3ca2801e00c38"
+      "size": 5397,
+      "sha256": "27b2631fdbde966d4f234a97448372cdd6da0ae3599bdddecff24cd7fcb14ee6"
     },
     {
       "path": "src/worker/proposal-review.ts",
@@ -660,8 +665,8 @@
     },
     {
       "path": "src/worker/repository-policy.ts",
-      "size": 6365,
-      "sha256": "d585162d7e84721dd5c7af3316196b82dbe6d8db3dd6d0b2cc754585e41549a0"
+      "size": 7568,
+      "sha256": "5864ea90a8ad6cf718570b011223230f99626d195258e6ddf028f86095a472ff"
     },
     {
       "path": "src/worker/repository-skills.ts",
@@ -690,8 +695,8 @@
     },
     {
       "path": "src/worker/worker-bundle.ts",
-      "size": 19681,
-      "sha256": "f12d9077e51bd70d6238f28b5438fdad796a49220964bde167886fe6836fde7c"
+      "size": 19641,
+      "sha256": "47d0c09e94f82ded9aeaf45713c09204f737f16100afd5f0d3ba7652bab85cfe"
     },
     {
       "path": "src/worker/worker-previews.ts",

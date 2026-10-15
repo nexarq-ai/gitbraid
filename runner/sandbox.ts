@@ -1,11 +1,13 @@
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import type { ArtifactsBinding } from '../src/worker/artifacts';
+import { COREPACK_ENV, INSTALL_EXCLUDES, INSTALL_TIMEOUT_MS, installCommand, NPM_REGISTRY, registryHosts, YARN_REGISTRY, type InstallPlan } from '../src/worker/package-manager';
 import { beginUrlImportJob, importJobDependencies, proxyImportSource, resumeUrlImportJob, type ImportSourceProps, type UrlImportEnv, type UrlImportJob } from '../src/worker/url-import';
 
 export interface GitPermission { name: string; remote: string; write: boolean }
 export interface CommandResult { exitCode: number; stdout: string; stderr: string }
 interface RunnerEnv extends Omit<UrlImportEnv, 'ARTIFACTS'> { ARTIFACTS: ArtifactsBinding; RUNNER_IMAGE?: string }
 interface OutboundProps { repositories: GitPermission[] }
+interface RegistryProps { hosts?: string[] }
 
 const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
 // Vite-based dev and preview servers reject any Host other than localhost
@@ -66,14 +68,16 @@ export class BootstrapOutbound extends WorkerEntrypoint {
   }
 }
 
-export function isRegistryRequest(request: Request): boolean {
+const PACKAGE_REGISTRIES = [NPM_REGISTRY, YARN_REGISTRY];
+
+export function isRegistryRequest(request: Request, hosts: string[] = [NPM_REGISTRY]): boolean {
   const url = new URL(request.url);
-  return (request.method === 'GET' || request.method === 'HEAD') && url.protocol === 'https:' && url.hostname === 'registry.npmjs.org' && !url.username && !url.password;
+  return (request.method === 'GET' || request.method === 'HEAD') && url.protocol === 'https:' && hosts.includes(url.hostname) && PACKAGE_REGISTRIES.includes(url.hostname) && !url.port && !url.username && !url.password;
 }
 
-export class RegistryOutbound extends WorkerEntrypoint {
+export class RegistryOutbound extends WorkerEntrypoint<RunnerEnv, RegistryProps> {
   async fetch(request: Request): Promise<Response> {
-    if (!isRegistryRequest(request)) return new Response('Install destination is not allowed', { status: 403 });
+    if (!isRegistryRequest(request, this.ctx.props?.hosts)) return new Response('Install destination is not allowed', { status: 403 });
     const headers = new Headers(request.headers);
     headers.delete('authorization');
     headers.delete('cookie');
@@ -142,18 +146,19 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     await container.interceptOutboundHttps('*', outbound);
   }
 
-  async install(mode: 'ci' | 'install' = 'ci'): Promise<CommandResult> {
+  async install(plan: InstallPlan): Promise<CommandResult> {
     const container = this.ctx.container;
     const repositories = this.#repositories;
     if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
-    const excluded = await this.#executeCommand(['/bin/sh', '-c', "printf '\\nnode_modules/\\n' >> .git/info/exclude"], '/workspace/repo', 15_000, 15_000);
+    const argv = installCommand(plan);
+    const excluded = await this.#executeCommand(['/bin/sh', '-c', 'printf \'\\n%s\\n\' "$@" >> .git/info/exclude', 'exclude', ...INSTALL_EXCLUDES], '/workspace/repo', 15_000, 15_000);
     if (excluded.exitCode !== 0) throw new Error('Installed dependencies could not be excluded from candidate commits');
-    const registry = this.ctx.exports.RegistryOutbound;
+    const registry = this.ctx.exports.RegistryOutbound({ props: { hosts: registryHosts(plan) } });
     await container.interceptAllOutboundHttp(registry);
     await container.interceptOutboundHttps('*', registry);
     try {
-      // --ignore-scripts: package lifecycle scripts must not run while the registry is reachable
-      return await this.#executeCommand(['npm', mode, '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
+      // --ignore-scripts / --mode=skip-build: package lifecycle scripts must not run while the registry is reachable
+      return await this.#executeCommand(argv, '/workspace/repo', INSTALL_TIMEOUT_MS, INSTALL_TIMEOUT_MS, COMMAND_OUTPUT_CAP, false, { COREPACK_ENABLE_NETWORK: '1' });
     } finally { await this.#restrictToGit(repositories); }
   }
 
@@ -193,7 +198,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, 300_000, Math.min(Math.max(capBytes, COMMAND_OUTPUT_CAP), BUNDLE_OUTPUT_CAP), true);
   }
 
-  async #executeCommand(argv: string[], cwd: string, timeoutMs: number, maximumMs: number, cap = COMMAND_OUTPUT_CAP, strict = false): Promise<CommandResult> {
+  async #executeCommand(argv: string[], cwd: string, timeoutMs: number, maximumMs: number, cap = COMMAND_OUTPUT_CAP, strict = false, extraEnv: Record<string, string> = {}): Promise<CommandResult> {
     const container = this.ctx.container;
     if (!container?.running) throw new Error('Sandbox is not running');
     const seconds = Math.max(1, Math.min(maximumMs, Math.floor(timeoutMs))) / 1000;
@@ -227,7 +232,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const execution = (async () => {
       const process = await container.exec(['timeout', '--kill-after=2s', `${seconds}s`, ...argv], {
         cwd,
-        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', CI: 'true' },
+        env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', CI: 'true', ...COREPACK_ENV, COREPACK_ENABLE_NETWORK: '0', ...extraEnv },
       });
       const [stdout, stderr, exitCode] = await Promise.all([collect(process.stdout), collect(process.stderr), process.exitCode]);
       return { stdout, stderr, exitCode };
@@ -250,7 +255,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     });
     try {
       const process = await Promise.race([
-        container.exec(Array.isArray(command) ? command : ['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
+        container.exec(Array.isArray(command) ? command : ['/bin/bash', '-lc', `exec ${command}`], { cwd: '/workspace/repo', env: { ...COREPACK_ENV, COREPACK_ENABLE_NETWORK: '0', PORT: '8080', HOST: '0.0.0.0' }, stdout: 'ignore', stderr: 'ignore' }),
         timeout,
       ]);
       const exited = process.exitCode.then((code) => { throw new Error(`Preview process exited before readiness (exit ${code})`); });

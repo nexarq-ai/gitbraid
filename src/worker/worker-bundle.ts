@@ -248,7 +248,7 @@ export async function readWorkerConfig(sandbox: BundleSandbox, configPath: strin
 export async function buildWorkerBundle(sandbox: BundleSandbox, config: ResolvedWorkerConfig): Promise<WorkerBundle> {
   if (!sandbox.check || !sandbox.collect) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot build Worker bundles.');
   const build = await sandbox.check(workerBuildScript(config.configPath), WORKER_BUILD_TIMEOUT_MS);
-  if (build.exitCode === 64) throw new WorkerBuildFailure('WRANGLER_DEPENDENCY_REQUIRED', 'Wrangler is not a dependency of this repository. Add wrangler 4.135 or later to devDependencies and set install to npm in gitflare.json.');
+  if (build.exitCode === 64) throw new WorkerBuildFailure('WRANGLER_DEPENDENCY_REQUIRED', 'Wrangler is not a dependency of this repository. Add wrangler 4.135 or later to devDependencies.');
   if (build.exitCode !== 0) throw new WorkerBuildFailure('WORKER_BUILD_FAILED', `wrangler deploy --dry-run failed (exit ${build.exitCode}). ${failureDetail(build)}`);
   const output = await sandbox.collect(workerBundleScript(config.configPath), 60_000, Math.ceil(WORKER_BUNDLE_MAX_BYTES * 1.4) + 65_536);
   if (output.exitCode === 66) throw new WorkerBuildFailure('WORKER_BUNDLE_TOO_LARGE', `The Worker bundle exceeds ${WORKER_BUNDLE_MAX_BYTES / 1024 / 1024} MiB or ${WORKER_BUNDLE_MAX_FILES} files.`);
