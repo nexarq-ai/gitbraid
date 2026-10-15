@@ -134,21 +134,38 @@ export function anthropicInput(input: InputRecord[], tools: InputRecord[], maxTo
   return result;
 }
 
+export type AnthropicIssue = 'max_tokens' | 'pause_turn' | 'refusal' | 'context_window' | 'unknown_stop_reason' | 'overloaded' | 'provider_error' | 'empty_content' | 'incomplete_block' | 'malformed' | 'tool_limit';
+
+export class AnthropicOutputError extends Error {
+  constructor(public readonly issue: AnthropicIssue, public readonly stopReason: string | null, message: string) { super(message); this.name = 'AnthropicOutputError'; }
+}
+
+const STOP_ISSUES: Record<string, AnthropicIssue> = { max_tokens: 'max_tokens', pause_turn: 'pause_turn', refusal: 'refusal', model_context_window_exceeded: 'context_window' };
+
+function safeToken(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-z_]{1,48}$/.test(value) ? value : value === null || value === undefined ? null : 'unrecognized';
+}
+
 export function anthropicOutput(raw: Record<string, unknown>): {
   output: Record<string, unknown>[];
   calls: { call_id: string; name: string; arguments: string }[];
   text: string;
 } {
-  if (!raw || typeof raw !== 'object') throw new Error('Malformed response');
-  if (raw.type !== 'message') throw new Error('Malformed response type');
+  if (!raw || typeof raw !== 'object') throw new AnthropicOutputError('malformed', null, 'response is not an object');
+  if (raw.type === 'error') {
+    const errorType = safeToken((raw.error as { type?: unknown } | undefined)?.type);
+    throw new AnthropicOutputError(errorType === 'overloaded_error' ? 'overloaded' : 'provider_error', null, `provider error ${errorType ?? 'without a type'}`);
+  }
+  if (raw.type !== 'message') throw new AnthropicOutputError('malformed', null, `response type ${safeToken(raw.type) ?? 'missing'}`);
 
   const stopReason = raw.stop_reason;
+  const stopToken = safeToken(stopReason);
   if (stopReason !== 'end_turn' && stopReason !== 'tool_use') {
-    throw new Error('Unsupported stop_reason: ' + String(stopReason));
+    throw new AnthropicOutputError(STOP_ISSUES[String(stopReason)] ?? 'unknown_stop_reason', stopToken, `stop_reason ${stopToken ?? 'missing'}`);
   }
 
   const content = raw.content;
-  if (!Array.isArray(content)) throw new Error('Malformed content');
+  if (!Array.isArray(content)) throw new AnthropicOutputError('malformed', stopToken, 'content is not a list');
 
   const output: Record<string, unknown>[] = [];
   const calls: { call_id: string; name: string; arguments: string }[] = [];
@@ -156,12 +173,12 @@ export function anthropicOutput(raw: Record<string, unknown>): {
   let text = '';
 
   for (const block of content) {
-    if (!block || typeof block !== 'object') throw new Error('Malformed content block');
+    if (!block || typeof block !== 'object') throw new AnthropicOutputError('incomplete_block', stopToken, 'Malformed content block');
     const btype = (block as any).type;
 
     if (btype === 'text') {
       const t = (block as any).text;
-      if (typeof t !== 'string') throw new Error('Malformed text block');
+      if (typeof t !== 'string') throw new AnthropicOutputError('incomplete_block', stopToken, 'Malformed text block');
       text += t;
       output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: t }] });
       continue;
@@ -172,15 +189,15 @@ export function anthropicOutput(raw: Record<string, unknown>): {
       const name = (block as any).name;
       const toolInput = (block as any).input;
 
-      if (typeof id !== 'string' || !id || typeof name !== 'string' || !name) throw new Error('Malformed tool_use block');
-      if (typeof toolInput !== 'object' || toolInput === null || Array.isArray(toolInput)) throw new Error('Malformed tool_use input');
-      if (id.length > 200) throw new Error('call_id too long');
-      if (name.length > 100) throw new Error('name too long');
-      if (seenIds.has(id)) throw new Error('Duplicate call id');
+      if (typeof id !== 'string' || !id || typeof name !== 'string' || !name) throw new AnthropicOutputError('incomplete_block', stopToken, 'Malformed tool_use block');
+      if (typeof toolInput !== 'object' || toolInput === null || Array.isArray(toolInput)) throw new AnthropicOutputError('incomplete_block', stopToken, 'Malformed tool_use input');
+      if (id.length > 200) throw new AnthropicOutputError('incomplete_block', stopToken, 'call_id too long');
+      if (name.length > 100) throw new AnthropicOutputError('incomplete_block', stopToken, 'name too long');
+      if (seenIds.has(id)) throw new AnthropicOutputError('incomplete_block', stopToken, 'Duplicate call id');
       seenIds.add(id);
 
       const argsStr = JSON.stringify(toolInput);
-      if (argsStr.length > 16000) throw new Error('arguments too long');
+      if (argsStr.length > 16000) throw new AnthropicOutputError('incomplete_block', stopToken, 'arguments too long');
 
       calls.push({ call_id: id, name, arguments: argsStr });
       output.push({ type: 'function_call', call_id: id, name, arguments: argsStr });
@@ -190,25 +207,25 @@ export function anthropicOutput(raw: Record<string, unknown>): {
     if (btype === 'thinking') {
       const thinking = (block as any).thinking;
       const signature = (block as any).signature;
-      if (typeof thinking !== 'string' || thinking.length > MAX_THINKING_FIELD_LEN) throw new Error('Malformed thinking block');
-      if (typeof signature !== 'string' || signature.length > MAX_THINKING_FIELD_LEN) throw new Error('Malformed thinking signature');
+      if (typeof thinking !== 'string' || thinking.length > MAX_THINKING_FIELD_LEN) throw new AnthropicOutputError('incomplete_block', stopToken, 'Malformed thinking block');
+      if (typeof signature !== 'string' || signature.length > MAX_THINKING_FIELD_LEN) throw new AnthropicOutputError('incomplete_block', stopToken, 'Malformed thinking signature');
       output.push({ type: 'anthropic_block', block: { type: 'thinking', thinking, signature } });
       continue;
     }
 
     if (btype === 'redacted_thinking') {
       const data = (block as any).data;
-      if (typeof data !== 'string' || data.length > MAX_THINKING_FIELD_LEN) throw new Error('Malformed redacted_thinking block');
+      if (typeof data !== 'string' || data.length > MAX_THINKING_FIELD_LEN) throw new AnthropicOutputError('incomplete_block', stopToken, 'Malformed redacted_thinking block');
       output.push({ type: 'anthropic_block', block: { type: 'redacted_thinking', data } });
       continue;
     }
 
-    throw new Error('Unknown or incomplete content block type: ' + String(btype));
+    throw new AnthropicOutputError('incomplete_block', stopToken, `content block type ${safeToken(btype) ?? 'missing'}`);
   }
 
-  if (calls.length > 4) throw new Error('Too many tool calls');
-  if ((calls.length > 0) !== (stopReason === 'tool_use')) throw new Error('stop_reason must be tool_use when calls present');
+  if (calls.length > 4) throw new AnthropicOutputError('tool_limit', stopToken, `${calls.length} tool calls in one turn`);
+  if ((calls.length > 0) !== (stopReason === 'tool_use')) throw new AnthropicOutputError('incomplete_block', stopToken, 'stop_reason must be tool_use when calls present');
 
-  if (!calls.length && !text.trim()) throw new Error('Empty response');
+  if (!calls.length && !text.trim()) throw new AnthropicOutputError('empty_content', stopToken, `no text or tool call (${content.length} content blocks)`);
   return { output, calls, text };
 }

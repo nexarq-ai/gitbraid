@@ -4,7 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
 import { createArtifactsRepository, repositoryHead } from './artifacts';
-import { ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
+import { agentRunIds, ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
 import { repositoryLabel } from '../shared/repository-names';
 import { checkSettingsSnapshot, normalizeCheckSettings, retryPlan } from './check-settings';
 import type { AppEnv } from './env';
@@ -479,7 +479,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const draft = await coordinator.createMission(key, { repositoryId: repository.id, expectedBaseSha: current.headSha, title, prompt: description ?? `Merge ${branch} into ${repository.defaultBranch}.`, branchChange: { branch, headSha, targetBranch: repository.defaultBranch, ...(description ? { description } : {}) } }, authorization, models);
     return Response.json(await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models), { status: 202 });
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert|pull|retry-checks))?$/.exec(url.pathname);
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert|pull|retry-checks|retry-agents|drop-failed-agents))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -652,7 +652,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const reviewInput = match[2] === 'review' ? reviewMissionInput(body) : undefined;
     const pullAction = match[2] === 'pull' ? body.action : undefined;
     if (match[2] === 'pull' && !['update', 'close', 'reopen'].includes(String(pullAction))) throw new ApiError(400, 'INVALID_PULL_ACTION', 'Choose update, close or reopen.');
-    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'revert' || (pullAction && pullAction !== 'close') ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
+    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents' || match[2] === 'revert' || (pullAction && pullAction !== 'close') ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
     try { await access.authorize(principal, action, 'repository', repository.id, mission.id); }
     catch (error) {
       if (reviewInput?.action !== 'comment' || publicError(error).code !== 'FORBIDDEN') throw error;
@@ -721,7 +721,8 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       const started = await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models);
       return Response.json(started, { status: 202 });
     }
-    if (match[2] === 'start') {
+    if (match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents') {
+      const runIds = match[2] === 'retry-agents' ? agentRunIds(body.runIds) : undefined;
       if (!mission.skillChange && !mission.revertChange && !mission.branchChange) {
         await requireAi(env, catalog);
         const credentials = await aiCredentials(catalog);
@@ -734,7 +735,9 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       if (!readiness.ready || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', `Connect the required services before running agents: ${[...readiness.missing, ...(!env.MISSION_WORKFLOW ? ['Mission Workflow'] : [])].join(', ')}.`);
       const current = await currentRepository(env, repository);
       if (!current.headSha) throw new ApiError(409, 'EMPTY_REPOSITORY', 'Push an initial commit before starting a mission.');
-      const started = await startWithDurableDispatch(coordinator, key, mission.id, { principal, workspaceId: principal.workspaceId, creatorId: mission.authorization?.creatorId ?? principal.userId }, await coordinatorRead('getModelConnections', () => catalog.getModelConnections()));
+      const authorization = { principal, workspaceId: principal.workspaceId, creatorId: mission.authorization?.creatorId ?? principal.userId };
+      const models = await coordinatorRead('getModelConnections', () => catalog.getModelConnections());
+      const started = match[2] === 'start' ? await startWithDurableDispatch(coordinator, key, mission.id, authorization, models) : await coordinator.retryAgents(key, mission.id, match[2] === 'retry-agents' ? 'retry' : 'drop', runIds, authorization, models);
       return Response.json(started, { status: 202 });
     }
     const candidateSha = requireString(body.candidateSha, 'Candidate commit', 40, 40);
