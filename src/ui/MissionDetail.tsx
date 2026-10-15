@@ -35,6 +35,8 @@ import { PullRequestPanel } from "./PullRequests";
 import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 
+type PreviewResult = { status?: "starting" | "ready"; previewUrl?: string; candidateSha: string; expiresAt?: string };
+
 type Props = {
   id: string;
   initialTab: string;
@@ -83,6 +85,7 @@ export default function MissionDetail({
     candidateSha: string;
     expiresAt: string;
   } | null>(null);
+  const [previewStarting, setPreviewStarting] = useState(false);
   const mutation = useRef<{ signature: string; key: string } | null>(null);
   const revision = useRef(0);
   const [confirming, setConfirming] = useState<"approve" | "integrate" | null>(null);
@@ -289,8 +292,66 @@ export default function MissionDetail({
     onUpdate();
   }
 
+  useEffect(() => {
+    const candidateSha = mission?.candidateSha;
+    if (!previewStarting || !candidateSha) return;
+    let active = true;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const status = await request<{ status: string; error?: string }>(
+          `/api/missions/${encodeURIComponent(id)}/preview`,
+        );
+        if (!active) return;
+        if (status.status === "ready") {
+          acceptPreview(candidateSha, await request<PreviewResult>(
+            `/api/missions/${encodeURIComponent(id)}/preview`,
+            {},
+          ));
+          setPreviewStarting(false);
+          return;
+        }
+        if (status.status !== "starting") {
+          setPreviewStarting(false);
+          setError(status.error ?? "The preview stopped before it was ready. Prepare it again.");
+          return;
+        }
+      } catch (failure) {
+        if (!active) return;
+        if (failure instanceof TypeError || (failure instanceof DOMException && failure.name === "TimeoutError")) {
+          timer = window.setTimeout(poll, 3000);
+          return;
+        }
+        setPreviewStarting(false);
+        setError(failure instanceof Error ? failure.message : "The preview could not be prepared.");
+        return;
+      }
+      timer = window.setTimeout(poll, 3000);
+    };
+    timer = window.setTimeout(poll, 3000);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [previewStarting, id, mission?.candidateSha]);
+
+  function acceptPreview(candidateSha: string, result: PreviewResult) {
+    if (
+      result.status === "starting" ||
+      result.candidateSha !== candidateSha ||
+      !result.previewUrl ||
+      new URL(result.previewUrl).protocol !== "https:" ||
+      !(Date.parse(result.expiresAt ?? "") > Date.now())
+    ) {
+      throw new Error(
+        "The preview does not match this candidate or has expired. Create a new preview.",
+      );
+    }
+    setPreview({ previewUrl: result.previewUrl, candidateSha: result.candidateSha, expiresAt: result.expiresAt! });
+  }
+
   async function preparePreview() {
-    if (!mission?.candidateSha || busy) return;
+    if (!mission?.candidateSha || busy || previewStarting) return;
     setBusy("preview");
     setError("");
     const signature = JSON.stringify({
@@ -301,26 +362,14 @@ export default function MissionDetail({
     if (mutation.current?.signature !== signature)
       mutation.current = { signature, key: crypto.randomUUID() };
     try {
-      const result = await request<{
-        previewUrl: string;
-        candidateSha: string;
-        expiresAt: string;
-      }>(
+      const result = await request<PreviewResult>(
         `/api/missions/${encodeURIComponent(id)}/preview`,
         {},
         mutation.current.key,
       );
-      if (
-        result.candidateSha !== mission.candidateSha ||
-        new URL(result.previewUrl).protocol !== "https:" ||
-        !(Date.parse(result.expiresAt) > Date.now())
-      ) {
-        throw new Error(
-          "The preview does not match this candidate or has expired. Create a new preview.",
-        );
-      }
-      setPreview(result);
       mutation.current = null;
+      if (result.status === "starting") setPreviewStarting(true);
+      else acceptPreview(mission.candidateSha, result);
     } catch (failure) {
       setError(
         failure instanceof Error
@@ -347,6 +396,7 @@ export default function MissionDetail({
       </>
     );
   const active = ["queued", "running", "checking"].includes(mission.status);
+  const landing = mission.status === "integrating" && !mission.error;
   const overlap = mission.changes.filter((change) => change.runIds.length > 1);
   const unresolvedRequests = (mission.reviews ?? []).filter(
     (review) =>
@@ -447,11 +497,11 @@ export default function MissionDetail({
               variant="secondary"
               size="base"
               icon={ArrowSquareOutIcon}
-              loading={busy === "preview"}
-              disabled={!!busy}
+              loading={busy === "preview" || previewStarting}
+              disabled={!!busy || previewStarting}
               onClick={() => void preparePreview()}
             >
-              {currentPreview ? "Refresh preview" : "Prepare preview"}
+              {previewStarting ? "Preparing preview…" : currentPreview ? "Refresh preview" : "Prepare preview"}
             </Button>
           )}
           {!mission.branchChange && ["draft", "failed", "cancelled", "needs_review"].includes(
@@ -514,17 +564,20 @@ export default function MissionDetail({
               variant="primary"
               size="base"
               icon={GitMergeIcon}
-              loading={busy === "integrate"}
+              loading={busy === "integrate" || landing}
               disabled={
                 !!busy ||
+                landing ||
                 !permissions.includes("land") ||
                 unresolvedRequests.length > 0
               }
               onClick={() => mission.status === "integrating" ? void act("integrate") : setConfirming("integrate")}
             >
-              {mission.status === "integrating"
-                ? "Recheck landing"
-                : "Land approved changes"}
+              {landing
+                ? "Landing…"
+                : mission.status === "integrating"
+                  ? "Recheck landing"
+                  : "Land approved changes"}
             </Button>
           )}
           {readyForReview && (

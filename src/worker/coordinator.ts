@@ -12,9 +12,11 @@ import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './r
 import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
 import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readIssue, recordIssueOutcome, type IssueActor, type IssueChange, type IssueQuery } from './issues';
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
+import { capacityError, catalogName, liveSlots, MISSION_SLOT_GRACE_MS, slotKey, WORKSPACE_MISSION_LIMIT, WORKSPACE_PREVIEW_LIMIT, type CapacitySlot } from './capacity';
+import { missionStepTimeoutMs } from './budgets';
 
 interface Receipt<T> { fingerprint: string; result: T }
-interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
+export interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
 const INTEGRATION_PREPARATION_MS = 600_000;
 
 function eligibleRaceRuns(mission: Mission): Mission['runs'] {
@@ -25,6 +27,9 @@ export interface PreviewCapability { workspaceId?: string; principal?: import('.
 interface PreviewState { claimId: string; epoch: number; candidateSha: string; phase: 'preparing' | 'ready'; expiresAt: number; sandboxName?: string }
 export const PREVIEW_LEASE_MS = 120_000;
 export const PREVIEW_HEARTBEAT_MS = 30_000;
+export const PREVIEW_READY_MS = 900_000;
+interface PreviewFailureRecord { claimId: string; epoch: number; candidateSha: string; message: string; failedAt: string }
+export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; expiresAt?: string; error?: string }
 interface DispatchIntent { workflowId: string; missionId: string; repositoryId: string; epoch: number; attempts: number; nextAttemptAt: number }
 export const DISPATCH_FAST_ATTEMPTS = 8;
 
@@ -301,7 +306,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return capability;
   }
 
-  claimPreview(key: string, id: string, epoch: number, candidateSha: string): { sandboxName?: string; claimId: string; claimed: boolean } {
+  claimPreview(key: string, id: string, epoch: number, candidateSha: string): { sandboxName?: string; claimId: string; claimed: boolean; expiresAt?: number; previous?: string } {
     return this.ctx.storage.transactionSync(() => {
       const mission = this.requiredMission(id);
       if (mission.epoch !== epoch || mission.candidateSha !== candidateSha || !['needs_review', 'approved', 'integrating', 'integrated'].includes(mission.status)) throw new ApiError(409, 'STALE_PREVIEW', 'Only the current verified candidate can be previewed.');
@@ -309,11 +314,12 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const receipt = this.store.get<Receipt<boolean>>(`request:${key}`);
       if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
       const current = this.store.get<PreviewState>(`preview-state:${id}`);
-      if (current?.claimId && current.epoch === epoch && current.candidateSha === candidateSha && current.expiresAt > Date.now()) return { sandboxName: current.sandboxName, claimId: current.claimId, claimed: false };
+      if (current?.claimId && current.epoch === epoch && current.candidateSha === candidateSha && current.expiresAt > Date.now()) return current.sandboxName ? { sandboxName: current.sandboxName, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt } : { claimId: current.claimId, claimed: false };
       const claimId = crypto.randomUUID();
       this.store.put(`preview-state:${id}`, { claimId, epoch, candidateSha, phase: 'preparing', expiresAt: Date.now() + PREVIEW_LEASE_MS } satisfies PreviewState);
+      this.store.delete(`preview-failure:${id}`);
       this.store.put(`request:${key}`, { fingerprint, result: true });
-      return { claimId, claimed: true };
+      return current?.claimId ? { claimId, claimed: true, previous: current.sandboxName ?? `preview-${id}-${current.claimId}` } : { claimId, claimed: true };
     });
   }
 
@@ -330,17 +336,32 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     this.store.put(`preview-state:${id}`, { ...state, expiresAt: Date.now() + PREVIEW_LEASE_MS });
   }
 
-  previewReady(id: string, epoch: number, candidateSha: string, claimId: string, sandboxName: string): void {
+  previewReady(id: string, epoch: number, candidateSha: string, claimId: string, sandboxName: string): number {
     const state = this.previewClaim(id, epoch, candidateSha, claimId);
     if (sandboxName !== `preview-${id}-${claimId}`) throw new ApiError(409, 'STALE_PREVIEW', 'The preview sandbox does not belong to this attempt.');
-    this.store.put(`preview-state:${id}`, { ...state, phase: 'ready', sandboxName, expiresAt: Date.now() + 600_000 } satisfies PreviewState);
+    const expiresAt = Date.now() + PREVIEW_READY_MS;
+    this.store.put(`preview-state:${id}`, { ...state, phase: 'ready', sandboxName, expiresAt } satisfies PreviewState);
+    return expiresAt;
   }
 
-  previewFailed(id: string, claimId: string): boolean {
+  previewFailed(id: string, claimId: string, message?: string): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const state = this.store.get<PreviewState>(`preview-state:${id}`);
+      if (state?.claimId !== claimId) return false;
+      this.store.delete(`preview-state:${id}`);
+      if (message) this.store.put(`preview-failure:${id}`, { claimId, epoch: state.epoch, candidateSha: state.candidateSha, message: message.slice(0, 700), failedAt: new Date().toISOString() } satisfies PreviewFailureRecord);
+      return true;
+    });
+  }
+
+  previewStatus(id: string): PreviewStatus {
+    const mission = this.requiredMission(id);
+    const current = (entry?: { epoch: number; candidateSha: string }) => !!entry && entry.epoch === mission.epoch && entry.candidateSha === mission.candidateSha;
     const state = this.store.get<PreviewState>(`preview-state:${id}`);
-    if (state?.claimId !== claimId) return false;
-    this.store.delete(`preview-state:${id}`);
-    return true;
+    if (current(state) && state!.expiresAt > Date.now()) return state!.phase === 'ready' ? { status: 'ready', candidateSha: mission.candidateSha, expiresAt: new Date(state!.expiresAt).toISOString() } : { status: 'starting', candidateSha: mission.candidateSha };
+    const failure = this.store.get<PreviewFailureRecord>(`preview-failure:${id}`);
+    if (current(failure)) return { status: 'failed', candidateSha: mission.candidateSha, error: failure!.message };
+    return { status: 'none', candidateSha: mission.candidateSha };
   }
 
   createRepository(key: string, repository: Repository): Repository {
@@ -417,7 +438,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return this.mutate(key, JSON.stringify(['mission', input]), () => this.newMission(input, authorization, models));
   }
 
-  private newMission(input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Mission {
+  private newMission(input: CreateMissionInput, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections(), id: string = crypto.randomUUID()): Mission {
       const repository = this.getRepository(input.repositoryId);
       if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
       if (input.expectedBaseSha !== undefined && input.expectedBaseSha !== repository.headSha) throw new ApiError(409, 'STALE_PROPOSAL_BASE', 'The repository changed while you drafted this proposal. Refresh the base and review your assignments before saving.');
@@ -439,7 +460,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         { name: 'Compatibility agent', role: 'Compatibility', task: 'Improve compatibility and error handling. If this mission assigns explicit agent roles, implement only your assigned role.' },
       ]);
       const mission: Mission = {
-        id: crypto.randomUUID(), repositoryId: repository.id, title: input.title, prompt: input.prompt,
+        id, repositoryId: repository.id, title: input.title, prompt: input.prompt,
         acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(input.issueNumber !== undefined ? { issueNumber: input.issueNumber } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
         runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
@@ -460,7 +481,9 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   async createSkillMissionWithDispatch(key: string, repositoryId: string, supplied: RepositorySkillChange, authorization: NonNullable<Mission['authorization']>): Promise<Mission> {
     const change = validateRepositorySkillChange(supplied);
     await this.ensureDispatchAlarm(Date.now() + 1000);
-    return this.ctx.blockConcurrencyWhile(async () => {
+    const missionId = crypto.randomUUID();
+    const release = this.getSkillEditRequest(key, repositoryId, change) ? undefined : await this.reserveWorkspaceMission(authorization.workspaceId, missionId, repositoryId, 1, missionStepTimeoutMs({ runs: [], skillChange: change }));
+    const created = await this.releaseOnFailure(release, () => this.ctx.blockConcurrencyWhile(async () => {
       const existing = this.getSkillEditRequest(key, repositoryId, change);
       if (existing) return existing;
       if (!this.env.GITFLARE_SECURITY) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', 'The security service is not configured.');
@@ -468,13 +491,15 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       await access.authorize(authorization.principal, 'contribute', 'repository', repositoryId);
       await access.authorize(authorization.principal, 'execute', 'repository', repositoryId);
       return this.mutate(key, JSON.stringify(['skill-edit', repositoryId, change]), () => {
-        const mission = this.newMission(skillMissionInput(repositoryId, change), authorization);
+        const mission = this.newMission(skillMissionInput(repositoryId, change), authorization, undefined, missionId);
         mission.status = 'queued';
         mission.epoch = 1;
         this.queueDispatch(mission);
         return this.saveMission(mission, 'Skill edit queued for exact-content execution and repository checks.');
       });
-    });
+    }));
+    if (created.id !== missionId) await release?.();
+    return created;
   }
 
   private async ensureDispatchAlarm(when: number): Promise<void> {
@@ -493,7 +518,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   async startMission(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
     await this.ensureDispatchAlarm(Date.now() + 1000);
-    const started = this.mutateMission(key, JSON.stringify(['start', id]), id, () => {
+    const release = await this.reserveMissionCapacity(key, id, authorization);
+    const started = await this.releaseOnFailure(release, () => this.mutateMission(key, JSON.stringify(['start', id]), id, () => {
       const mission = pinMissionModels(this.requiredMission(id), models);
       if (!['draft', 'failed', 'cancelled', 'needs_review'].includes(mission.status)) throw new ApiError(409, 'MISSION_ACTIVE', 'Cancel the active attempt or revoke its approval before starting again.');
       const repository = this.getRepository(mission.repositoryId);
@@ -517,7 +543,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       mission.runs = mission.runs.map((run) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, status: 'queued', changedFiles: [] }));
       this.queueDispatch(mission);
       return this.saveMission(mission, `Execution attempt ${mission.epoch} queued.`);
-    });
+    }));
     if (started.status === 'cancelled') throw new ApiError(409, 'STALE_REQUEST', 'This start request was cancelled. Use a new request to retry the mission.');
     if (started.status === 'queued') this.queueDispatch(started);
     return started;
@@ -834,4 +860,73 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       return mission;
     });
   }
+
+  integrationClaim(): IntegrationClaim | undefined { return this.store.get<IntegrationClaim>('integration:claim'); }
+
+  private async releaseOnFailure<T>(release: (() => Promise<void>) | undefined, operation: () => T | Promise<T>): Promise<T> {
+    try { return await operation(); }
+    catch (error) { await release?.().catch(() => {}); throw error; }
+  }
+
+  private async reserveMissionCapacity(key: string, id: string, authorization?: NonNullable<Mission['authorization']>): Promise<(() => Promise<void>) | undefined> {
+    const mission = this.getMission(id);
+    if (!mission || this.store.get(`request:${key}`) || ['queued', 'running', 'checking'].includes(mission.status)) return undefined;
+    const workspaceId = authorization?.workspaceId ?? mission.authorization?.workspaceId ?? this.getRepository(mission.repositoryId)?.workspaceId ?? 'legacy';
+    return this.reserveWorkspaceMission(workspaceId, id, mission.repositoryId, mission.epoch + 1, missionStepTimeoutMs(mission));
+  }
+
+  // Without a coordinator namespace there is no workspace catalog to count against
+  private async reserveWorkspaceMission(workspaceId: string, missionId: string, repositoryId: string, epoch: number, timeoutMs: number): Promise<(() => Promise<void>) | undefined> {
+    if (!this.env?.GITFLARE_COORDINATOR) return undefined;
+    const catalog = this.env.GITFLARE_COORDINATOR.getByName(catalogName(workspaceId));
+    const reserved = await catalog.reserveMissionSlot(missionId, repositoryId, epoch, Date.now() + timeoutMs + MISSION_SLOT_GRACE_MS);
+    return reserved ? () => catalog.releaseMissionSlot(missionId, epoch) : undefined;
+  }
+
+  async reserveMissionSlot(missionId: string, repositoryId: string, epoch: number, expiresAt: number): Promise<boolean> {
+    const claim = () => this.ctx.storage.transactionSync(() => {
+      const existing = this.store.get<CapacitySlot>(slotKey('mission', missionId));
+      if (existing && existing.expiresAt > Date.now()) {
+        this.store.put(slotKey('mission', missionId), { ...existing, repositoryId, epoch, expiresAt: Math.max(existing.expiresAt, expiresAt) } satisfies CapacitySlot);
+        return false;
+      }
+      if (liveSlots(this.store, 'mission').length >= WORKSPACE_MISSION_LIMIT) return undefined;
+      this.store.put(slotKey('mission', missionId), { id: missionId, repositoryId, epoch, expiresAt } satisfies CapacitySlot);
+      return true;
+    });
+    const first = claim();
+    if (first !== undefined) return first;
+    for (const slot of liveSlots(this.store, 'mission')) {
+      let active = false;
+      if (slot.repositoryId && slot.epoch !== undefined) {
+        try { active = await this.env.GITFLARE_COORDINATOR.getByName(`repository:${slot.repositoryId}`).isMissionActive(slot.id, slot.epoch); }
+        catch { active = true; }
+      }
+      if (!active && this.store.get<CapacitySlot>(slotKey('mission', slot.id))?.epoch === slot.epoch) this.store.delete(slotKey('mission', slot.id));
+    }
+    const second = claim();
+    if (second === undefined) throw capacityError('mission');
+    return second;
+  }
+
+  releaseMissionSlot(missionId: string, epoch: number): void {
+    const slot = this.store.get<CapacitySlot>(slotKey('mission', missionId));
+    if (slot && (slot.epoch === undefined || slot.epoch <= epoch)) this.store.delete(slotKey('mission', missionId));
+  }
+
+  reservePreviewSlot(missionId: string, expiresAt: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const slots = liveSlots(this.store, 'preview');
+      if (slots.some((slot) => slot.id === missionId)) return false;
+      if (slots.length >= WORKSPACE_PREVIEW_LIMIT) throw capacityError('preview');
+      this.store.put(slotKey('preview', missionId), { id: missionId, expiresAt } satisfies CapacitySlot);
+      return true;
+    });
+  }
+
+  holdPreviewSlot(missionId: string, expiresAt: number): void {
+    this.store.put(slotKey('preview', missionId), { id: missionId, expiresAt } satisfies CapacitySlot);
+  }
+
+  releasePreviewSlot(missionId: string): void { this.store.delete(slotKey('preview', missionId)); }
 }

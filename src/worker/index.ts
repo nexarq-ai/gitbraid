@@ -6,9 +6,11 @@ import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } fr
 import { createArtifactsRepository, repositoryHead } from './artifacts';
 import { ApiError, assertMutationOrigin, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString } from './domain';
 import type { AppEnv } from './env';
-import { executionReadiness, integrateCandidate, IntegrationFailure, prepareCandidatePreview, PreviewFailure } from './execution';
+import { executionReadiness } from './execution';
+import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflowId } from './background-work';
+import { PREVIEW_STEP_MS } from './budgets';
 import { handleMcp, mcpToolNames } from './mcp';
-import { PREVIEW_HEARTBEAT_MS, startWithDurableDispatch } from './coordinator';
+import { startWithDurableDispatch } from './coordinator';
 import type { Principal, Action } from './security';
 import { listDocs, readDoc } from './docs';
 import { documentationImage, documentationMarkdown } from './docs-markdown';
@@ -386,6 +388,11 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     await access.authorize(principal, 'read', 'repository', repository.id, mission.id);
     return Response.json({ attempts: await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).listAttempts(mission.id) });
   }
+  if (request.method === 'GET' && match?.[2] === 'preview') {
+    const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
+    await access.authorize(principal, 'read', 'repository', repository.id, mission.id);
+    return Response.json(await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).previewStatus(mission.id));
+  }
   if (request.method !== 'POST') throw new ApiError(404, 'NOT_FOUND', 'This API route could not be found.');
   assertMutationOrigin(request);
   const key = requireIdempotencyKey(request);
@@ -565,40 +572,27 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       const previewOrigin = new URL(env.PREVIEW_ORIGIN);
       if (previewOrigin.protocol !== 'https:' || previewOrigin.origin === url.origin) throw new ApiError(503, 'PREVIEW_ORIGIN_INVALID', 'Previews require a separate HTTPS origin.');
       if (!mission.candidateSha || !mission.checks.some((check) => check.candidateSha === mission.candidateSha && check.status === 'passed') || mission.checks.some((check) => check.status !== 'passed')) throw new ApiError(409, 'CHECKS_REQUIRED', 'The current integration candidate must pass verification before preview.');
-      const claim = await coordinator.claimPreview(key, mission.id, mission.epoch, mission.candidateSha);
-      let sandboxName = claim.sandboxName;
-      if (!sandboxName && !claim.claimed) throw new ApiError(409, 'PREVIEW_STARTING', 'This preview is starting. Try again shortly.');
-      if (claim.claimed) {
-        let finished = false;
-        let timer: ReturnType<typeof setTimeout>;
-        const renew = async () => {
-          try { await coordinator.renewPreview(mission.id, mission.epoch, mission.candidateSha!, claim.claimId); }
-          catch {}
-          if (!finished) timer = setTimeout(renew, PREVIEW_HEARTBEAT_MS);
-        };
-        timer = setTimeout(renew, PREVIEW_HEARTBEAT_MS);
-        try {
-          const prepared = await prepareCandidatePreview(env, { repository, mission, previewAttemptId: claim.claimId, assertAuthority: () => access.check(principal, 'read', 'repository', repository.id, mission.id) });
-          sandboxName = prepared.sandboxName;
-          await coordinator.previewReady(mission.id, mission.epoch, mission.candidateSha, claim.claimId, sandboxName);
-        } catch (error) {
-          try { await coordinator.previewFailed(mission.id, claim.claimId); } catch {}
-          if (sandboxName) await env.SANDBOX.getByName(sandboxName).destroy().catch(() => {});
-          if (error instanceof PreviewFailure) throw new ApiError(502, 'PREVIEW_FAILED', error.message);
-          throw error;
-        } finally {
-          finished = true;
-          clearTimeout(timer);
+      if (!env.MISSION_WORKFLOW) throw new ApiError(503, 'PREVIEW_NOT_CONFIGURED', 'Configure the Mission Workflow before creating a preview.');
+      const reserved = await catalog.reservePreviewSlot(mission.id, Date.now() + PREVIEW_STEP_MS);
+      let claim: Awaited<ReturnType<typeof coordinator.claimPreview>>;
+      try { claim = await coordinator.claimPreview(key, mission.id, mission.epoch, mission.candidateSha); }
+      catch (error) { if (reserved) await catalog.releasePreviewSlot(mission.id); throw error; }
+      if (claim.previous) await env.SANDBOX.getByName(claim.previous).destroy().catch(() => {});
+      const sandboxName = claim.sandboxName;
+      if (!sandboxName) {
+        if (claim.claimed && await dispatchBackground(env.MISSION_WORKFLOW, previewWorkflowId(claim.claimId), { kind: 'preview', repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, claimId: claim.claimId, principal }) === 'missing') {
+          if (await coordinator.previewFailed(mission.id, claim.claimId)) await catalog.releasePreviewSlot(mission.id);
+          throw new ApiError(503, 'PREVIEW_NOT_STARTED', 'The preview could not be scheduled. Try again.');
         }
+        return Response.json({ status: 'starting', candidateSha: mission.candidateSha }, { status: 202 });
       }
-      if (!sandboxName) throw new ApiError(503, 'PREVIEW_UNAVAILABLE', 'The preview could not be started.');
       const current = await coordinator.getMission(mission.id);
       if (!current || current.epoch !== mission.epoch || current.candidateSha !== mission.candidateSha || !['needs_review', 'approved', 'integrating', 'integrated'].includes(current.status)) throw new ApiError(409, 'STALE_PREVIEW', 'The candidate changed while the preview was starting.');
       const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const expiresAt = Date.now() + 900_000;
+      const expiresAt = Math.min(Date.now() + 900_000, claim.expiresAt ?? Infinity);
       await access.check(principal, 'read', 'repository', repository.id, mission.id);
       await env.GITFLARE_COORDINATOR.getByName('catalog:owner').savePreviewCapability(await capabilityHash(token), { workspaceId: principal.workspaceId, principal, repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, sandboxName, expiresAt });
-      return Response.json({ previewUrl: `${previewOrigin.origin}/open/${token}`, candidateSha: mission.candidateSha, expiresAt: new Date(expiresAt).toISOString() });
+      return Response.json({ status: 'ready', previewUrl: `${previewOrigin.origin}/open/${token}`, candidateSha: mission.candidateSha, expiresAt: new Date(expiresAt).toISOString() });
     }
     if (match[2] === 'revert') {
       await access.authorize(principal, 'contribute', 'repository', repository.id);
@@ -626,7 +620,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     if (match[2] === 'revoke') { const result = await coordinator.revokeApproval(key, mission.id, candidateSha, baseSha); await access.clearApprovals(principal, mission.id); return Response.json(result); }
     const current = await currentRepository(env, repository);
     if (match[2] === 'integrate') {
-      if (!env.SANDBOX || !env.ARTIFACTS) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect Artifacts and Sandbox before integrating.');
+      if (!env.SANDBOX || !env.ARTIFACTS || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect Artifacts, Sandbox and the Mission Workflow before integrating.');
       const rule = await landingReviewRule(env, repository);
       await access.assertLand(principal, mission.id, candidateSha, baseSha, mission.epoch, repository.id, rule);
       const claim = await coordinator.beginIntegration(key, mission.id, candidateSha, baseSha);
@@ -634,26 +628,15 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       if (!claim.claimId) throw new ApiError(500, 'INTEGRATION_CLAIM_MISSING', 'The integration claim could not be established.');
       if (!claim.claimed) {
         if (current.headSha === candidateSha) return Response.json(await coordinator.completeIntegration(mission.id, claim.mission.epoch, candidateSha, claim.claimId));
+        if (await backgroundState(env.MISSION_WORKFLOW, landingWorkflowId(claim.claimId)) === 'running') return Response.json(claim.mission, { status: 202 });
         if (await coordinator.releaseStaleIntegration(mission.id, claim.claimId)) throw new ApiError(409, 'INTEGRATION_RELEASED', 'An earlier landing attempt ended without updating the canonical branch. Its claim was released; retry landing.');
         throw new ApiError(409, 'INTEGRATION_PENDING', 'An integration is in progress or needs reconciliation. The canonical branch has not confirmed the approved commit.');
       }
-      try {
-        const result = await integrateCandidate(env, { repository: current, mission: claim.mission, integrationAttemptId: claim.claimId, beforePush: async () => { await coordinator.claimIntegrationPush(mission.id, claim.mission.epoch, claim.claimId!); }, assertAuthority: async () => { await access.check(principal, 'land', 'repository', repository.id, mission.id); await access.assertLand(principal, mission.id, candidateSha, baseSha, mission.epoch, repository.id, await landingReviewRule(env, repository)); } });
-        const integrated = await coordinator.completeIntegration(mission.id, claim.mission.epoch, result.sha, claim.claimId);
-        await catalog.saveRepository({ ...current, headSha: result.sha, updatedAt: result.integratedAt });
-        return Response.json(integrated);
-      } catch (error) {
-        const actual = await repositoryHead(env.ARTIFACTS, current.name, current.defaultBranch).catch(() => null);
-        if (actual === candidateSha) {
-          const integrated = await coordinator.completeIntegration(mission.id, claim.mission.epoch, candidateSha, claim.claimId);
-          await catalog.saveRepository({ ...current, headSha: candidateSha, updatedAt: new Date().toISOString() });
-          return Response.json(integrated);
-        }
-        const outcome = error instanceof IntegrationFailure ? error.outcome : 'unknown';
-        await coordinator.integrationFailed(mission.id, claim.mission.epoch, claim.claimId, outcome);
-        if (outcome === 'not_pushed') throw new ApiError(503, 'INTEGRATION_NOT_PUSHED', 'Integration stopped before attempting a canonical push. Retry integration, or revoke approval to rerun the mission.');
-        throw new ApiError(503, 'INTEGRATION_UNCONFIRMED', 'The canonical branch could not be confirmed at the approved commit. The repository remains locked for reconciliation.');
+      if (await dispatchBackground(env.MISSION_WORKFLOW, landingWorkflowId(claim.claimId), { kind: 'land', repositoryId: repository.id, missionId: mission.id, epoch: claim.mission.epoch, candidateSha, baseSha, claimId: claim.claimId, principal }) === 'missing') {
+        await coordinator.integrationFailed(mission.id, claim.mission.epoch, claim.claimId, 'not_pushed');
+        throw new ApiError(503, 'INTEGRATION_NOT_STARTED', 'Landing could not be scheduled and nothing was pushed. Retry landing.');
       }
+      return Response.json(claim.mission, { status: 202 });
     }
     assertReviewClear(mission);
     const approval = await access.recordApproval(principal, mission.id, candidateSha, baseSha, mission.epoch, mission.checks, mission.authorization?.creatorId, await landingReviewRule(env, repository));

@@ -3,6 +3,7 @@ import type { AgentSandbox } from '../../runner/sandbox';
 import type { ArtifactsBinding } from './artifacts';
 import type { GitflareSecurity } from './security';
 import type { GitflareCoordinator } from './coordinator';
+import type { MissionWorkflowParams } from './workflow';
 
 export type AppEnv = Omit<Env, 'CLOUDFLARE_CLIENT_ID' | 'CLOUDFLARE_CLIENT_SECRET' | 'CLOUDFLARE_OAUTH_SCOPES' | 'CLOUDFLARE_CLIENT_AUTH_METHOD' | 'EDITION' | 'ADMIN_EMAIL' | 'ADMIN_PASSWORD' | 'EMAIL_FROM' | 'OAUTH_KV' | 'GITFLARE_SECURITY' | 'APP_ENV' | 'GITFLARE_COORDINATOR' | 'ARTIFACTS' | 'SANDBOX' | 'MISSION_WORKFLOW' | 'MODEL' | 'AI' | 'AI_GATEWAY_ID' | 'AI_FEATURES' | 'TEST_COMMAND'> & {
   GITFLARE_SECURITY: DurableObjectNamespace<GitflareSecurity>;
@@ -24,7 +25,7 @@ export type AppEnv = Omit<Env, 'CLOUDFLARE_CLIENT_ID' | 'CLOUDFLARE_CLIENT_SECRE
   EMAIL_FROM?: string;
   ARTIFACTS?: ArtifactsBinding;
   SANDBOX?: DurableObjectNamespace<AgentSandbox>;
-  MISSION_WORKFLOW?: Workflow<{ repositoryId: string; missionId: string; epoch: number }>;
+  MISSION_WORKFLOW?: Workflow<MissionWorkflowParams>;
   MODEL?: string;
   AI?: Ai;
   AI_GATEWAY_ID?: string;
