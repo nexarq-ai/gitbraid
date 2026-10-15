@@ -8,10 +8,14 @@ type Authenticate = (request: Request, env: AppEnv, bearerOnly?: boolean) => Pro
 type Handler = { fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> };
 const escape = (value: string) => value.replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`);
 const signedOut = (error: unknown) => [401, 403].includes(publicError(error).status);
+const WEB_CALLBACK = ['http:', 'https:'];
+// Any local app can claim a private-use scheme, so only known MCP client callbacks are accepted
+const PRIVATE_USE_CALLBACKS = [/^cursor:\/\/anysphere\.cursor-mcp\/oauth\/callback$/, /^cursor:\/\/anysphere\.cursor-retrieval\/oauth\/[\w.-]+\/callback$/];
+const acceptedCallback = (redirectUri: string) => WEB_CALLBACK.includes(new URL(redirectUri).protocol) || PRIVATE_USE_CALLBACKS.some(pattern => pattern.test(redirectUri));
 
 function page(body: string, headers = new Headers(), validatedRedirectUri?: string): Response {
   const callback = validatedRedirectUri ? new URL(validatedRedirectUri) : undefined;
-  const callbackSource = callback && ['http:', 'https:'].includes(callback.protocol) ? ` ${callback.origin}` : '';
+  const callbackSource = !callback ? '' : WEB_CALLBACK.includes(callback.protocol) ? ` ${callback.origin}` : ` ${callback.protocol}`;
   headers.set('Content-Type', 'text/html; charset=utf-8');
   headers.set('Cache-Control', 'no-store');
   headers.set('X-Frame-Options', 'DENY');
@@ -47,10 +51,11 @@ export async function oauthConsent(request: Request, env: AppEnv, authenticate: 
       const authRequest = await oauth.parseAuthRequest(request);
       if (!authRequest.codeChallenge || authRequest.codeChallengeMethod !== 'S256') throw new ApiError(400, 'PKCE_REQUIRED', 'This client must use OAuth PKCE with S256.');
       const details = await oauth.describeConsent(authRequest);
+      if (!acceptedCallback(details.redirectUri)) return page('<h1>Connection could not continue</h1><p>This client asked to return to an app link Gitflare does not accept. Use a client callback with https or a loopback address.</p><p>Restart the connection from your AI client.</p>');
       const transaction = await oauth.beginConsent(authRequest);
       const workspace = await securityClient(env).workspace(principal);
       const ceiling = accessFromScopes(authRequest.scope) ?? 'admin';
-      return page(`<h1>Connect ${escape(details.clientName)}?</h1><p>${details.clientDomain ? `Published by <strong>${escape(details.clientDomain)}</strong>.` : 'This client’s name is self-reported and has not been verified.'}</p><p>Access returns to <strong>${escape(details.redirectHost)}</strong>.</p>${details.redirectIsLoopback ? '<p>Only continue if you started this connection from an app on your computer.</p>' : ''}<p>Workspace: <strong>${escape(workspace.name)}</strong><br>Role: <strong>${escape(principal.role)}</strong></p><form method="post"><input type="hidden" name="handle" value="${escape(transaction.handle)}"><fieldset><legend>Allow this client to</legend>${accessChoices(ceiling)}</fieldset><p><small>Your workspace role still limits every action. The connection lasts up to 30 days of use and ends when you revoke its session in Settings → Access → Account, or when your membership changes.</small></p><button name="decision" value="approve">Allow connection</button> <button name="decision" value="deny" formnovalidate>Cancel</button></form>`, transaction.headers, details.redirectUri);
+      return page(`<h1>Connect ${escape(details.clientName)}?</h1><p>${details.clientDomain ? `Published by <strong>${escape(details.clientDomain)}</strong>.` : 'This client’s name is self-reported and has not been verified.'}</p><p>Access returns to <strong>${escape(details.redirectHost)}</strong>.</p>${details.redirectIsLoopback || !WEB_CALLBACK.includes(new URL(details.redirectUri).protocol) ? '<p>Only continue if you started this connection from an app on your computer.</p>' : ''}<p>Workspace: <strong>${escape(workspace.name)}</strong><br>Role: <strong>${escape(principal.role)}</strong></p><form method="post"><input type="hidden" name="handle" value="${escape(transaction.handle)}"><fieldset><legend>Allow this client to</legend>${accessChoices(ceiling)}</fieldset><p><small>Your workspace role still limits every action. The connection lasts up to 30 days of use and ends when you revoke its session in Settings → Access → Account, or when your membership changes.</small></p><button name="decision" value="approve">Allow connection</button> <button name="decision" value="deny" formnovalidate>Cancel</button></form>`, transaction.headers, details.redirectUri);
     }
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
     if (request.headers.get('Origin') !== new URL(request.url).origin || request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new ApiError(403, 'ORIGIN_REJECTED', 'Submit authorization from this Gitflare installation.');
@@ -99,6 +104,7 @@ function providerOptions(origin: string, handler: Handler, authenticate: Authent
     scopesSupported: SUPPORTED_SCOPES, requiredScopes: grantedScopes('admin'),
     accessTokenTTL: CLIENT_ACCESS_TOKEN_SECONDS, refreshTokenTTL: CLIENT_GRANT_SECONDS,
     clientIdMetadataDocumentEnabled: true,
+    allowPrivateUseRedirectUris: true,
     resourceMetadata: { resource: `${origin}/mcp`, resource_name: 'Gitflare', authorization_servers: [origin] },
     async tokenExchangeCallback({ grantType, props, env }) {
       if (grantType !== 'refresh_token') return;

@@ -2491,49 +2491,61 @@ a svg {
   align-items: center;
   gap: 5px;
 }
-.mcp-clients {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin: 20px 0;
+.mcp-client-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 16px;
 }
-.mcp-client {
+.mcp-client-picker button {
   border: 1px solid #e1e1e1;
-  border-radius: 8px;
+  border-radius: 999px;
   background: #fff;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
-.mcp-client.selected {
-  border-color: #a0bde6;
-}
-.mcp-client-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #5c5c5c;
-  margin-bottom: 12px;
-}
-.mcp-client-title h3 {
-  font-size: 15px;
-  font-weight: 600;
-  color: #323232;
-}
-.mcp-client p {
+  color: #4d4d4d;
+  font: inherit;
   font-size: 13px;
-  color: #757575;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.mcp-client-picker button:hover {
+  border-color: #c4c4c4;
+}
+.mcp-client-picker button.selected {
+  border-color: #161719;
+  background: #161719;
+  color: #fff;
+}
+.mcp-client-picker button:focus-visible {
+  outline: 2px solid #a0bde6;
+  outline-offset: 2px;
+}
+.mcp-install-link {
+  border: 1px solid #161719;
+  border-radius: 6px;
+  background: #161719;
+  color: #fff;
+  font-size: 13px;
+  padding: 5px 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.mcp-steps {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  list-style: decimal;
+}
+.mcp-steps li {
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #4d4d4d;
   line-height: 1.7;
-  flex: 1;
-  margin-bottom: 15px;
 }
-.mcp-client .pill {
-  margin-bottom: 18px;
-  font-size: 11px;
+.mcp-steps .mcp-code {
+  margin-top: 8px;
 }
-.mcp-client > button {
-  width: 100%;
+.mcp-code pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .mcp-no-telemetry {
   font-size: 12px;
@@ -2677,40 +2689,7 @@ a svg {
   line-height: 1.7;
   margin-top: 14px;
 }
-@media (max-width: 1080px) {
-  .mcp-clients {
-    grid-template-columns: 1fr;
-  }
-  .mcp-client {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 0 20px;
-  }
-  .mcp-client-title {
-    grid-column: 1;
-  }
-  .mcp-client p {
-    grid-column: 1;
-  }
-  .mcp-client .pill {
-    grid-column: 2;
-    grid-row: 1;
-  }
-  .mcp-client > button {
-    grid-column: 2;
-    grid-row: 2;
-    align-self: end;
-    width: auto;
-  }
-}
 @media (max-width: 600px) {
-  .mcp-client {
-    display: flex;
-  }
-  .mcp-client > button {
-    align-self: auto;
-    width: 100%;
-  }
   .mcp-no-telemetry {
     display: none;
   }

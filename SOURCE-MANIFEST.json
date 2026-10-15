@@ -325,8 +325,8 @@
     },
     {
       "path": "src/ui/McpConnections.tsx",
-      "size": 4052,
-      "sha256": "425360c60053970c60c32be1f31cb22e4d9450daddf0429f0847f34d3d408abb"
+      "size": 4372,
+      "sha256": "d67da4b47e568c015b9febad234076909038f16d7bdf1f3f206926edee0b72ed"
     },
     {
       "path": "src/ui/MissionDetail.tsx",
@@ -440,8 +440,8 @@
     },
     {
       "path": "src/ui/styles.css",
-      "size": 62175,
-      "sha256": "70359028d2615a8d5907aa48e3e54106a6f9fd844776fad57586b97e2d4ce961"
+      "size": 61926,
+      "sha256": "db528d68c4f4ebeba390c46e5ef0650820dda79bc7b9e8b9d1bba1544244f11a"
     },
     {
       "path": "src/ui/WorkspaceLoader.tsx",
@@ -615,8 +615,8 @@
     },
     {
       "path": "src/worker/oauth.ts",
-      "size": 11798,
-      "sha256": "9a26b1be19df1d8b604794ee80dcf2ed82cde917b03760f8efb1cdddeb59d922"
+      "size": 12675,
+      "sha256": "57c0257fbe9266b2961df063f0717e29b93cb9c32e72f48d2c78b3ad48d1e6d1"
     },
     {
       "path": "src/worker/onboarding.ts",
@@ -640,8 +640,8 @@
     },
     {
       "path": "src/worker/public-pages.ts",
-      "size": 12503,
-      "sha256": "0c59b66879ba34822d3498f942497346402b84b9cc7413fdcb92d2f0050f76d9"
+      "size": 12293,
+      "sha256": "b47c198b72ef959333b9beaf151b7cbe74613f06b9d2b8a2c11ce9546a583501"
     },
     {
       "path": "src/worker/rate-limits.ts",
