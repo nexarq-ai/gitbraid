@@ -1,8 +1,10 @@
+import { detectPackageManager, hasInstallableDependencies, runnerFor, runScript, type InstallPlan } from './package-manager';
+
 export const LEGACY_PREVIEW = 'node src/preview.mjs';
 
 export interface PreviewPlan {
   argv: string[];
-  install: 'ci' | 'install' | null;
+  install: InstallPlan | null;
   readinessMs: number;
   description: string;
 }
@@ -33,14 +35,18 @@ function shell(command: string): string[] {
   return ['/bin/bash', '-lc', command];
 }
 
-export function previewPlan(files: string[], packageJson: string | null, configured: { command?: string; install?: boolean } = {}): PreviewPlan {
-  const lock = files.includes('package-lock.json') ? 'ci' : 'install';
-  if (configured.command && configured.command !== LEGACY_PREVIEW) return { argv: shell(`exec ${configured.command}`), install: configured.install ? lock : null, readinessMs: 90_000, description: `the configured preview command (${configured.command})` };
-  if (files.includes('src/preview.mjs')) return { argv: ['node', 'src/preview.mjs'], install: configured.install ? lock : null, readinessMs: 15_000, description: 'src/preview.mjs' };
+const LISTEN = ['--host', '0.0.0.0', '--port', '8080'];
+
+export function previewPlan(files: string[], packageJson: string | null, configured: { command?: string; install?: InstallPlan | null } = {}, lockHead: string | null = null): PreviewPlan {
+  if (configured.command && configured.command !== LEGACY_PREVIEW) return { argv: shell(`exec ${configured.command}`), install: configured.install ?? null, readinessMs: 90_000, description: `the configured preview command (${configured.command})` };
+  if (files.includes('src/preview.mjs')) return { argv: ['node', 'src/preview.mjs'], install: configured.install ?? null, readinessMs: 15_000, description: 'src/preview.mjs' };
   const available = scripts(packageJson);
-  if (available.start) return { argv: shell('exec npm start'), install: lock, readinessMs: 90_000, description: 'npm start' };
-  if (available.build && available.preview) return { argv: shell('npm run build && exec npm run preview -- --host 0.0.0.0 --port 8080'), install: lock, readinessMs: 180_000, description: 'npm run build, then npm run preview' };
-  if (available.dev) return { argv: shell('exec npm run dev -- --host 0.0.0.0 --port 8080'), install: lock, readinessMs: 120_000, description: 'npm run dev' };
+  const detected = detectPackageManager({ files, packageJson, lockHead });
+  const install = hasInstallableDependencies(files, packageJson) ? detected : null;
+  const pm = runnerFor(detected);
+  if (available.start) return { argv: shell(`exec ${pm} start`), install, readinessMs: 90_000, description: `${pm} start` };
+  if (available.build && available.preview) return { argv: shell(`${runScript(pm, 'build')} && exec ${runScript(pm, 'preview', LISTEN)}`), install, readinessMs: 180_000, description: `${pm} run build, then ${pm} run preview` };
+  if (available.dev) return { argv: shell(`exec ${runScript(pm, 'dev', LISTEN)}`), install, readinessMs: 120_000, description: `${pm} run dev` };
   const root = ['dist', 'build', 'public', 'site', 'docs'].find((dir) => files.includes(`${dir}/index.html`)) ?? '.';
   return { argv: ['node', '-e', STATIC_SERVER, root], install: null, readinessMs: 15_000, description: root === '.' ? 'the repository files as a static site' : `${root}/ as a static site` };
 }
