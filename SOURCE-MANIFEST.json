@@ -649,6 +649,11 @@
       "sha256": "7378bcb3bf8542ba3a1b17f4b25e59140788b42526d9eedb3033e5a82170e4ab"
     },
     {
+      "path": "src/worker/preview-capability.ts",
+      "size": 5996,
+      "sha256": "288259d0e8e44d13b4e7ce897ebad8dec2bfb488fc39b91fa807e1a806958190"
+    },
+    {
       "path": "src/worker/preview-plan.ts",
       "size": 5397,
       "sha256": "27b2631fdbde966d4f234a97448372cdd6da0ae3599bdddecff24cd7fcb14ee6"
