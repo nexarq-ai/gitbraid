@@ -1,5 +1,6 @@
 import { anthropicInput, anthropicOutput, isSonnet55, nativeModelId } from './anthropic-adapter';
 import type { ModelConnection, ModelUsage } from '../shared/types';
+import { gatewayMetadata, gatewayUrl, providerRequest, type ModelRoute } from './gateway-routing';
 
 export interface AiGatewayUniversalRequest {
   provider: string;
@@ -9,10 +10,11 @@ export interface AiGatewayUniversalRequest {
 }
 export interface ModelEnv {
   AI?: {
-    run(model: string, input: Record<string, unknown>, options?: { gateway: { id: string }; extraHeaders?: Record<string, string>; signal?: AbortSignal }): Promise<unknown>;
+    run(model: string, input: Record<string, unknown>, options?: { gateway: { id: string; metadata?: Record<string, string> }; extraHeaders?: Record<string, string>; signal?: AbortSignal }): Promise<unknown>;
     gateway?(id: string): { run(request: AiGatewayUniversalRequest | AiGatewayUniversalRequest[], options?: { extraHeaders?: object; signal?: AbortSignal }): Promise<Response> };
   };
   AI_GATEWAY_ID?: string;
+  modelAccess?: (model: ModelConnection) => Promise<ModelRoute>;
 }
 export type InputItem = Record<string, unknown>;
 export type ToolCall = { call_id: string; name: string; arguments: string };
@@ -160,7 +162,7 @@ async function cloudflareLocation(): Promise<string | null> {
   } catch { return null; }
 }
 
-export async function gatewayRejection(response: Response, modelId: string): Promise<string> {
+export async function gatewayRejection(response: Response, modelId: string, workspaceKey?: string): Promise<string> {
   let reason = '';
   try {
     const body = (await response.text()).slice(0, 4000);
@@ -170,32 +172,55 @@ export async function gatewayRejection(response: Response, modelId: string): Pro
       reason = String((typeof error === 'object' && error?.message) || (typeof parsed.error === 'string' && parsed.error) || parsed.message || parsed.errors?.[0]?.message || '');
     } catch { reason = body; }
   } catch {}
+  if (workspaceKey) reason = reason.split(workspaceKey).join('[redacted]');
   reason = reason.replace(/\s+/g, ' ').replace(/(sk-|key-|Bearer\s+)[\w-]{6,}/gi, '$1[redacted]').trim().slice(0, 240);
-  const advice = response.status === 401 || response.status === 403 ? ' Check this provider key in the AI Gateway (BYOK) and that the account can use this model, or choose another model for the mission and retry.' : '';
+  const advice = response.status === 401 || response.status === 403 ? workspaceKey ? ' Check this workspace AI key in Settings > AI models and that the provider account can use this model.' : ' Check this provider key in the AI Gateway (BYOK) and that the account can use this model, or choose another model for the mission and retry.' : '';
   const location = response.status === 403 ? await cloudflareLocation() : null;
   return `AI Gateway rejected ${modelId} with status ${response.status}${reason ? `: ${reason}` : ''}.${location ? ` The call came from Cloudflare location ${location}; some providers refuse requests from locations they do not serve.` : ''}${advice}`;
 }
 
+async function routedInference(env: ModelEnv, model: ModelConnection, parameters: Record<string, unknown>, route: ModelRoute, timeoutMs: number): Promise<unknown> {
+  const request = providerRequest(model, parameters, route);
+  const signal = AbortSignal.timeout(Math.min(90_000, timeoutMs));
+  let response: Response;
+  if (route.gateway) {
+    const headers = { ...request.headers, ...(route.gateway.token ? { 'cf-aig-authorization': `Bearer ${route.gateway.token}` } : {}) };
+    response = await fetch(gatewayUrl(route.gateway, request.provider, request.endpoint), { method: 'POST', headers, body: JSON.stringify(request.body), signal });
+  } else {
+    if (!env.AI?.gateway || !env.AI_GATEWAY_ID) throw new Error('AI Gateway connection is not configured');
+    response = await env.AI.gateway(env.AI_GATEWAY_ID).run({ provider: request.provider, endpoint: request.endpoint, headers: request.headers, query: request.body }, { signal });
+  }
+  if (!response.ok) throw new Error(await gatewayRejection(response, model.id, route.credential?.key));
+  try { return await response.json(); }
+  catch { throw new Error('AI Gateway returned an unparsable response'); }
+}
+
 export async function inferenceMessage(env: ModelEnv, model: ModelConnection, input: InputItem[], tools: InputItem[], timeoutMs: number, maxTokens = 4096, onUsage?: (usage: ModelUsage | undefined) => Promise<void>): Promise<ModelMessage> {
-  if (!env.AI || !env.AI_GATEWAY_ID) throw new Error('AI Gateway connection is not configured');
+  const route = env.modelAccess ? await env.modelAccess(model) : undefined;
+  const routed = !!(route?.credential || route?.gateway);
+  if (!routed && (!env.AI || !env.AI_GATEWAY_ID)) throw new Error('AI Gateway connection is not configured');
+  const metadata = route ? gatewayMetadata(route.workspaceId) : undefined;
+  const metadataHeaders: Record<string, string> = metadata ? { 'cf-aig-metadata': JSON.stringify(metadata) } : {};
   let parameters: Record<string, unknown>;
   if (model.protocol === 'anthropic') parameters = anthropicInput(input, tools, maxTokens, model.id);
   else if (model.protocol === 'responses') parameters = { input, ...(tools.length ? { tools } : {}), max_output_tokens: maxTokens, ...(model.id === 'openai/gpt-6-luna' || model.id === 'openai/gpt-6.1-sol' ? { reasoning: { effort: 'low' }, include: ['reasoning.encrypted_content'] } : {}), store: false };
   else parameters = { messages: model.protocol === 'workers-ai' ? workersAIMessages(input) : chatMessages(input), ...(tools.length ? { tools: tools.map(tool => model.protocol === 'workers-ai' ? { name: tool.name, description: tool.description, parameters: tool.parameters } : { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }) } : {}), max_tokens: maxTokens, stream: false };
   let body: unknown;
-  if (model.protocol === 'anthropic' && isSonnet55(model.id)) {
+  if (route && routed) body = await routedInference(env, model, parameters, route, timeoutMs);
+  else if (!env.AI || !env.AI_GATEWAY_ID) throw new Error('AI Gateway connection is not configured');
+  else if (model.protocol === 'anthropic' && isSonnet55(model.id)) {
     if (!env.AI.gateway) throw new Error('AI Gateway connection is not configured');
     const response = await env.AI.gateway(env.AI_GATEWAY_ID).run({
       provider: 'anthropic',
       endpoint: 'https://api.anthropic.com/v1/messages',
-      headers: { 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json', 'cf-aig-no-wholesale': 'true' },
+      headers: { 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json', 'cf-aig-no-wholesale': 'true', ...metadataHeaders },
       query: { ...parameters, model: nativeModelId(model.id), cache_control: { type: 'ephemeral' } },
-    }, { extraHeaders: { 'cf-aig-no-wholesale': 'true' }, signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
+    }, { extraHeaders: { 'cf-aig-no-wholesale': 'true', ...metadataHeaders }, signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
     if (!response.ok) throw new Error(await gatewayRejection(response, model.id));
     try { body = await response.json(); }
     catch { throw new Error('AI Gateway returned an unparsable response'); }
   } else {
-    body = await env.AI.run(model.id, parameters, { gateway: { id: env.AI_GATEWAY_ID }, ...(model.source === 'gateway' ? { extraHeaders: { 'cf-aig-no-wholesale': 'true' } } : {}), signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
+    body = await env.AI.run(model.id, parameters, { gateway: { id: env.AI_GATEWAY_ID, ...(metadata ? { metadata } : {}) }, ...(model.source === 'gateway' ? { extraHeaders: { 'cf-aig-no-wholesale': 'true' } } : {}), signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
   }
   try {
     const message = normalizeModelMessage(body, model.protocol);

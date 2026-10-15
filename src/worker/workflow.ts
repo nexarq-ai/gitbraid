@@ -7,18 +7,20 @@ import type { AppEnv } from './env';
 import { landCandidate, preparePreview, type LandingParams, type PreviewParams } from './background-work';
 import { missionStepTimeoutMs } from './budgets';
 import { catalogName } from './capacity';
+import { createModelAccess, type AiAccessOptions, type AiCredentials } from './ai-keys';
 
 export interface MissionRunParams { kind?: 'mission'; repositoryId: string; missionId: string; epoch: number }
 export type MissionWorkflowParams = MissionRunParams | LandingParams | PreviewParams;
 interface Coordinator {
   getModelConnections(): Promise<ModelConnection[]>;
+  getAiCredentials(): Promise<AiCredentials>;
   getRepository(repositoryId: string): Promise<Repository | undefined>;
   getMission(missionId: string): Promise<Mission | undefined>;
   isMissionActive(missionId: string, epoch: number): Promise<boolean>;
   recordExecution(missionId: string, epoch: number, result: ExecutionResult, complete?: boolean): Promise<unknown>;
   releaseMissionSlot(missionId: string, epoch: number): Promise<void>;
 }
-interface WorkflowEnv extends ExecutionEnv {
+interface WorkflowEnv extends ExecutionEnv, AiAccessOptions {
   GITFLARE_SECURITY: DurableObjectNamespace<GitflareSecurity>;
   GITFLARE_COORDINATOR: { getByName(name: string): Coordinator };
 }
@@ -45,7 +47,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
         const modelConnections = await catalog.getModelConnections();
         const result = await executeMission(
           { repository, mission, modelConnections, testCommand: this.env.TEST_COMMAND ?? 'node --test --test-reporter=tap tests/*.test.mjs' },
-          { ...this.env, assertModelAllowed: async model => assertPinnedModel(await catalog.getModelConnections(), model) },
+          { ...this.env, assertModelAllowed: async model => assertPinnedModel(await catalog.getModelConnections(), model), modelAccess: createModelAccess(this.env, authorization.workspaceId, catalog) },
           async (progress) => { await coordinator.recordExecution(missionId, epoch, progress, false); },
           () => coordinator.isMissionActive(missionId, epoch),
           assertAuthority,

@@ -27,6 +27,7 @@ import { draftMission, draftRequest, repositorySnapshot } from './mission-draft'
 import { handleIssues } from './issues';
 import { releaseApi } from './releases';
 import { modelConnectionsSnapshot, modelIdentifier, resolveModelConnection, validateModelConnection, verifyModelConnection } from './model-config';
+import { aiKeyProvider, aiKeysSnapshot, assertModelAccess, assertWorkspaceAi, createModelAccess, encryptAiGateway, encryptAiKey, ownGatewayInput, providerKey, storedOwnGateway, storedProviderKey, verificationModel, verifyProviderKey, type AiCredentials } from './ai-keys';
 import { IMPORT_REQUEST_MAX_BYTES, RepositoryImportFailure, buildImportPack, importFingerprint, inspectRepositoryImport, parseImportArchive, pushRepositoryImport, validateImportInput } from './repository-import';
 import { handleGitRequest, listBranches, type GitHttpDependencies } from './git-http';
 import { branchApi } from './branches';
@@ -89,6 +90,9 @@ async function coordinatorRead<T>(operation: 'getModelConnections' | 'repository
   }
 }
 
+async function aiCredentials(catalog: { getAiCredentials?(): Promise<AiCredentials> }): Promise<AiCredentials> {
+  return typeof catalog.getAiCredentials === 'function' ? catalog.getAiCredentials() : { keys: [], gateway: null };
+}
 function catalogName(workspaceId: string) { return workspaceId === 'legacy' ? 'catalog:owner' : `catalog:${workspaceId}`; }
 function cookieValue(request: Request) { return request.headers.get('Cookie')?.split(';').map(item => item.trim()).find(item => item.startsWith('gitflare_session='))?.slice(17); }
 function sessionResponse(result: { token?: string; user?: unknown; workspaceId?: string; mfaRequired?: boolean }, clearLink = false) { const headers = new Headers(); if (clearLink) headers.append('Set-Cookie', `${CLOUDFLARE_LINK_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`); if (!result.token) return Response.json(result, { headers }); const { token, ...body } = result; headers.append('Set-Cookie', `gitflare_session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800`); return Response.json({ ok: true, ...body }, { headers }); }
@@ -274,10 +278,46 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       const configured = resolveModelConnection(await coordinatorRead('getModelConnections', () => catalog.getModelConnections()), modelId);
       if (!await catalog.claimModelVerification(key, fingerprint)) throw new ApiError(409, 'MODEL_REQUEST_PENDING', 'Model verification is already in progress.');
       await access.check(principal, 'manage');
-      const verified = await verifyModelConnection(env, configured);
+      const credentials = await aiCredentials(catalog);
+      assertModelAccess(env, principal.workspaceId, credentials, [configured]);
+      const verified = await verifyModelConnection({ ...env, modelAccess: createModelAccess(env, principal.workspaceId, { getAiCredentials: () => aiCredentials(catalog) }) }, configured);
       return Response.json(modelConnectionsSnapshot(env, await catalog.completeModelVerification(key, fingerprint, verified)));
     }
     return Response.json(modelConnectionsSnapshot(env, await catalog.changeModelConnections(key, fingerprint, body.action as 'add' | 'remove', model ?? modelId)));
+  }
+  if (request.method === 'GET' && url.pathname === '/api/ai-keys') {
+    await access.authorizeMetadata(principal);
+    return Response.json(aiKeysSnapshot(env, principal.workspaceId, await aiCredentials(catalog)));
+  }
+  if (request.method === 'POST' && url.pathname === '/api/ai-keys/action') {
+    assertMutationOrigin(request);
+    await access.authorize(principal, 'manage');
+    requireIdempotencyKey(request);
+    const body = await readJson(request);
+    if (!['add', 'remove', 'test'].includes(String(body.action))) throw new ApiError(400, 'INVALID_AI_KEY_ACTION', 'Choose add, remove or test.');
+    const provider = aiKeyProvider(body.provider);
+    if (body.action === 'remove') return Response.json(aiKeysSnapshot(env, principal.workspaceId, await catalog.removeAiKey(provider)));
+    await requireAi(env, catalog);
+    await security(env).rateLimit(`ai-key:${principal.workspaceId}`, 20, 3_600_000);
+    const credentials = await aiCredentials(catalog);
+    const key = body.action === 'add' ? providerKey(body.key) : await storedProviderKey(env, principal.workspaceId, credentials, provider);
+    const model = verificationModel(provider, await coordinatorRead('getModelConnections', () => catalog.getModelConnections()), typeof body.modelId === 'string' ? body.modelId : undefined);
+    const result = await verifyProviderKey(env, principal.workspaceId, provider, key, model, await storedOwnGateway(env, principal.workspaceId, credentials));
+    if (!result.ok) throw new ApiError(400, 'AI_KEY_INVALID', `The ${model.id} check failed. ${result.detail}`);
+    await access.check(principal, 'manage');
+    const saved = body.action === 'add' ? await catalog.saveAiKey(await encryptAiKey(env, principal.workspaceId, provider, key, principal.userId, model.id)) : credentials;
+    return Response.json({ ...aiKeysSnapshot(env, principal.workspaceId, saved), verification: { provider, model: model.id, detail: result.detail } });
+  }
+  if (request.method === 'POST' && url.pathname === '/api/ai-gateway') {
+    assertMutationOrigin(request);
+    await access.authorize(principal, 'manage');
+    requireIdempotencyKey(request);
+    const body = await readJson(request);
+    if (body.action === 'clear') return Response.json(aiKeysSnapshot(env, principal.workspaceId, await catalog.saveAiGateway(null)));
+    if (body.action !== 'set') throw new ApiError(400, 'INVALID_AI_GATEWAY_ACTION', 'Choose set or clear.');
+    await requireAi(env, catalog);
+    const record = await encryptAiGateway(env, principal.workspaceId, ownGatewayInput(body), principal.userId);
+    return Response.json(aiKeysSnapshot(env, principal.workspaceId, await catalog.saveAiGateway(record)));
   }
   if (request.method === 'GET' && url.pathname === '/api/mcp') {
     return Response.json({ endpoint: `${url.origin}/mcp`, transport: 'streamable-http', authentication: env.OAUTH_KV ? 'oauth' : 'bearer', configured: !!env.OAUTH_KV, tools: mcpToolNames, ownerApprovalRequired: true, ownerActions: 'ui_and_mcp' });
@@ -512,8 +552,9 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     await access.authorize(principal, 'contribute', 'repository', repositoryId);
     await security(env).rateLimit(`mission-draft:${principal.userId}`, 30, 3_600_000);
     const model = resolveModelConnection(await coordinatorRead('getModelConnections', () => catalog.getModelConnections()), typeof body.model === 'string' ? body.model : undefined);
+    assertModelAccess(env, principal.workspaceId, await aiCredentials(catalog), [model]);
     const snapshot = await repositorySnapshot(env.ARTIFACTS, repository);
-    try { return Response.json({ ...await draftMission(env, model, draft, snapshot), baseSha: snapshot.commitSha, model: model.id }); }
+    try { return Response.json({ ...await draftMission({ ...env, modelAccess: createModelAccess(env, principal.workspaceId, { getAiCredentials: () => aiCredentials(catalog) }) }, model, draft, snapshot), baseSha: snapshot.commitSha, model: model.id }); }
     catch (error) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(502, 'DRAFT_FAILED', 'The model could not draft this mission right now. Try again, or fill the fields yourself.');
@@ -521,7 +562,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   }
   if (url.pathname === '/api/missions') {
     const input = missionInput(body);
-    if (!input.skillChange && !input.revertChange) await requireAi(env, catalog);
+    if (!input.skillChange && !input.revertChange) { await requireAi(env, catalog); assertWorkspaceAi(env, principal.workspaceId, await aiCredentials(catalog)); }
     const repository = await catalog.getRepository(input.repositoryId);
     if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
     await access.authorize(principal, 'contribute', 'repository', input.repositoryId);
@@ -606,7 +647,12 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       return Response.json(started, { status: 202 });
     }
     if (match[2] === 'start') {
-      if (!mission.skillChange && !mission.revertChange && !mission.branchChange) await requireAi(env, catalog);
+      if (!mission.skillChange && !mission.revertChange && !mission.branchChange) {
+        await requireAi(env, catalog);
+        const credentials = await aiCredentials(catalog);
+        assertWorkspaceAi(env, principal.workspaceId, credentials);
+        assertModelAccess(env, principal.workspaceId, credentials, mission.runs.flatMap(run => run.modelConfig ? [run.modelConfig] : []));
+      }
       const readiness = executionReadiness(env, mission.skillChange || mission.revertChange || mission.branchChange ? 'skill-edit' : 'agent');
       if (!readiness.ready || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', `Connect the required services before running agents: ${[...readiness.missing, ...(!env.MISSION_WORKFLOW ? ['Mission Workflow'] : [])].join(', ')}.`);
       const current = await currentRepository(env, repository);

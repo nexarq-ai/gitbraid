@@ -16,7 +16,7 @@ export type McpApi = (request: Request) => Promise<Response>;
 export const mcpToolNames = [
   'gitflare_list_repositories', 'gitflare_browse_repository', 'gitflare_read_file', 'gitflare_list_repository_skills',
   'gitflare_create_repository_skill', 'gitflare_update_repository_skill',
-  'gitflare_model_connections', 'gitflare_manage_model_connection',
+  'gitflare_model_connections', 'gitflare_manage_model_connection', 'gitflare_ai_keys', 'gitflare_manage_ai_key', 'gitflare_manage_ai_gateway',
   'gitflare_proposal_base', 'gitflare_repository_import_status', 'gitflare_import_repository_archive',
   'gitflare_list_releases', 'gitflare_read_release', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_release_notes',
   'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_list_missions',
@@ -204,13 +204,29 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     return { path: file.path, commitSha: file.commitSha, ...excerpt(file.content, input.offset, input.limit) };
   }));
   server.registerTool('gitflare_model_connections', {
-    title: 'Inspect enabled model connections', description: 'Read models enabled in this workspace, AI Gateway configuration and the documented Workers AI catalog. Manual provider/model registration is available; provider credentials remain in Cloudflare AI Gateway. A configured connection is not proof of successful inference.',
+    title: 'Inspect enabled model connections', description: 'Read models enabled in this workspace, AI Gateway configuration and the documented Workers AI catalog. Manual provider/model registration is available; provider keys are managed with gitflare_manage_ai_key or stored in AI Gateway. A configured connection is not proof of successful inference.',
     inputSchema: z.object({}).strict(), annotations: readOnly,
   }, () => guarded(async () => call<Record<string, unknown>>('/api/models')));
   server.registerTool('gitflare_manage_model_connection', {
-    title: 'Configure or verify a model connection', description: 'Owner only. Add or remove a workspace model, or run a bounded billed inference to verify it. Add requires a provider/model identifier, label, source and transport; no credentials or direct provider URLs. Reuse the exact idempotency key and payload on retries. Unconfirmed verification calls are not automatically repeated. New proposals select enabled models per agent; existing proposals retain pinned connection settings.',
+    title: 'Configure or verify a model connection', description: 'Owner only. Add or remove a workspace model, or run a bounded billed inference to verify it. Add requires a provider/model identifier, label, source and transport; no credentials or direct provider URLs. A workspace without platform AI access needs a matching key (gitflare_manage_ai_key) or its own AI Gateway; otherwise inference returns AI_KEY_REQUIRED. Reuse the exact idempotency key and payload on retries. Unconfirmed verification calls are not automatically repeated. New proposals select enabled models per agent; existing proposals retain pinned connection settings.',
     inputSchema: z.object({ action: z.enum(['add', 'remove', 'verify']), model: z.object({ id: z.string().min(1).max(200), label: z.string().min(1).max(80), source: z.enum(['gateway', 'workers-ai']), protocol: z.enum(['responses', 'chat', 'anthropic', 'workers-ai']) }).strict().optional(), model_id: z.string().min(1).max(200).optional(), idempotency_key: requestKey }).strict(), annotations: mutation,
   }, input => guarded(async () => call<Record<string, unknown>>('/api/models/action', { action: input.action, ...(input.model ? { model: input.model } : {}), ...(input.model_id ? { modelId: input.model_id } : {}) }, input.idempotency_key)));
+  const aiProvider = z.enum(['openai', 'anthropic', 'google-ai-studio', 'groq', 'mistral', 'deepseek', 'grok']);
+  server.registerTool('gitflare_ai_keys', {
+    title: 'Inspect workspace AI keys', description: 'Read which providers have a workspace AI key (provider, last four characters, who added it and when), the optional workspace AI Gateway, and whether this workspace can run AI missions. Key values are never returned.',
+    inputSchema: z.object({}).strict(), annotations: readOnly,
+  }, () => guarded(async () => call<Record<string, unknown>>('/api/ai-keys')));
+  server.registerTool('gitflare_manage_ai_key', {
+    title: 'Add, test or remove a workspace AI key', description: 'Owner only. Add a provider API key for this workspace, test a stored key, or remove it. Add and test send one small billed inference through AI Gateway before anything is saved; the key is stored encrypted, never returned or echoed, and never reaches coding sandboxes. Pass model_id to test against a specific enabled model.',
+    inputSchema: z.object({ action: z.enum(['add', 'test', 'remove']), provider: aiProvider, api_key: z.string().min(8).max(512).optional(), model_id: z.string().min(1).max(200).optional(), idempotency_key: requestKey }).strict(), annotations: { ...mutation, destructiveHint: true },
+  }, input => guarded(async () => {
+    if (input.action === 'add' && !input.api_key) throw new ApiError(400, 'INVALID_AI_KEY', 'Provide api_key to add a provider key.');
+    return call<Record<string, unknown>>('/api/ai-keys/action', { action: input.action, provider: input.provider, ...(input.action === 'add' ? { key: input.api_key } : {}), ...(input.model_id ? { modelId: input.model_id } : {}) }, input.idempotency_key);
+  }));
+  server.registerTool('gitflare_manage_ai_gateway', {
+    title: 'Use your own AI Gateway', description: 'Owner only. Route this workspace\'s inference through an AI Gateway in your own Cloudflare account (account ID, gateway ID, and an optional gateway authentication value for authenticated gateways), or clear it to use the platform gateway. Workspace AI keys are sent through it; without a workspace key, the gateway\'s own stored provider keys are used. The gateway authentication value is stored encrypted and never returned.',
+    inputSchema: z.object({ action: z.enum(['set', 'clear']), account_id: z.string().regex(/^[a-f0-9]{32}$/).optional(), gateway_id: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).optional(), gateway_auth: z.string().min(20).max(256).optional(), idempotency_key: requestKey }).strict(), annotations: { ...mutation, destructiveHint: true },
+  }, input => guarded(async () => call<Record<string, unknown>>('/api/ai-gateway', input.action === 'clear' ? { action: 'clear' } : { action: 'set', accountId: input.account_id, gatewayId: input.gateway_id, ...(input.gateway_auth ? { token: input.gateway_auth } : {}) }, input.idempotency_key)));
   server.registerTool('gitflare_repository_import_status', {
     title: 'Inspect first code import readiness', description: 'Read the actual canonical head and whether this repository is empty or contains only an untouched Gitflare bootstrap commit. Established code must be changed through proposals.',
     inputSchema: z.object({ repository_id: identifier }).strict(), annotations: readOnly,

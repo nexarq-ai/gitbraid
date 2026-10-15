@@ -5,7 +5,7 @@ import type { CommandResult, GitPermission } from '../../runner/sandbox';
 import { loadRepositorySkillContext } from './repository-skills';
 import { validateRepositorySkillChange } from './skill-edit';
 import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
-import { inferenceMessage, ModelResponseError, type InputItem, type ModelMessage } from './model-adapter';
+import { inferenceMessage, ModelResponseError, type InputItem, type ModelEnv, type ModelMessage } from './model-adapter';
 export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { previewPlan } from './preview-plan';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
@@ -28,6 +28,7 @@ export interface ExecutionEnv {
   AI_GATEWAY_ID?: string;
   TEST_COMMAND?: string;
   assertModelAllowed?: (model: ModelConnection) => Promise<void>;
+  modelAccess?: ModelEnv['modelAccess'];
 }
 export interface ExecutionResult {
   runs: AgentRun[];
