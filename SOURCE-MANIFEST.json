@@ -125,8 +125,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 8624,
-      "sha256": "e43394abd96e50b6b6b74e71b78a4dbcf0341f2c2f647bf1047bff42d766757a"
+      "size": 8740,
+      "sha256": "9f713f3c57830ada6607a1e6d9706a0f67a551e3fbb741ab702ddcbd734a1f48"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -445,8 +445,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 54850,
-      "sha256": "e13ee765fd9ba99485f4eebb92debb84512573b3485508c812ac691b020f8f06"
+      "size": 55113,
+      "sha256": "8d1ae7660654733cd264a81c8674890470b8d8877c987b9f991e36b77752e1c4"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -510,8 +510,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 59232,
-      "sha256": "291819c2b53022f87ecc66e0dd286e33dc9a7f89c3857d4f055328011fc4ad5f"
+      "size": 59639,
+      "sha256": "c03c4da8633db4bc62b77f46e610d599dbfcac6a019bff6dcb681f562809ace3"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -555,8 +555,8 @@
     },
     {
       "path": "src/worker/proposal-review.ts",
-      "size": 1701,
-      "sha256": "a0f3eb63f6b628319a73bcee442341fa067befd4384e25d2c92f0b12c2d40b7b"
+      "size": 3352,
+      "sha256": "9bf54ba0583954ee4abc1c16b628059f7d8eab5931685087475f75e16bbc3325"
     },
     {
       "path": "src/worker/releases.ts",

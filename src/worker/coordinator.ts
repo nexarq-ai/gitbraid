@@ -4,7 +4,7 @@ import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } fr
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
-import { assertReviewClear, reviewMissionInput } from './proposal-review';
+import { assertLineInCandidate, assertReviewClear, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
 import type { ImportReceipt, ImportResult } from './repository-import';
 import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './releases';
@@ -652,7 +652,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         review.resolvedBy = actorId;
       } else {
         if (mission.reviews.length >= 500) throw new ApiError(409, 'REVIEW_LIMIT', 'This proposal has reached its discussion limit.');
-        mission.reviews.push({ id: crypto.randomUUID(), kind: input.action, body: input.body!, authorId: actorId, createdAt: new Date().toISOString(), epoch: input.epoch, candidateSha: input.candidateSha, baseSha: input.baseSha });
+        assertLineInCandidate(mission, input);
+        mission.reviews.push({ id: crypto.randomUUID(), kind: input.action, body: input.body!, authorId: actorId, createdAt: new Date().toISOString(), epoch: input.epoch, candidateSha: input.candidateSha, baseSha: input.baseSha, ...(input.path === undefined ? {} : { path: input.path, line: input.line, side: input.side }) });
         if (input.action === 'request_changes' && mission.status === 'approved') {
           this.archive(mission, 'approved');
           mission.status = 'needs_review';
@@ -661,7 +662,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
           this.archive(mission, 'approval_revoked');
         }
       }
-      return this.saveMission(mission, input.action === 'resolve' ? `Reviewer ${actorId} resolved their change request.` : input.action === 'request_changes' ? `Reviewer ${actorId} requested changes to this revision.` : `${actorId} added a review comment.`, input.action === 'request_changes' ? 'warning' : 'info');
+      return this.saveMission(mission, input.action === 'resolve' ? `Reviewer ${actorId} resolved their change request.` : input.action === 'request_changes' ? `Reviewer ${actorId} requested changes to this revision.` : input.path === undefined ? `${actorId} added a review comment.` : `${actorId} commented on ${input.path.slice(0, 200)}:${input.line}.`, input.action === 'request_changes' ? 'warning' : 'info');
     });
   }
 
