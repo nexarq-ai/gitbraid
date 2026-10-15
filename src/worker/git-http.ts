@@ -154,13 +154,75 @@ async function drain(reader: ReadableStreamDefaultReader<Uint8Array>, limit: num
   }
 }
 
+const HEAD_REWRITE_MAX_BYTES = 4_194_304;
+
+function packets(bytes: Uint8Array): Uint8Array[] | null {
+  const result: Uint8Array[] = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    if (offset + 4 > bytes.length) return null;
+    const header = decoder.decode(bytes.subarray(offset, offset + 4));
+    if (!/^[0-9a-f]{4}$/.test(header)) return null;
+    const length = parseInt(header, 16);
+    if (length === 3) return null;
+    const size = length < 4 ? 4 : length;
+    if (offset + size > bytes.length) return null;
+    result.push(bytes.subarray(offset, offset + size));
+    offset += size;
+  }
+  return result;
+}
+
+export function rewriteAdvertisedHead(bytes: Uint8Array<ArrayBuffer>, defaultBranch: string): Uint8Array<ArrayBuffer> {
+  const lines = packets(bytes);
+  if (!lines) return bytes;
+  const target = `refs/heads/${defaultBranch}`;
+  const payload = (line: Uint8Array) => line.length > 4 ? decoder.decode(line.subarray(4)) : null;
+  const sha = lines.map(payload).map(text => text && /^([0-9a-f]{40}) (\S+)/.exec(text.split('\0')[0]!)).find(match => match?.[2] === target)?.[1];
+  if (!sha) return bytes;
+  const rewritten = lines.map(line => {
+    const text = payload(line);
+    if (!text) return line;
+    const newline = text.endsWith('\n') ? '\n' : '';
+    const [ref, capabilities] = text.slice(0, text.length - newline.length).split('\0');
+    const head = /^[0-9a-f]{40} HEAD((?: \S+)*)$/.exec(ref!);
+    if (!head) return line;
+    const attributes = head[1]!.replace(/ symref-target:\S+/, ` symref-target:${target}`);
+    const advertised = capabilities === undefined ? '' : `\0${capabilities.replace(/(^| )symref=HEAD:\S+/, `$1symref=HEAD:${target}`)}`;
+    return pktLine(`${sha} HEAD${attributes}${advertised}${newline}`);
+  });
+  return concat(rewritten);
+}
+
+async function withAdvertisedHead(body: ReadableStream<Uint8Array>, defaultBranch: string): Promise<BodyInit> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) return rewriteAdvertisedHead(concat(chunks), defaultBranch);
+    chunks.push(next.value);
+    size += next.value.length;
+    if (size > HEAD_REWRITE_MAX_BYTES) return new ReadableStream<Uint8Array>({
+      start(controller) { for (const chunk of chunks) controller.enqueue(chunk); },
+      async pull(controller) { const more = await reader.read(); if (more.done) controller.close(); else controller.enqueue(more.value); },
+      cancel() { return reader.cancel(); },
+    });
+  }
+}
+
+export function isLsRefsRequest(bytes: Uint8Array): boolean {
+  const first = packets(bytes)?.[0];
+  return !!first && first.length > 4 && decoder.decode(first.subarray(4)).replace(/\n$/, '') === 'command=ls-refs';
+}
+
 function remoteBase(remote: string): string {
   const url = new URL(remote);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Artifacts returned an invalid remote');
   return url.href.replace(/\/$/, '');
 }
 
-async function forward(source: ArtifactRepo, service: 'git-upload-pack' | 'git-receive-pack', kind: 'refs' | 'rpc', request: Request, body: BodyInit | undefined, fetcher: typeof fetch): Promise<Response> {
+async function forward(source: ArtifactRepo, service: 'git-upload-pack' | 'git-receive-pack', kind: 'refs' | 'rpc', request: Request, body: BodyInit | undefined, fetcher: typeof fetch, headBranch?: string): Promise<Response> {
   const base = remoteBase((await source.info()).remote);
   const token = await source.createToken(service === 'git-receive-pack' ? 'write' : 'read', 60);
   const headers = new Headers({ Authorization: `Bearer ${token.plaintext}`, 'User-Agent': 'gitflare-git-proxy' });
@@ -173,7 +235,8 @@ async function forward(source: ArtifactRepo, service: 'git-upload-pack' | 'git-r
     await upstream.body?.cancel();
     return text(502, 'Gitflare could not reach the repository storage. Try again shortly.');
   }
-  return new Response(upstream.body, { status: 200, headers: { 'Content-Type': expected, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
+  const advertised = headBranch && upstream.body ? await withAdvertisedHead(upstream.body, headBranch) : upstream.body;
+  return new Response(advertised, { status: 200, headers: { 'Content-Type': expected, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
 }
 
 export async function handleGitRequest(request: Request, deps: GitHttpDependencies): Promise<Response | null> {
@@ -198,12 +261,16 @@ export async function handleGitRequest(request: Request, deps: GitHttpDependenci
   catch { return text(403, writing ? 'Your Gitflare role cannot push to this repository. Ask an Owner for Contributor access.' : 'Your Gitflare role cannot read this repository.'); }
   const fetcher = deps.fetcher ?? fetch;
   using source = await deps.artifacts.get(repository.name);
-  if (kind === 'refs') return await forward(source, service, 'refs', request, undefined, fetcher);
+  // Artifacts has no API to move HEAD, so clients see Repository.defaultBranch instead
+  if (kind === 'refs') return await forward(source, service, 'refs', request, undefined, fetcher, writing ? undefined : repository.defaultBranch);
   if (request.headers.get('Content-Type')?.split(';')[0]?.trim() !== `application/x-${service}-request`) return text(415, 'Use a Git client for this request.');
   const declared = Number(request.headers.get('Content-Length') ?? '0');
   if (!writing) {
     if (declared > GIT_FETCH_REQUEST_MAX_BYTES) return text(413, 'This fetch request is too large.');
-    try { return await forward(source, service, 'rpc', request, await boundedBytes(decodedBody(request), GIT_FETCH_REQUEST_MAX_BYTES), fetcher); }
+    try {
+      const commands = await boundedBytes(decodedBody(request), GIT_FETCH_REQUEST_MAX_BYTES);
+      return await forward(source, service, 'rpc', request, commands, fetcher, isLsRefsRequest(commands) ? repository.defaultBranch : undefined);
+    }
     catch (error) { if (error instanceof GitProtocolError) return text(400, `Invalid Git request: ${error.message}.`); throw error; }
   }
   if (declared > GIT_PUSH_MAX_BYTES) return text(413, `Pushes are limited to ${GIT_PUSH_MAX_BYTES / 1_048_576} MiB. Push fewer commits at once.`);

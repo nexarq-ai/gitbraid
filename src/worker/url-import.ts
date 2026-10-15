@@ -203,6 +203,10 @@ export interface ImportJobDependencies {
   head(job: UrlImportJob): Promise<string | null>;
 }
 
+export function advertisedHeadRef(lsRemote: string): string | null {
+  return /^ref: (refs\/heads\/\S+)\tHEAD$/m.exec(lsRemote)?.[1] ?? null;
+}
+
 class ImportJobError extends Error { constructor(readonly code: string, message: string) { super(message); } }
 const bare = '/workspace/import.git';
 
@@ -234,8 +238,15 @@ export async function runUrlImportJob(host: ImportHost, deps: ImportJobDependenc
     if (!headSha) throw new ImportJobError('SOURCE_CHANGED', `The source no longer has its default branch ${job.defaultBranch}.`);
     await deps.assertAuthority(job);
     await deps.report(job, { phase: 'pushing', branches, tags, packBytes });
+    // Artifacts points HEAD at the first branch pushed into an empty repository
+    const defaultRef = `refs/heads/${job.defaultBranch}`;
+    const pushedDefault = await host.transfer(['git', '-C', bare, 'push', '--quiet', '--force', job.remote, `${defaultRef}:${defaultRef}`], URL_IMPORT_LIMITS.pushMs);
+    if (pushedDefault.exitCode !== 0) throw new ImportJobError('IMPORT_PUSH_FAILED', `Writing the default branch to Gitflare failed. ${diagnostic(pushedDefault)}`.trim());
     const pushed = await host.transfer(['git', '-C', bare, 'push', '--quiet', '--force', job.remote, 'refs/heads/*:refs/heads/*', 'refs/tags/*:refs/tags/*'], URL_IMPORT_LIMITS.pushMs);
     if (pushed.exitCode !== 0) throw new ImportJobError('IMPORT_PUSH_FAILED', `Writing the history to Gitflare failed. ${diagnostic(pushed)}`.trim());
+    const advertised = await host.transfer(['git', 'ls-remote', '--symref', job.remote, 'HEAD'], URL_IMPORT_LIMITS.discoveryMs).catch(() => null);
+    const headRef = advertised?.exitCode === 0 ? advertisedHeadRef(advertised.stdout) : null;
+    if (headRef !== defaultRef) console.warn(JSON.stringify({ event: 'url_import_head_mismatch', repositoryId: job.repositoryId, attempt: job.attempt, expected: defaultRef, advertised: headRef }));
     if (await deps.head(job) !== headSha) throw new ImportJobError('IMPORT_UNCONFIRMED', 'The imported default branch could not be confirmed. Retry the import.');
     await deps.report(job, { phase: 'complete', status: 'ready', headSha, branches, tags, packBytes });
   } catch (error) {

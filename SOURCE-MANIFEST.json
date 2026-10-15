@@ -555,8 +555,8 @@
     },
     {
       "path": "src/worker/git-http.ts",
-      "size": 17036,
-      "sha256": "62c293177c395dee9017cb2477f86c4f5586f663be57a06d5d4ad9611da6fc28"
+      "size": 20186,
+      "sha256": "6defa90d5fcf4b3dbea6aecdfb49d8ad1556bea2f54f42c120a1f5d7d87ab2a6"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -690,8 +690,8 @@
     },
     {
       "path": "src/worker/url-import.ts",
-      "size": 31367,
-      "sha256": "a4fed30673af043a846be72cc4a58cba7b703ad040fd7a053318cd8f8b4c15e9"
+      "size": 32429,
+      "sha256": "c295a9aad0b97d18c3b8b6081c73f85994cb3857758bb8a96c0c2589e743cde3"
     },
     {
       "path": "src/worker/worker-bundle.ts",
