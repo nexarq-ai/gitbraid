@@ -740,8 +740,8 @@
     },
     {
       "path": "src/worker/workflow.ts",
-      "size": 6163,
-      "sha256": "4c5d5b9d6c5a3bfef1588cfcd1c42e7fdf458fa58e1657c5ed3f2c1d5f86b9f0"
+      "size": 6292,
+      "sha256": "f478d80a04f330c9bc53a28d5e395f92c125532f6325bcc9a23dddf2d5fc190f"
     },
     {
       "path": "src/worker/workspace-summaries.ts",

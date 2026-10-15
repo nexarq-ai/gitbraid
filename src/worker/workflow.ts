@@ -67,8 +67,9 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
       });
     } catch (error) {
       const mission = await coordinator.getMission(missionId);
+      const reason = error instanceof Error && error.message ? `Execution interrupted: ${error.message.slice(0, 300)}` : 'Execution interrupted';
       if (mission && await coordinator.isMissionActive(missionId, epoch)) await coordinator.recordExecution(missionId, epoch, {
-        runs: mission.runs.map((run) => run.status === 'running' || run.status === 'queued' ? { ...run, status: 'failed', error: 'Execution interrupted' } : run),
+        runs: mission.runs.map((run) => run.status === 'running' || run.status === 'queued' ? { ...run, status: 'failed', error: reason } : run),
         checks: mission.checks,
         changes: mission.changes,
         candidateSha: null,
