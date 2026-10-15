@@ -13,6 +13,7 @@ import { collectAndUploadAssets, type AssetsOptions } from './worker-assets';
 import { migrationDatabases, readMigrationFiles } from './d1-migrations';
 import type { BuiltTarget } from './deployments';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
+import { MAX_MISSION_AGENTS } from '../shared/mission-draft';
 import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, INSTALL_ATTEMPTS, isTransientInstallFailure, runnerFor, type InstallPlan } from './package-manager';
 import type { LearnedLimits } from './check-settings';
 import { DEFAULT_EDITABLE, escalatedLimits, isFixedSource, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
@@ -67,10 +68,10 @@ export function executionReadiness(env: ExecutionEnv, mode: 'agent' | 'skill-edi
 }
 
 export const MIN_AGENTS = 1;
-export const MAX_AGENTS = 8;
+export const MAX_AGENTS = MAX_MISSION_AGENTS;
 
 export async function runConcurrent<T>(jobs: (() => Promise<T>)[]): Promise<PromiseSettledResult<T>[]> {
-  if (jobs.length < 1 || jobs.length > 8) throw new Error('A proposal requires one to eight agent tasks');
+  if (jobs.length < MIN_AGENTS || jobs.length > MAX_AGENTS) throw new Error(`A proposal requires one to ${MAX_AGENTS} agent tasks`);
   const outcomes: PromiseSettledResult<T>[] = new Array(jobs.length);
   let next = 0;
   async function worker() {
@@ -565,7 +566,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   const branchChange = mission.branchChange;
   if (branchChange && (mission.runs.length !== 1 || !validGitSha(branchChange.headSha) || branchChange.closedAt)) throw new Error('A pull request requires one trusted merger, an exact branch head and an open state');
   const trusted = !!skillChange || !!revertChange || !!branchChange;
-  if (!trusted && (mission.runs.length < 1 || mission.runs.length > 8)) throw new Error('A proposal requires one to eight agent tasks');
+  if (!trusted && (mission.runs.length < MIN_AGENTS || mission.runs.length > MAX_AGENTS)) throw new Error(`A proposal requires one to ${MAX_AGENTS} agent tasks`);
   if (!await isActive()) throw new Error('Mission cancelled');
   using skillSource = await ARTIFACTS.get(repository.name);
   if (skillChange && (await skillSource.log({ ref: repository.defaultBranch, limit: 1 }))[0]?.hash !== baseSha) throw new Error('Repository changed after the skill proposal was created');

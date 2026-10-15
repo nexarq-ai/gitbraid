@@ -1,3 +1,4 @@
+import { MAX_MISSION_AGENTS } from '../shared/mission-draft';
 import { repositoryLabel } from '../shared/repository-names';
 import type { CreateMissionInput, Repository } from '../shared/types';
 import { validateAttachments } from './mission-context';
@@ -93,7 +94,7 @@ export function missionInput(body: Record<string, unknown>): CreateMissionInput 
     input.mode = body.mode;
   }
   if (body.tasks !== undefined) {
-    if (!Array.isArray(body.tasks) || body.tasks.length < 1 || body.tasks.length > 8) throw new ApiError(400, 'INVALID_TASKS', 'Assign between one and eight agent tasks.');
+    if (!Array.isArray(body.tasks) || body.tasks.length < 1 || body.tasks.length > MAX_MISSION_AGENTS) throw new ApiError(400, 'INVALID_TASKS', `Assign between one and ${MAX_MISSION_AGENTS} agent tasks.`);
     input.tasks = body.tasks.map((task: unknown) => {
       if (!task || typeof task !== 'object' || Array.isArray(task)) throw new ApiError(400, 'INVALID_TASKS', 'Each task must include a name, role, and task description.');
       const fields = task as Record<string, unknown>;

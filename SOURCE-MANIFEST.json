@@ -135,8 +135,8 @@
     },
     {
       "path": "src/shared/mission-draft.ts",
-      "size": 2674,
-      "sha256": "1fd9ab209d621b2d5cc836f3c05ee5fb69b1509b65c3b3c17055eee926c5bff2"
+      "size": 2712,
+      "sha256": "273462ec661a2477796a1290d4ff05260971e77d080900378b9b8b600ac4fbe9"
     },
     {
       "path": "src/shared/pull-requests.ts",
@@ -375,8 +375,8 @@
     },
     {
       "path": "src/ui/ProposalCreate.tsx",
-      "size": 28538,
-      "sha256": "c9945c58eed0981a189816361bae7a0a9323ec740fb81c81d218d328904910fe"
+      "size": 28611,
+      "sha256": "7431c0f6db2676eb23cf14504bcac8318befd8af3fd557ae3843cb6b4d7ffa23"
     },
     {
       "path": "src/ui/public-install.css",
@@ -570,8 +570,8 @@
     },
     {
       "path": "src/worker/domain.ts",
-      "size": 10017,
-      "sha256": "2c54ad824338dd926eba2a359e87b78a0cc15300a9ff8ef122294bf17febf988"
+      "size": 10112,
+      "sha256": "45500b476a53c4edb3df58e6a9909c39e48be59b0c91184a24204e9b46d08eda"
     },
     {
       "path": "src/worker/email.ts",
@@ -585,8 +585,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 73438,
-      "sha256": "1b7b2d71580e9b33d7ff0544200cd8b087fe23c1145d2a5a85e637303e7656d1"
+      "size": 73569,
+      "sha256": "24261fc1fa06b378c650bb20da4d1274d1840d91398803892d2606a6dc63d8d4"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -620,8 +620,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 78128,
-      "sha256": "ac785d7fe2eb6212747e7b69e74503f895595f29208f0010088a370cea9d6378"
+      "size": 78176,
+      "sha256": "dd19dad7bdec44edd858c46f035203703c8682139e3812d91931cfb7321b1dcb"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -635,8 +635,8 @@
     },
     {
       "path": "src/worker/mission-draft.ts",
-      "size": 7733,
-      "sha256": "fe7f415b7fba397b42324a0b004dc280176e72bfe52ac1a3b27f487fbd2e76d4"
+      "size": 7786,
+      "sha256": "9774a8bb6cf040a0ca241904b3b0f6afd5833fc39841757a5dd3f5632d633ae2"
     },
     {
       "path": "src/worker/mission-storage.ts",
