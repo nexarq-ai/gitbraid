@@ -155,6 +155,8 @@ function Workspace() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadGeneration = useRef(0);
   const hasWorkspace = useRef(false);
+  const workspaceActive = useRef(false);
+  const reschedulePoll = useRef(() => {});
 
   const clearSession = useCallback(() => {
     loadGeneration.current += 1;
@@ -233,12 +235,23 @@ function Workspace() {
 
   useEffect(() => {
     void request<AuthConfig>("/api/auth/config").then(setAuthConfig).catch((failure: unknown) => { setAuthConfigError(failure instanceof Error ? failure.message : "Installation configuration is unavailable."); setAuthState("unavailable"); });
-    void load(true);
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible" && !authFlowActive.current) void load(true);
-    }, 15000);
-    return () => clearInterval(timer);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(timer);
+      if (!stopped && document.visibilityState === "visible") timer = setTimeout(poll, workspaceActive.current ? 8000 : 60000);
+    };
+    const poll = () => { if (!authFlowActive.current) void load(true).finally(schedule); else schedule(); };
+    const resume = () => { if (document.visibilityState === "visible") poll(); else clearTimeout(timer); };
+    reschedulePoll.current = schedule;
+    void load(true).finally(schedule);
+    document.addEventListener("visibilitychange", resume);
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", resume); };
   }, [load]);
+
+  const hasActiveMissions = workspace.missions.some((mission) => ["queued", "running", "checking", "integrating"].includes(mission.status));
+  workspaceActive.current = hasActiveMissions;
+  useEffect(() => { if (hasActiveMissions) reschedulePoll.current(); }, [hasActiveMissions]);
 
   useEffect(() => {
     return onRouteChange(() => {

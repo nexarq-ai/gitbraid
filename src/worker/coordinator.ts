@@ -1,9 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { BranchChangeResult, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import type { BranchChangeResult, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
+import { needsPacking, packMission, summarizeMission, unpackMission, type BlobStore } from './mission-storage';
 import { assertReviewClear, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
 import type { ImportReceipt, ImportResult } from './repository-import';
@@ -362,22 +363,40 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
+  private readonly blobs: BlobStore = { get: (key) => this.store.get<string>(key), putIfAbsent: (key, value) => this.store.putIfAbsent(key, value) };
+
   listMissions(): Mission[] {
-    return this.store.list<Mission>('mission:').sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.list<Mission>('mission:').map((mission) => unpackMission(mission, this.blobs)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  listMissionSummaries(): MissionSummary[] {
+    return this.store.list<Mission>('mission:').map(summarizeMission).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   getMission(id: string): Mission | undefined {
-    return this.store.get<Mission>(`mission:${id}`);
+    const stored = this.store.get<Mission>(`mission:${id}`);
+    if (!stored) return undefined;
+    const mission = unpackMission(stored, this.blobs);
+    if (needsPacking(stored)) this.store.put(`mission:${id}`, packMission(mission, this.blobs));
+    return mission;
   }
+
+  missionRepository(id: string): string | undefined { return this.store.get<string>(`mission-repository:${id}`); }
+
+  indexMission(id: string, repositoryId: string): void { this.store.put(`mission-repository:${id}`, repositoryId); }
 
   listAttempts(id: string): MissionAttempt[] {
     this.requiredMission(id);
-    return this.store.list<MissionAttempt>(`attempt:${id}:`).sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+    return this.store.list<MissionAttempt>(`attempt:${id}:`).map((attempt) => {
+      const snapshot = unpackMission(attempt.snapshot, this.blobs);
+      if (needsPacking(attempt.snapshot)) this.store.put(`attempt:${id}:${attempt.id}`, { ...attempt, snapshot: packMission(snapshot, this.blobs) });
+      return { ...attempt, snapshot };
+    }).sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
   }
 
   private archive(mission: Mission, reason: MissionAttempt['reason']): void {
     const id = crypto.randomUUID();
-    this.store.insert(`attempt:${mission.id}:${id}`, { id, epoch: mission.epoch, recordedAt: new Date().toISOString(), reason, snapshot: mission } satisfies MissionAttempt);
+    this.store.insert(`attempt:${mission.id}:${id}`, { id, epoch: mission.epoch, recordedAt: new Date().toISOString(), reason, snapshot: packMission(mission, this.blobs) } satisfies MissionAttempt);
   }
 
   private requiredMission(id: string): Mission {
@@ -390,7 +409,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     mission.updatedAt = new Date().toISOString();
     if (message) mission.events.push({ id: crypto.randomUUID(), timestamp: mission.updatedAt, type, message });
     mission.events = mission.events.slice(-200);
-    this.store.put(`mission:${mission.id}`, mission);
+    this.store.put(`mission:${mission.id}`, packMission(mission, this.blobs));
     return mission;
   }
 

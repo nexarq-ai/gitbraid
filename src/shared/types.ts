@@ -139,6 +139,23 @@ export interface Mission {
   error?: string;
 }
 
+export type AgentRunSummary = Omit<AgentRun, 'task' | 'modelConfig' | 'skills' | 'skillWarnings' | 'usage'> & { assignment: string };
+export type CheckSummary = Omit<Check, 'output'>;
+
+export interface MissionSummary extends Omit<Mission, 'attachments' | 'authorization' | 'skillChange' | 'raceChecks' | 'raceChanges' | 'runs' | 'checks' | 'changes' | 'events' | 'reviews'> {
+  runs: AgentRunSummary[];
+  checks: CheckSummary[];
+  events: MissionEvent[];
+  skillChange?: Omit<RepositorySkillChange, 'content'>;
+  changeCount: number;
+  additions: number;
+  deletions: number;
+  eventCount: number;
+  reviewCount: number;
+  openChangeRequests: number;
+  attachmentCount: number;
+}
+
 export interface MissionAttempt {
   id: string;
   epoch: number;
@@ -158,7 +175,7 @@ export interface Workspace {
   name: string;
   mode: 'local' | 'connected';
   repositories: Repository[];
-  missions: Mission[];
+  missions: MissionSummary[];
   integrations: IntegrationStatus[];
   ai?: AiSettings;
 }

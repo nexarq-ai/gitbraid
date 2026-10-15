@@ -135,13 +135,20 @@ async function seedLocal(env: AppEnv): Promise<void> {
   await coordinator.createMission('local-seed-mission-v1', { repositoryId: repository.id, title: 'Make checkout resilient to retries', prompt: 'Add idempotent checkout handling and improve compatibility around order creation. Verify independent agent changes together before review.' });
 }
 
+async function optional<T>(read: () => Promise<T>): Promise<T | undefined> { try { return await read(); } catch { return undefined; } }
+
 async function findMission(env: AppEnv, missionId: string, workspaceId: string): Promise<{ mission: Mission; repository: Repository }> {
-  const repositories = await env.GITFLARE_COORDINATOR.getByName(catalogName(workspaceId)).listRepositories();
-  for (const repository of repositories) {
-    const mission = await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getMission(missionId);
-    if (mission) return { mission, repository };
-  }
-  throw new ApiError(404, 'MISSION_NOT_FOUND', 'This mission could not be found.');
+  const catalog = env.GITFLARE_COORDINATOR.getByName(catalogName(workspaceId));
+  const indexed = await optional(() => catalog.missionRepository(missionId));
+  const repository = indexed ? await catalog.getRepository(indexed) : undefined;
+  const mission = repository ? await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getMission(missionId) : undefined;
+  if (repository && mission) return { mission, repository };
+  const repositories = await catalog.listRepositories();
+  const candidates = await Promise.all(repositories.map(async (item) => ({ repository: item, mission: await env.GITFLARE_COORDINATOR.getByName(`repository:${item.id}`).getMission(missionId) })));
+  const found = candidates.find((item) => item.mission);
+  if (!found?.mission) throw new ApiError(404, 'MISSION_NOT_FOUND', 'This mission could not be found.');
+  await optional(() => catalog.indexMission(missionId, found.repository.id));
+  return { mission: found.mission, repository: found.repository };
 }
 
 async function currentRepository(env: AppEnv, repository: Repository): Promise<Repository> {
@@ -280,12 +287,12 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   }
   if (request.method === 'GET' && url.pathname === '/api/workspace') {
     if (local) await seedLocal(env);
-    const repositories = (await catalog.listRepositories());
-    const visible: Repository[] = [];
-    for (const repository of repositories) { try { await access.check(principal, 'read', 'repository', repository.id); visible.push(repository); } catch {} }
-    const groups = await Promise.all(visible.map((repository) => env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).listMissions()));
-    const missions: Mission[] = [];
-    for (const mission of groups.flat()) { try { await access.check(principal, 'read', 'repository', mission.repositoryId, mission.id); missions.push(mission); } catch {} }
+    const repositories = await catalog.listRepositories();
+    const readable = await access.checkMany(principal, 'read', repositories.map((repository) => ({ resourceType: 'repository', resourceId: repository.id })));
+    const visible = repositories.filter((_, index) => readable[index]);
+    const listed = (await Promise.all(visible.map((repository) => env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).listMissionSummaries()))).flat();
+    const allowed = await access.checkMany(principal, 'read', listed.map((mission) => ({ resourceType: 'repository', resourceId: mission.repositoryId, missionId: mission.id })));
+    const missions = listed.filter((_, index) => allowed[index]);
     const workspace: Workspace = { name: principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : (await access.workspace(principal)).name, mode: local ? 'local' : 'connected', repositories: visible, missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local), ai: await aiSettings(env, catalog) };
     return Response.json(workspace);
   }

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { ArrowClockwiseIcon, ArrowRightIcon, GitPullRequestIcon, PlusIcon, RobotIcon, ShieldCheckIcon, XCircleIcon } from "@phosphor-icons/react";
-import type { Mission, PullRequestState } from "../shared/types";
+import type { Mission, MissionSummary, PullRequestState } from "../shared/types";
 import { pullRequestState } from "../shared/pull-requests";
 import { request } from "./api";
 import { EmptyState, Status, relativeTime } from "./components";
@@ -17,16 +17,16 @@ const stateLabels: Record<PullRequestState, [string, string]> = {
   closed: ["Closed", "cancelled"],
 };
 
-export function PullRequestBadge({ mission }: { mission: Mission }) {
+export function PullRequestBadge({ mission }: { mission: Pick<Mission, "status" | "branchChange"> }) {
   const [label, tone] = stateLabels[pullRequestState(mission)];
   return <span className={`pill ${tone}`}><span className="pill-dot" />{label}</span>;
 }
 
 type Source = "all" | "agents" | "branches";
 
-const isOpen = (mission: Mission) => mission.branchChange ? !["landed", "closed"].includes(pullRequestState(mission)) : !["integrated", "cancelled"].includes(mission.status);
+const isOpen = (mission: MissionSummary) => mission.branchChange ? !["landed", "closed"].includes(pullRequestState(mission)) : !["integrated", "cancelled"].includes(mission.status);
 
-export default function PullRequests({ repositoryId, missions, canContribute }: { repositoryId: string; missions: Mission[]; canContribute: boolean }) {
+export default function PullRequests({ repositoryId, missions, canContribute }: { repositoryId: string; missions: MissionSummary[]; canContribute: boolean }) {
   const [filter, setFilter] = useState<"open" | "closed" | "all">("open");
   const [source, setSource] = useState<Source>("all");
   const pulls = missions.filter(mission => source === "all" || (source === "branches") === !!mission.branchChange).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));

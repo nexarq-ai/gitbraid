@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
 import { ArrowLeftIcon, ChatCircleIcon, CheckCircleIcon, CircleIcon, GitBranchIcon, PlusIcon, ProhibitIcon, SparkleIcon } from "@phosphor-icons/react";
-import type { AccessSnapshot, IssueCloseReason, IssueDetail, IssueList, Mission, Repository } from "../shared/types";
+import type { AccessSnapshot, IssueCloseReason, IssueDetail, IssueList, MissionSummary, Repository } from "../shared/types";
 import { request, RequestError } from "./api";
 import { BranchCreated, createBranch } from "./BranchProtection";
 import { EmptyState, relativeTime } from "./components";
@@ -26,7 +26,7 @@ const Labels = ({ labels }: { labels: string[] }) => labels.length ? <span class
 export const issueBranchName = (number: number, title: string) => `issue-${number}${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/^-+|-+$/g, "").replace(/^(.)/, "-$1")}`;
 const splitLabels = (value: string) => value.split(",").map((label) => label.trim()).filter(Boolean);
 
-export default function Issues({ repository, issueNumber, missions = [] }: { repository: Repository; issueNumber?: string; missions?: Mission[] }) {
+export default function Issues({ repository, issueNumber, missions = [] }: { repository: Repository; issueNumber?: string; missions?: MissionSummary[] }) {
   const [viewer, setViewer] = useState<Viewer | null>(null);
   useEffect(() => {
     let active = true;
@@ -144,7 +144,7 @@ function NewIssue({ repository, viewer, base }: { repository: Repository; viewer
   );
 }
 
-function IssueView({ repository, number, viewer, base, missions }: { repository: Repository; number: string; viewer: Viewer; base: string; missions: Mission[] }) {
+function IssueView({ repository, number, viewer, base, missions }: { repository: Repository; number: string; viewer: Viewer; base: string; missions: MissionSummary[] }) {
   const [issue, setIssue] = useState<IssueDetail | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");

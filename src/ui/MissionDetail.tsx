@@ -53,9 +53,11 @@ export default function MissionDetail({
   onBack,
   onUpdate,
 }: Props) {
-  const [mission, setMission] = useState<Mission | undefined>(() =>
-    workspace.missions.find((item) => item.id === id),
-  );
+  const [mission, setMission] = useState<Mission>();
+  const isActive = !!mission && ["queued", "running", "checking", "integrating"].includes(mission.status);
+  const missionActive = useRef(false);
+  missionActive.current = isActive;
+  const reschedule = useRef(() => {});
   const tab = [
     "overview",
     "changes",
@@ -107,15 +109,23 @@ export default function MissionDetail({
           );
       }
     };
-    void load();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, 5000);
+    let timer = 0;
+    const schedule = () => {
+      window.clearTimeout(timer);
+      if (active && document.visibilityState === "visible") timer = window.setTimeout(() => void load().finally(schedule), missionActive.current ? 5000 : 30000);
+    };
+    const resume = () => { if (document.visibilityState === "visible") void load().finally(schedule); else window.clearTimeout(timer); };
+    reschedule.current = schedule;
+    void load().finally(schedule);
+    document.addEventListener("visibilitychange", resume);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", resume);
     };
   }, [id]);
+
+  useEffect(() => { if (isActive) reschedule.current(); }, [isActive]);
 
   async function act(
     action: "start" | "cancel" | "approve" | "integrate" | "revoke",

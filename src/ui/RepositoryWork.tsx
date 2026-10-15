@@ -5,7 +5,8 @@ import {
   RobotIcon,
   ShieldCheckIcon,
 } from "@phosphor-icons/react";
-import type { Mission } from "../shared/types";
+import type { Mission, MissionSummary } from "../shared/types";
+import { request } from "./api";
 import { EmptyState, Status, relativeTime } from "./components";
 import AgentAssignment from "./AgentAssignment";
 import "./repository-work.css";
@@ -18,7 +19,7 @@ export default function RepositoryWork({
   onOpen,
 }: {
   tab: string;
-  missions: Mission[];
+  missions: MissionSummary[];
   canContribute: boolean;
   onCreate: () => void;
   onOpen: (id: string, tab?: string, runId?: string) => void;
@@ -66,7 +67,7 @@ export default function RepositoryWork({
   );
   const filteredRuns = runs.filter(({ mission, run }) =>
     match(
-      `${mission.title} ${run.name} ${run.task} ${run.model ?? ""} ${run.branch ?? ""}`,
+      `${mission.title} ${run.name} ${run.assignment} ${run.model ?? ""} ${run.branch ?? ""}`,
       run.status,
     ),
   );
@@ -302,14 +303,7 @@ export default function RepositoryWork({
                     <span>{(check.durationMs / 1000).toFixed(1)}s</span>
                   )}
                 </div>
-                {check.output ? (
-                  <details>
-                    <summary>View check output</summary>
-                    <pre className="code-output">{check.output}</pre>
-                  </details>
-                ) : (
-                  <p>No output recorded.</p>
-                )}
+                <CheckOutput missionId={mission.id} checkId={check.id} />
               </article>
             ))}
           </div>
@@ -374,5 +368,23 @@ export default function RepositoryWork({
         )}
       </section>
     </>
+  );
+}
+
+function CheckOutput({ missionId, checkId }: { missionId: string; checkId: string }) {
+  const [output, setOutput] = useState<string>();
+  const [error, setError] = useState("");
+  const load = () => {
+    if (output !== undefined) return;
+    setError("");
+    request<Mission>(`/api/missions/${encodeURIComponent(missionId)}`)
+      .then((mission) => setOutput(mission.checks.find((check) => check.id === checkId)?.output ?? ""))
+      .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : "Check output could not be loaded."));
+  };
+  return (
+    <details onToggle={(event) => { if (event.currentTarget.open) load(); }}>
+      <summary>View check output</summary>
+      {error ? <p className="repository-work-error">{error}</p> : output === undefined ? <p>Loading output…</p> : output ? <pre className="code-output">{output}</pre> : <p>No output recorded.</p>}
+    </details>
   );
 }

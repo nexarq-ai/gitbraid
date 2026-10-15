@@ -12,6 +12,10 @@ export class SqlStore {
     this.sql.exec('INSERT INTO records (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(value));
   }
 
+  putIfAbsent<T>(key: string, value: T): void {
+    this.sql.exec('INSERT INTO records (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING', key, JSON.stringify(value));
+  }
+
   insert<T>(key: string, value: T): void {
     this.sql.exec('INSERT INTO records (key, value) VALUES (?, ?)', key, JSON.stringify(value));
   }

@@ -10,7 +10,7 @@ import {
   PlusIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
-import type { Mission, Workspace } from "../shared/types";
+import type { MissionSummary, Workspace } from "../shared/types";
 
 export const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -179,7 +179,7 @@ export function MissionTable({
   workspace,
   onOpen,
 }: {
-  missions: Mission[];
+  missions: MissionSummary[];
   workspace: Workspace;
   onOpen: (id: string) => void;
 }) {
