@@ -740,8 +740,8 @@
     },
     {
       "path": "src/worker/worker-assets.ts",
-      "size": 23805,
-      "sha256": "e7fe6728632749448ebeef28f1aa52bc09ce5e7c749adf301caed0b058e33c88"
+      "size": 23885,
+      "sha256": "6af9fe136cea0f6cdcc0a9031d869753dfcc082403e0ab03a26c072e6fe45c87"
     },
     {
       "path": "src/worker/worker-bundle.ts",

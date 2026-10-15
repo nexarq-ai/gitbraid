@@ -373,8 +373,8 @@ async function collectFiles(collect: NonNullable<BundleSandbox['collect']>, dire
 }
 
 export async function collectAndUploadAssets(sandbox: BundleSandbox, input: { call: CloudflareCall; accountId: string; workerName: string; options: AssetsOptions; sleep?(ms: number): Promise<void> }): Promise<{ jwt: string; config: Record<string, unknown>; uploaded: number; total: number; hashAlgorithm: string; totalBytes: number }> {
-  const collect = sandbox.collect?.bind(sandbox);
-  if (!collect) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot collect static assets.');
+  if (!sandbox.collect) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot collect static assets.');
+  const collect = (script: string, timeoutMs: number, capBytes: number) => sandbox.collect!(script, timeoutMs, capBytes);
   const { directory } = input.options;
   const result = await collect(assetManifestScript(directory), MANIFEST_TIMEOUT_MS, MANIFEST_OUTPUT_CAP);
   if (result.exitCode !== 0) throw new WorkerBuildFailure(MANIFEST_FAILURES[result.exitCode] ?? 'WORKER_ASSETS_MANIFEST_FAILED', `Static assets in ${directory} could not be prepared. ${failureDetail(result)}`);
