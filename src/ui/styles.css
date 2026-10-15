@@ -1088,28 +1088,6 @@ a svg {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.diff-line {
-  display: block;
-  min-height: 1.8em;
-  padding: 0 16px;
-}
-.diff-line.add {
-  background: #eaf7ee;
-  color: #256f42;
-}
-.diff-line.remove {
-  background: #fff0ed;
-  color: #a24a36;
-}
-.diff-line.chunk {
-  background: #eef3fc;
-  color: #5b7194;
-}
-.diff-output {
-  padding: 12px 0;
-  white-space: pre;
-  word-break: normal;
-}
 .readiness-row {
   display: grid;
   grid-template-columns: 40px 1fr auto;

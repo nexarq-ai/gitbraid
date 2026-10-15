@@ -93,6 +93,9 @@ export interface ProposalReview {
   baseSha: string;
   resolvedAt?: string;
   resolvedBy?: string;
+  path?: string;
+  line?: number;
+  side?: 'old' | 'new';
 }
 
 export interface ReviewMissionInput {
@@ -102,6 +105,9 @@ export interface ReviewMissionInput {
   baseSha: string;
   body?: string;
   reviewId?: string;
+  path?: string;
+  line?: number;
+  side?: 'old' | 'new';
 }
 
 export interface MissionAttachment { name: string; content: string }
