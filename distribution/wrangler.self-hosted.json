@@ -38,6 +38,32 @@
   "ai": {
     "binding": "AI"
   },
+  "ratelimits": [
+    {
+      "name": "MCP_WRITE_RATE_LIMIT",
+      "namespace_id": "4101",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    },
+    {
+      "name": "MCP_READ_RATE_LIMIT",
+      "namespace_id": "4102",
+      "simple": {
+        "limit": 100,
+        "period": 10
+      }
+    },
+    {
+      "name": "API_RATE_LIMIT",
+      "namespace_id": "4103",
+      "simple": {
+        "limit": 600,
+        "period": 60
+      }
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
