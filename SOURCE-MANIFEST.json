@@ -615,8 +615,8 @@
     },
     {
       "path": "src/worker/mission-draft.ts",
-      "size": 7405,
-      "sha256": "3113eb36cad21a843aad5747bb3c10945eb8bdc8209b6fde5ac6ddafb0c3c20c"
+      "size": 7637,
+      "sha256": "a14295539a14d023e5b7cb61efc051c4b6b1ab07d5aed0213c8e791da0be4f60"
     },
     {
       "path": "src/worker/mission-storage.ts",
