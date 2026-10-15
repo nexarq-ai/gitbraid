@@ -36,7 +36,7 @@ import { PullRequestPanel } from "./PullRequests";
 import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 
-type PreviewResult = { status?: "starting" | "ready"; kind?: "worker"; previewUrl?: string; deploymentUrl?: string | null; notes?: string[]; candidateSha: string; expiresAt?: string };
+type PreviewResult = { status?: "starting" | "ready"; message?: string; kind?: "worker"; previewUrl?: string; deploymentUrl?: string | null; notes?: string[]; candidateSha: string; expiresAt?: string };
 
 type Props = {
   id: string;
@@ -88,6 +88,7 @@ export default function MissionDetail({
     worker?: { deploymentUrl: string | null; notes: string[] };
   } | null>(null);
   const [previewStarting, setPreviewStarting] = useState(false);
+  const [previewNote, setPreviewNote] = useState("");
   const mutation = useRef<{ signature: string; key: string } | null>(null);
   const revision = useRef(0);
   const [confirming, setConfirming] = useState<"approve" | "integrate" | null>(null);
@@ -398,7 +399,7 @@ export default function MissionDetail({
         mutation.current.key,
       );
       mutation.current = null;
-      if (result.status === "starting") setPreviewStarting(true);
+      if (result.status === "starting") { setPreviewNote(result.message ?? ""); setPreviewStarting(true); }
       else acceptPreview(mission.candidateSha, result);
     } catch (failure) {
       setError(
@@ -647,6 +648,12 @@ export default function MissionDetail({
           >
             Open preview <ArrowSquareOutIcon size={12} />
           </a>
+        </div>
+      )}
+      {previewStarting && previewNote && (
+        <div className="alert info" role="status">
+          <InfoIcon size={17} />
+          <div className="alert-text">{previewNote}</div>
         </div>
       )}
       {error && <ErrorNotice message={error} />}

@@ -4,7 +4,7 @@ import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } fr
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
-import { securityClient } from './security';
+import { securityClient, type Principal } from './security';
 import { needsPacking, packMission, summarizeMission, unpackMission, type BlobStore } from './mission-storage';
 import { assertLineInCandidate, assertReviewClear, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
@@ -14,7 +14,7 @@ import { defaultModelConnections, pinMissionModels, validateModelConnection } fr
 import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readIssue, recordIssueOutcome, type IssueActor, type IssueChange, type IssueQuery } from './issues';
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 import { capacityError, catalogName, liveSlots, MISSION_SLOT_GRACE_MS, slotKey, WORKSPACE_MISSION_LIMIT, WORKSPACE_PREVIEW_LIMIT, type CapacitySlot } from './capacity';
-import { missionStepTimeoutMs } from './budgets';
+import { missionStepTimeoutMs, PREVIEW_STEP_MS } from './budgets';
 import { AUTO_INCREASE_ACTOR, checkDurations, checkPlan, DURATION_SAMPLES, normalizeCheckSettings, withLearnedLimits, type CheckSettingsInput, type LearnedLimits } from './check-settings';
 import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type DeploySettings, type DeployState } from './deployments';
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
@@ -36,15 +36,45 @@ export const PREVIEW_HEARTBEAT_MS = 30_000;
 export const PREVIEW_READY_MS = 900_000;
 export const WORKER_PREVIEW_TTL_MS = 86_400_000;
 interface PreviewFailureRecord { claimId: string; epoch: number; candidateSha: string; message: string; failedAt: string }
-export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; expiresAt?: string; error?: string; kind?: 'worker' | 'container'; worker?: WorkerPreviewInfo }
+export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; expiresAt?: string; error?: string; message?: string; kind?: 'worker' | 'container'; worker?: WorkerPreviewInfo }
 interface DispatchIntent { workflowId: string; missionId: string; repositoryId: string; epoch: number; attempts: number; nextAttemptAt: number }
 export const DISPATCH_FAST_ATTEMPTS = 8;
+interface MissionWatch { workflowId: string; missionId: string; epoch: number; deliveredAt: number; lastReportAt: number; checkAt: number; misses: number }
+export const MISSION_WATCHDOG_MS = 900_000;
+export const WATCHDOG_MISSING_LIMIT = 3;
+const WATCHDOG_MISSING_RECHECK_MS = 60_000;
+const ACTIVE_WORKFLOW = ['queued', 'running', 'paused', 'waiting', 'waitingForPause'];
+const TERMINAL_WORKFLOW = ['complete', 'errored', 'terminated'];
+interface ApprovalClear { missionId: string; principal: Principal; queuedAt: string; attempts: number; nextAttemptAt: number }
+const APPROVAL_CLEAR_RETRY_MS = 30_000;
+const APPROVAL_CLEAR_MAX_BACKOFF_MS = 900_000;
+
+const minutes = (ms: number) => Math.ceil(ms / 60_000);
+
+export function failureLine(error: string): string {
+  const first = error.trim().split('\n').find((line) => line.trim()) ?? '';
+  return first
+    .replace(/(\bhttps?:\/\/)[^\s/@]+@/gi, '$1')
+    .replace(/\b(authorization|bearer|token|password|secret)([=:\s]+)\S+/gi, '$1$2[redacted]')
+    .trim()
+    .slice(0, 300);
+}
+
+export const EXECUTION_UPDATING_MESSAGE = 'Gitflare is finishing an update and could not start this proposal. Nothing was started. Retry in about a minute; if it still fails after 5 minutes, contact your Gitflare operator.';
+
+export function integrationPendingMessage(candidateSha: string): string {
+  return `Landing has not finished: the default branch has not yet confirmed commit ${candidateSha.slice(0, 12)}, so other proposals in this repository cannot land until it does. If landing started in the last ${minutes(INTEGRATION_PREPARATION_MS)} minutes, wait and choose Land again; retries never push twice. If it has been longer, ask a workspace Owner to check the default branch: once it shows ${candidateSha.slice(0, 12)}, choose Land again to record it.`;
+}
+
+export const INTEGRATION_UNCONFIRMED_MESSAGE = 'Landing could not confirm whether the default branch moved to the approved commit, so other proposals in this repository cannot land until it is resolved. Choose Land again to recheck the default branch; it never pushes twice. If the branch does not show the approved commit, ask a workspace Owner to inspect it before landing anything else.';
+
+export const PREVIEW_STARTING_MESSAGE = `Preparing the preview: cloning, installing dependencies and starting the server usually takes 1 to 3 minutes. Status refreshes automatically; if it is not ready after ${minutes(PREVIEW_STEP_MS)} minutes it stops and reports why.`;
 
 export async function startWithDurableDispatch(coordinator: { startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> }, key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> {
   try {
     return await coordinator.startMissionWithDispatch(key, id, authorization, models);
   } catch (error) {
-    if (error instanceof Error && /startMissionWithDispatch/.test(error.message) && /not a function|does not exist|not implemented|does not implement|missing|unknown method/i.test(error.message)) throw new ApiError(503, 'EXECUTION_DEPLOYMENT_PENDING', 'Execution services are updating. Wait briefly and retry; this request has not started a mission.');
+    if (error instanceof Error && /startMissionWithDispatch/.test(error.message) && /not a function|does not exist|not implemented|does not implement|missing|unknown method/i.test(error.message)) throw new ApiError(503, 'EXECUTION_DEPLOYMENT_PENDING', EXECUTION_UPDATING_MESSAGE);
     throw error;
   }
 }
@@ -152,9 +182,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
-  pullRequestAction(key: string, id: string, action: 'update' | 'close' | 'reopen', actorId: string, headSha?: string): Mission {
+  pullRequestAction(key: string, id: string, action: 'update' | 'close' | 'reopen', actorId: string, headSha?: string, clearFor?: Principal): Mission {
     return this.mutateMission(key, JSON.stringify(['pull', id, action, headSha ?? null]), id, () => {
       const mission = this.requiredMission(id);
+      this.queueApprovalClear(id, clearFor);
       const change = mission.branchChange;
       if (!change) throw new ApiError(409, 'NOT_A_PULL_REQUEST', 'Only a pull request can be updated from its branch, closed or reopened.');
       if (['integrating', 'integrated'].includes(mission.status)) throw new ApiError(409, 'PULL_REQUEST_LANDED', 'This pull request is landing or has landed.');
@@ -162,6 +193,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         if (change.closedAt) return mission;
         if (mission.status === 'approved') { this.archive(mission, 'approved'); delete mission.approvedAt; delete mission.approvedBy; this.archive(mission, 'approval_revoked'); }
         this.store.delete(`dispatch:${mission.id}-${mission.epoch}`);
+        this.store.delete(`watch:${mission.id}-${mission.epoch}`);
         mission.runs = mission.runs.map((run) => ['queued', 'running'].includes(run.status) ? { ...run, status: 'cancelled', completedAt: new Date().toISOString() } : run);
         mission.status = 'cancelled';
         mission.branchChange = { ...change, closedAt: new Date().toISOString(), closedBy: actorId };
@@ -465,7 +497,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     const mission = this.requiredMission(id);
     const current = (entry?: { epoch: number; candidateSha: string }) => !!entry && entry.epoch === mission.epoch && entry.candidateSha === mission.candidateSha;
     const state = this.store.get<PreviewState>(`preview-state:${id}`);
-    if (current(state) && state!.expiresAt > Date.now()) return state!.phase === 'ready' ? { status: 'ready', candidateSha: mission.candidateSha, expiresAt: new Date(state!.expiresAt).toISOString(), ...(state!.worker ? { kind: 'worker' as const, worker: state!.worker } : {}) } : { status: 'starting', candidateSha: mission.candidateSha };
+    if (current(state) && state!.expiresAt > Date.now()) return state!.phase === 'ready' ? { status: 'ready', candidateSha: mission.candidateSha, expiresAt: new Date(state!.expiresAt).toISOString(), ...(state!.worker ? { kind: 'worker' as const, worker: state!.worker } : {}) } : { status: 'starting', candidateSha: mission.candidateSha, message: PREVIEW_STARTING_MESSAGE };
     const failure = this.store.get<PreviewFailureRecord>(`preview-failure:${id}`);
     if (current(failure)) return { status: 'failed', candidateSha: mission.candidateSha, error: failure!.message };
     return { status: 'none', candidateSha: mission.candidateSha };
@@ -660,21 +692,101 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return this.startMission(key, id, authorization, models);
   }
 
-  private failDispatch(id: string, epoch: number): Mission {
+  private failDispatch(id: string, epoch: number, error = 'The Workflow ended before mission completion was recorded. Start a new attempt to retry; late results from this attempt will be rejected.', runError = 'Workflow dispatch was not confirmed'): Mission {
     return this.ctx.storage.transactionSync(() => {
       const mission = this.requiredMission(id);
       assertActiveRun(mission.status, mission.epoch, epoch);
       mission.status = 'failed';
-      mission.error = 'The Workflow ended before mission completion was recorded. Start a new attempt to retry; late results from this attempt will be rejected.';
-      mission.runs = mission.runs.map((run) => ['queued', 'running'].includes(run.status) ? { ...run, status: 'failed', completedAt: new Date().toISOString(), error: 'Workflow dispatch was not confirmed' } : run);
+      mission.error = error;
+      mission.runs = mission.runs.map((run) => ['queued', 'running'].includes(run.status) ? { ...run, status: 'failed', completedAt: new Date().toISOString(), error: runError } : run);
       this.store.delete(`dispatch:${id}-${epoch}`);
+      this.store.delete(`watch:${id}-${epoch}`);
       this.saveMission(mission, mission.error, 'error');
       this.archive(mission, 'completed');
       return mission;
     });
   }
 
+  private watchdogMs(): number {
+    const seconds = Number(this.env?.MISSION_WATCHDOG_SECONDS);
+    return Number.isFinite(seconds) && seconds >= 60 ? seconds * 1000 : MISSION_WATCHDOG_MS;
+  }
+
+  private watchMission(id: string, epoch: number): void {
+    const key = `watch:${id}-${epoch}`;
+    const now = Date.now();
+    const existing = this.store.get<MissionWatch>(key);
+    this.store.put(key, { workflowId: `${id}-${epoch}`, missionId: id, epoch, deliveredAt: existing?.deliveredAt ?? now, lastReportAt: now, checkAt: now + this.watchdogMs(), misses: 0 } satisfies MissionWatch);
+  }
+
+  listMissionWatches(): MissionWatch[] {
+    return this.store.list<MissionWatch>('watch:');
+  }
+
+  private async superviseMissions(): Promise<void> {
+    const due = this.listMissionWatches().filter((watch) => watch.checkAt <= Date.now()).slice(0, 10);
+    for (const watch of due) {
+      const key = `watch:${watch.workflowId}`;
+      if (!this.isMissionActive(watch.missionId, watch.epoch)) { this.store.delete(key); continue; }
+      let status: string | null = null;
+      try { status = (await (await this.env.MISSION_WORKFLOW!.get(watch.workflowId)).status()).status; } catch {}
+      const current = this.store.get<MissionWatch>(key);
+      if (!current || current.lastReportAt !== watch.lastReportAt || !this.isMissionActive(watch.missionId, watch.epoch)) continue;
+      const mission = this.requiredMission(watch.missionId);
+      const budgetMs = missionStepTimeoutMs(mission) + this.watchdogMs();
+      const silentMinutes = Math.max(1, Math.round((Date.now() - watch.lastReportAt) / 60_000));
+      const misses = status ? 0 : watch.misses + 1;
+      const reason = status && TERMINAL_WORKFLOW.includes(status) ? `The Workflow for attempt ${watch.epoch} ${status === 'complete' ? 'completed' : `ended as ${status}`} without reporting a result (no report for ${silentMinutes} min)`
+        : misses >= WATCHDOG_MISSING_LIMIT ? `The Workflow for attempt ${watch.epoch} could not be found after ${misses} checks (no report for ${silentMinutes} min)`
+        : Date.now() - watch.deliveredAt > budgetMs ? `Attempt ${watch.epoch} exceeded its ${Math.round(budgetMs / 60_000)}-minute execution budget without a final report`
+        : null;
+      if (reason) {
+        console.error(JSON.stringify({ event: 'mission_watchdog_failed', missionId: watch.missionId, epoch: watch.epoch, workflowStatus: status, misses }));
+        this.failDispatch(watch.missionId, watch.epoch, `${reason}. Start a new attempt to retry; late results from this attempt will be rejected.`, 'Execution stopped without reporting a result');
+        continue;
+      }
+      this.store.put(key, { ...watch, misses, checkAt: Date.now() + (status && ACTIVE_WORKFLOW.includes(status) ? this.watchdogMs() : WATCHDOG_MISSING_RECHECK_MS) } satisfies MissionWatch);
+    }
+  }
+
+  private queueApprovalClear(missionId: string, principal?: Principal): void {
+    if (!principal) return;
+    this.store.put(`approval-clear:${missionId}`, { missionId, principal, queuedAt: new Date().toISOString(), attempts: 0, nextAttemptAt: Date.now() } satisfies ApprovalClear);
+  }
+
+  listApprovalClears(): ApprovalClear[] {
+    return this.store.list<ApprovalClear>('approval-clear:');
+  }
+
+  async settleApprovalClears(missionId?: string, actor?: Principal, dueOnly = false): Promise<void> {
+    const pending = this.listApprovalClears().filter((entry) => (!missionId || entry.missionId === missionId) && (!dueOnly || entry.nextAttemptAt <= Date.now()));
+    if (!pending.length) return;
+    await this.ensureDispatchAlarm(Date.now() + APPROVAL_CLEAR_RETRY_MS);
+    let failure: unknown;
+    for (const entry of pending) {
+      const key = `approval-clear:${entry.missionId}`;
+      try {
+        await securityClient(this.env).clearApprovals(actor ?? entry.principal, entry.missionId);
+        if (this.store.get<ApprovalClear>(key)?.queuedAt === entry.queuedAt) this.store.delete(key);
+      } catch (error) {
+        failure ??= error;
+        const attempts = entry.attempts + 1;
+        console.error(JSON.stringify({ event: 'approval_clear_failed', missionId: entry.missionId, attempts }));
+        if (this.store.get<ApprovalClear>(key)?.queuedAt === entry.queuedAt) this.store.put(key, { ...entry, attempts, nextAttemptAt: Date.now() + Math.min(APPROVAL_CLEAR_MAX_BACKOFF_MS, APPROVAL_CLEAR_RETRY_MS * 2 ** (attempts - 1)) } satisfies ApprovalClear);
+      }
+    }
+    if (failure && !dueOnly) throw failure;
+  }
+
   async alarm(): Promise<void> {
+    await this.deliverDispatches();
+    await this.superviseMissions();
+    await this.settleApprovalClears(undefined, undefined, true);
+    const next = [...this.listDispatches().map((intent) => intent.nextAttemptAt), ...this.listMissionWatches().map((watch) => watch.checkAt), ...this.listApprovalClears().map((entry) => entry.nextAttemptAt)];
+    if (next.length) await this.ensureDispatchAlarm(Math.max(Date.now() + 1000, Math.min(...next)));
+  }
+
+  private async deliverDispatches(): Promise<void> {
     const existing = this.listDispatches();
     if (!existing.length) return;
     const due = existing.filter((intent) => intent.nextAttemptAt <= Date.now()).slice(0, 10);
@@ -711,6 +823,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         this.ctx.storage.transactionSync(() => {
           this.store.delete(key);
           this.store.put(`delivered:${intent.workflowId}`, { confirmedAt: new Date().toISOString() });
+          this.watchMission(intent.missionId, intent.epoch);
           const mission = this.requiredMission(intent.missionId);
           delete mission.error;
           this.saveMission(mission, `Workflow dispatch confirmed for attempt ${intent.epoch}.`);
@@ -729,8 +842,6 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         this.saveMission(mission, mission.error, 'warning');
       });
     }
-    const pending = this.listDispatches();
-    if (pending.length) await this.ensureDispatchAlarm(Math.max(Date.now() + 1000, Math.min(...pending.map((intent) => intent.nextAttemptAt))));
   }
 
   cancelMission(key: string, id: string): Mission {
@@ -739,6 +850,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (['integrated', 'approved', 'integrating'].includes(mission.status)) throw new ApiError(409, 'MISSION_FINAL', 'An approved or integrating mission cannot be cancelled.');
       mission.status = 'cancelled';
       this.store.delete(`dispatch:${mission.id}-${mission.epoch}`);
+      this.store.delete(`watch:${mission.id}-${mission.epoch}`);
       mission.runs = mission.runs.map((run) => ['queued', 'running'].includes(run.status) ? { ...run, status: 'cancelled', completedAt: new Date().toISOString() } : run);
       this.saveMission(mission, 'Mission cancelled. Late execution results will be rejected.', 'warning');
       this.archive(mission, 'cancelled');
@@ -757,12 +869,14 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (this.store.get(`dispatch:${id}-${epoch}`)) delete mission.error;
     this.store.delete(`dispatch:${id}-${epoch}`);
     this.store.put(`delivered:${id}-${epoch}`, { confirmedAt: new Date().toISOString() });
+    if (complete) this.store.delete(`watch:${id}-${epoch}`);
+    else this.watchMission(id, epoch);
     if (result.runs) {
       const previousRuns = new Map(mission.runs.map((run) => [run.id, run]));
       for (const run of result.runs) {
         const previous = previousRuns.get(run.id);
         if (!previous || previous.status === run.status && previous.summary === run.summary) continue;
-        const summary = run.summary?.trim().slice(0, 1000);
+        const summary = run.status === 'failed' && run.error ? failureLine(run.error) : run.summary?.trim().slice(0, 1000);
         mission.events.push({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), runId: run.id, type: run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : run.status === 'cancelled' ? 'warning' : 'info', message: `Attempt ${epoch} · ${run.name.slice(0, 120)}: ${run.status}${summary ? ` — ${summary}` : ''}` });
       }
       mission.runs = result.runs;
@@ -790,7 +904,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return this.saveMission(mission);
   }
 
-  reviewMission(key: string, id: string, supplied: ReviewMissionInput, actorId: string): Mission {
+  reviewMission(key: string, id: string, supplied: ReviewMissionInput, actorId: string, clearFor?: Principal): Mission {
     const input = reviewMissionInput({ ...supplied });
     return this.mutateMission(key, JSON.stringify(['review', id, actorId, input]), id, () => {
       const mission = this.requiredMission(id);
@@ -808,6 +922,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         if (mission.reviews.length >= 500) throw new ApiError(409, 'REVIEW_LIMIT', 'This proposal has reached its discussion limit.');
         assertLineInCandidate(mission, input);
         mission.reviews.push({ id: crypto.randomUUID(), kind: input.action, body: input.body!, authorId: actorId, createdAt: new Date().toISOString(), epoch: input.epoch, candidateSha: input.candidateSha, baseSha: input.baseSha, ...(input.path === undefined ? {} : { path: input.path, line: input.line, side: input.side }) });
+        if (input.action === 'request_changes') this.queueApprovalClear(id, clearFor);
         if (input.action === 'request_changes' && mission.status === 'approved') {
           this.archive(mission, 'approved');
           mission.status = 'needs_review';
@@ -820,7 +935,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
-  selectCandidate(key: string, id: string, runId: string, epoch: number, actorId = 'workspace-owner'): Mission {
+  selectCandidate(key: string, id: string, runId: string, epoch: number, actorId = 'workspace-owner', clearFor?: Principal): Mission {
     return this.mutateMission(key, JSON.stringify(['select', id, runId, epoch]), id, () => {
       const mission = this.requiredMission(id);
       if (mission.mode !== 'race') throw new ApiError(409, 'NOT_A_RACE', 'Only a race mission has candidates to choose between.');
@@ -830,6 +945,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (!run) throw new ApiError(409, 'CANDIDATE_NOT_ELIGIBLE', 'Select an agent whose candidate passed its checks.');
       mission.raceChecks ??= mission.checks;
       mission.raceChanges ??= mission.changes;
+      this.queueApprovalClear(id, clearFor);
       mission.selectedRunId = run.id;
       mission.candidateSha = run.commitSha!;
       mission.integrationForkName = run.forkName;
@@ -854,11 +970,12 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
-  revokeApproval(key: string, id: string, candidateSha: string, baseSha: string): Mission {
+  revokeApproval(key: string, id: string, candidateSha: string, baseSha: string, clearFor?: Principal): Mission {
     return this.mutateMission(key, JSON.stringify(['revoke', id, candidateSha, baseSha]), id, () => {
       const mission = this.requiredMission(id);
       if (mission.status !== 'approved') throw new ApiError(409, 'NOT_APPROVED', 'Only an approved mission can have its approval revoked. Resolve any integration first.');
       if (mission.candidateSha !== candidateSha || mission.baseSha !== baseSha) throw new ApiError(409, 'STALE_APPROVAL', 'Refresh before revoking approval for this exact candidate and base.');
+      this.queueApprovalClear(id, clearFor);
       this.archive(mission, 'approved');
       mission.status = 'needs_review';
       delete mission.approvedAt;
@@ -962,7 +1079,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       } else {
         claim.phase = 'pushing';
         this.store.put('integration:claim', claim);
-        mission.error = 'Integration could not be confirmed. Recheck the canonical commit before retrying; other integrations remain blocked.';
+        mission.error = INTEGRATION_UNCONFIRMED_MESSAGE;
       }
       this.saveMission(mission, mission.error, 'warning');
       this.archive(mission, outcome === 'not_pushed' ? 'integration_failed' : 'integration_uncertain');

@@ -38,6 +38,7 @@ export type AppEnv = Omit<Env, 'CLOUDFLARE_CLIENT_ID' | 'CLOUDFLARE_CLIENT_SECRE
   OPERATOR_MODEL_WORKSPACES?: string;
   AI_FEATURES?: 'enabled' | 'disabled';
   TEST_COMMAND?: string;
+  MISSION_WATCHDOG_SECONDS?: string;
   PREVIEW_ORIGIN?: string;
   SUPPORT_EMAIL?: string;
   OPERATOR_NAME?: string;
