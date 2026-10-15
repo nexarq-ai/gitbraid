@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { timingSafeEqual } from 'node:crypto';
 import { ApiError, requireString } from './domain';
 import type { AppEnv } from './env';
-import type { CloudflareConnection, CloudflareOAuthState } from './cloudflare';
+import type { CloudflareConnection, CloudflareIdentity, CloudflareOAuthState } from './cloudflare';
 import { normalizeProjectMapping, type ProjectMapping, type MigrationPlan } from './cloudflare-projects';
 import { authenticatorUri, decryptAuth, encryptAuth, mfaSecret, randomCapability, verifyTotp } from './mfa';
 
@@ -13,7 +13,7 @@ export const ROLE_ACTIONS: Record<Role, Action[]> = {
   Viewer: ['read'], Contributor: ['read', 'contribute', 'execute'], Reviewer: ['read', 'review'],
   Maintainer: ['read', 'contribute', 'execute', 'review', 'land'], Deployer: ['read', 'deploy'], Owner: ['read', 'contribute', 'execute', 'review', 'land', 'deploy', 'migrate', 'manage'],
 };
-interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean }
+interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean; cloudflareId?: string }
 interface Member { userId: string; workspaceId: string; role: Role; repositoryIds?: string[] }
 interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean }
 interface WorkspaceRecord { id: string; name: string; bootstrapDisabled?: boolean; agentPending?: boolean }
@@ -26,15 +26,19 @@ export interface ReviewRule { requiredApprovals: number; requiredCheckNames: str
 interface Audit { id: string; workspaceId: string; actorId: string; action: string; timestamp: string; resourceId?: string; sequence?: number }
 export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string }
 interface MfaRecord { id: string; encryptedSecret: string; enabled: boolean; lastStep: number; recoveryHashes: string[] }
-interface AuthChallenge { id: string; userId: string; kind: 'setup' | 'enroll' | 'login'; workspaceId?: string; expiresAt: number; used?: boolean }
+interface AuthChallenge { id: string; userId: string; kind: 'setup' | 'enroll' | 'login'; workspaceId?: string; expiresAt: number; used?: boolean; linkId?: string }
+export interface CloudflareSigninState { id: string; browserHash: string; expiresAt: number; encrypted: string }
+interface CloudflareLink { id: string; cloudflareId: string; email: string; expiresAt: number }
+export interface CloudflareSigninInput { identity: CloudflareIdentity; userId: string; workspaceId: string; workspaceName: string; connection?: CloudflareConnection; sessionHash: string; linkHash: string; invitation?: string }
+export type CloudflareSigninResult = { status: 'signed-in'; user: ReturnType<typeof safeUser>; workspaceId: string; created: boolean; connectionStored: boolean } | { status: 'link-required'; created: false; connectionStored: false }
 interface Installation { workspaceName?: string; workspaceId?: string; pendingUser?: User; challengeId?: string }
 interface EmailToken { id: string; userId: string; email: string; kind: 'verify' | 'reset'; expiresAt: number }
 interface LoginFailures { count: number; lockedUntil: number; updatedAt: number }
 interface MachineRegistration { id: string; requestHash: string; response: string; workspaceId: string; userId: string; claimHash: string; expiresAt: number; claimedBy?: string }
 export interface MfaChallengeResult { mfaRequired: true; challengeId: string; expiresAt: number; enrollmentRequired: boolean; secret?: string; otpauthUri?: string }
-interface State { cloudflareConnections: Record<string, CloudflareConnection>; cloudflareStates: Record<string, CloudflareOAuthState>; cloudflareProjects: Record<string, {mapping: ProjectMapping | null; plans: MigrationPlan[]}>; mfa: MfaRecord[]; challenges: AuthChallenge[]; emailTokens: EmailToken[]; loginFailures: Record<string, LoginFailures>; installations: Record<string, Installation>; machines: MachineRegistration[]; users: User[]; members: Member[]; sessions: Session[]; workspaces: WorkspaceRecord[]; invitations: Invitation[]; teams: Team[]; grants: Grant[]; credentials: Credential[]; audit: Audit[]; protections: Record<string, Protection>; approvals: Record<string, string[]>; limits: Record<string, { count: number; until: number }> }
+interface State { cloudflareConnections: Record<string, CloudflareConnection>; cloudflareStates: Record<string, CloudflareOAuthState>; cloudflareSignins: Record<string, CloudflareSigninState>; cloudflareLinks: Record<string, CloudflareLink>; cloudflareProjects: Record<string, {mapping: ProjectMapping | null; plans: MigrationPlan[]}>; mfa: MfaRecord[]; challenges: AuthChallenge[]; emailTokens: EmailToken[]; loginFailures: Record<string, LoginFailures>; installations: Record<string, Installation>; machines: MachineRegistration[]; users: User[]; members: Member[]; sessions: Session[]; workspaces: WorkspaceRecord[]; invitations: Invitation[]; teams: Team[]; grants: Grant[]; credentials: Credential[]; audit: Audit[]; protections: Record<string, Protection>; approvals: Record<string, string[]>; limits: Record<string, { count: number; until: number }> }
 export interface Principal { userId: string; workspaceId: string; role: Role; sessionId?: string; credentialId?: string; bootstrap?: boolean }
-const initial = (): State => ({ cloudflareConnections: {}, cloudflareStates: {}, cloudflareProjects: {}, mfa: [], challenges: [], emailTokens: [], loginFailures: {}, installations: {}, machines: [], users: [], members: [], sessions: [], workspaces: [{ id: 'legacy', name: 'Gitflare workspace' }], invitations: [], teams: [], grants: [], credentials: [], audit: [], protections: {}, approvals: {}, limits: {} });
+const initial = (): State => ({ cloudflareConnections: {}, cloudflareStates: {}, cloudflareSignins: {}, cloudflareLinks: {}, cloudflareProjects: {}, mfa: [], challenges: [], emailTokens: [], loginFailures: {}, installations: {}, machines: [], users: [], members: [], sessions: [], workspaces: [{ id: 'legacy', name: 'Gitflare workspace' }], invitations: [], teams: [], grants: [], credentials: [], audit: [], protections: {}, approvals: {}, limits: {} });
 const encode = new TextEncoder();
 export async function hashToken(value: string): Promise<string> { return hex(await crypto.subtle.digest('SHA-256', encode.encode(value))); }
 function hex(value: ArrayBuffer): string { return Array.from(new Uint8Array(value), b => b.toString(16).padStart(2, '0')).join(''); }
@@ -44,7 +48,7 @@ export async function passwordHash(password: string, salt: string): Promise<stri
   return hex(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: encode.encode(salt), iterations: 100000 }, key, 256));
 }
 function role(value: unknown): Role { if (!ROLES.includes(value as Role)) throw new ApiError(400, 'INVALID_ROLE', 'Select a valid workspace role.'); return value as Role; }
-function safeUser(user: User) { return { id: user.id, name: user.name, email: user.email, emailVerified: user.emailVerified === true }; }
+function safeUser(user: User) { return { id: user.id, name: user.name, email: user.email, emailVerified: user.emailVerified === true, cloudflareLinked: !!user.cloudflareId }; }
 function fail(code = 'FORBIDDEN', message = 'Your workspace permissions do not allow this action.'): never { throw new ApiError(403, code, message); }
 function publicValue<T extends { hash: string }>(value: T): Omit<T, 'hash'> { const { hash: _hash, ...rest } = value; return rest; }
 const AUDIT_LIMIT_PER_WORKSPACE = 1000;
@@ -65,6 +69,8 @@ const LOGIN_LOCK_MS = 900_000;
 const LOGIN_FAILURE_WINDOW_MS = 86_400_000;
 const VERIFY_TOKEN_MS = 86_400_000;
 const RESET_TOKEN_MS = 3_600_000;
+const CLOUDFLARE_STATE_MS = 600_000;
+const CLOUDFLARE_PENDING_LIMIT = 10_000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 type StoredRecord = { group: string; value: unknown };
 function sameHash(left: string, right: string): boolean { const a = encode.encode(left); const b = encode.encode(right); return a.length === b.length && timingSafeEqual(a, b); }
@@ -98,6 +104,8 @@ function prune(state: State, now: number): void {
   state.machines = state.machines.filter(machine => machine.expiresAt + RETENTION_MS > now);
   for (const [id, limit] of Object.entries(state.limits)) if (limit.until <= now) delete state.limits[id];
   for (const [id, value] of Object.entries(state.cloudflareStates)) if (value.expiresAt <= now) delete state.cloudflareStates[id];
+  for (const [id, value] of Object.entries(state.cloudflareSignins)) if (value.expiresAt <= now) delete state.cloudflareSignins[id];
+  for (const [id, value] of Object.entries(state.cloudflareLinks)) if (value.expiresAt <= now) delete state.cloudflareLinks[id];
   for (const [id, failures] of Object.entries(state.loginFailures)) if (failures.lockedUntil ? failures.lockedUntil <= now : failures.updatedAt + LOGIN_FAILURE_WINDOW_MS <= now) delete state.loginFailures[id];
 }
 function clearLoginFailures(state: State, userId: string): void {
@@ -251,8 +259,9 @@ export class SecurityService {
     if (!accepted) throw new ApiError(429, 'RATE_LIMITED', 'Too many authentication attempts. Try again in 15 minutes.');
   }
   async signup(body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
-  async login(body: Record<string, unknown>, client = 'unknown') {
+  async login(body: Record<string, unknown>, client = 'unknown', linkToken?: string) {
     const email = requireString(body.email, 'Email', 254).toLowerCase(); const password = requireString(body.password, 'Password', 256);
+    const linkId = linkToken && /^[a-f0-9]{64}$/.test(linkToken) ? await hashToken(linkToken) : undefined;
     const found = await this.read(state => state.users.find(item => item.email === email));
     const hash = await passwordHash(password, found?.salt ?? 'invalid-account-salt');
     // A locked account must be indistinguishable from a wrong password
@@ -271,13 +280,14 @@ export class SecurityService {
     });
     if (!user) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
     const enrolled = await this.read(state => state.mfa.find(m => m.id === user.id)?.enabled);
-    if (enrolled || this.options.EDITION === 'self-hosted') return this.beginMfa(user.id, undefined, { user });
+    if (enrolled || this.options.EDITION === 'self-hosted') return this.beginMfa(user.id, undefined, { user }, linkId);
     const value = token(); const sessionHash = await hashToken(value);
     return this.mutate(state => {
       const current = this.passwordUser(state, user);
       const membership = state.members.find(member => member.userId === current.id); if (!membership) fail();
       if (state.mfa.some(record => record.id === current.id && record.enabled)) throw new ApiError(401, 'AUTH_REQUIRED', 'Sign in again with your authenticator.');
-      return this.session(state, current, membership.workspaceId, value, sessionHash);
+      const cloudflareLinked = this.applyCloudflareLink(state, current, linkId);
+      return { ...this.session(state, current, membership.workspaceId, value, sessionHash), ...(cloudflareLinked ? { cloudflareLinked } : {}) };
     });
   }
   async legacySession() { if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED'); const value = token(); const hash = await hashToken(value); return this.mutate(state => { if (state.workspaces.find(w => w.id === 'legacy')?.bootstrapDisabled) fail(); state.sessions.push({ id: crypto.randomUUID(), userId: 'bootstrap-owner', workspaceId: 'legacy', hash, expiresAt: Date.now() + 28800000, authenticatedAt: Date.now() }); return value; }); }
@@ -425,7 +435,7 @@ export class SecurityService {
     if (!current) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
     return current;
   }
-  private async beginMfa(userId: string, workspaceId?: string, authentication?: { user?: User; principal?: Principal }): Promise<MfaChallengeResult> {
+  private async beginMfa(userId: string, workspaceId?: string, authentication?: { user?: User; principal?: Principal }, linkId?: string): Promise<MfaChallengeResult> {
     const challengeId = token(); const challengeHash = await hashToken(challengeId); const expiresAt = Date.now() + 300000;
     const secret = mfaSecret(); const encryptedSecret = await encryptAuth(secret, this.options.AUTH_ENCRYPTION_KEY, `mfa:${userId}`);
     const result = await this.mutate(state => {
@@ -437,7 +447,7 @@ export class SecurityService {
       let mfa = state.mfa.find(m => m.id === userId);
       if (!mfa?.enabled) { mfa = { id: userId, encryptedSecret, enabled: false, lastStep: -1, recoveryHashes: [] }; state.mfa = [...state.mfa.filter(m => m.id !== userId), mfa]; }
       state.challenges = state.challenges.filter(c => c.userId !== userId || c.used);
-      state.challenges.push({ id: challengeHash, userId, kind: mfa.enabled ? 'login' : 'enroll', expiresAt, workspaceId: member.workspaceId } as AuthChallenge);
+      state.challenges.push({ id: challengeHash, userId, kind: mfa.enabled ? 'login' : 'enroll', expiresAt, workspaceId: member.workspaceId, ...(linkId ? { linkId } : {}) } as AuthChallenge);
       return { email: user.email, enrollmentRequired: !mfa.enabled };
     });
     return { mfaRequired: true, enrollmentRequired: result.enrollmentRequired, challengeId, expiresAt, ...(result.enrollmentRequired ? { secret, otpauthUri: authenticatorUri(secret, result.email) } : {}) };
@@ -483,7 +493,8 @@ export class SecurityService {
       } else workspaceId = challenge.workspaceId ?? state.members.find(m => m.userId === challenge.userId)?.workspaceId;
       if (!user || !workspaceId || !state.members.some(m => m.userId === user!.id && m.workspaceId === workspaceId)) fail();
       if (enrolling) for (const session of state.sessions) if (session.userId === user.id) session.revoked = true;
-      return { ...this.session(state, user, workspaceId, raw, sessionHash), ...(enrolling ? { recoveryCodes } : {}) };
+      const cloudflareLinked = challenge.kind !== 'setup' && this.applyCloudflareLink(state, user, challenge.linkId);
+      return { ...this.session(state, user, workspaceId, raw, sessionHash), ...(enrolling ? { recoveryCodes } : {}), ...(cloudflareLinked ? { cloudflareLinked } : {}) };
     });
   }
   async createInstallationUser(p: Principal, body: Record<string, unknown>) {
@@ -555,7 +566,7 @@ export class SecurityService {
     return this.mutate(state => {
       if (!consumeLimit(state, limitKey, 3, 3_600_000)) return null;
       const user = state.users.find(candidate => candidate.email === email && !candidate.machine);
-      if (!user) return null;
+      if (!user?.hash) return null;
       state.emailTokens = state.emailTokens.filter(candidate => candidate.userId !== user.id || candidate.kind !== 'reset');
       state.emailTokens.push({ id, userId: user.id, email, kind: 'reset', expiresAt: Date.now() + RESET_TOKEN_MS });
       this.auditAccount(state, user.id, 'account:password-reset-requested');
@@ -578,6 +589,16 @@ export class SecurityService {
       return { ok: true };
     });
   }
+  private applyCloudflareLink(state: State, user: User, linkId?: string): boolean {
+    const link = linkId ? state.cloudflareLinks[linkId] : undefined;
+    if (!link || link.expiresAt <= Date.now() || link.email !== user.email || user.cloudflareId || state.users.some(other => other.cloudflareId === link.cloudflareId)) return false;
+    delete state.cloudflareLinks[link.id];
+    user.cloudflareId = link.cloudflareId; user.emailVerified = true;
+    this.auditAccount(state, user.id, 'account:cloudflare-linked');
+    return true;
+  }
+  async cloudflareSigninState(operation: 'put' | 'consume', body: Record<string, unknown>): Promise<CloudflareSigninState | { ok: true }> { throw new Error('This feature belongs to the hosted edition'); }
+  async cloudflareSignin(input: CloudflareSigninInput): Promise<CloudflareSigninResult> { throw new Error('This feature belongs to the hosted edition'); }
   async registerMachine(body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
   async claimMachine(p: Principal, body: Record<string, unknown>) : Promise<never> { throw new Error('This feature belongs to the hosted edition'); }
   private actions(value: unknown): Action[] { if (!Array.isArray(value) || !value.length || value.some(v => !ROLE_ACTIONS.Owner.includes(v))) throw new ApiError(400, 'INVALID_ACTIONS', 'Select valid resource actions.'); return [...new Set(value)] as Action[]; }
@@ -621,7 +642,9 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   resendVerification(p: Principal) { return this.service.resendVerification(p); }
   requestPasswordReset(body: Record<string, unknown>) { return this.service.requestPasswordReset(body); }
   confirmPasswordReset(body: Record<string, unknown>) { return this.service.confirmPasswordReset(body); }
-  login(body: Record<string, unknown>, client?: string) { return this.service.login(body, client); }
+  login(body: Record<string, unknown>, client?: string, linkToken?: string) { return this.service.login(body, client, linkToken); }
+  cloudflareSigninState(operation: 'put' | 'consume', body: Record<string, unknown>) : never { throw new Error('This feature belongs to the hosted edition'); }
+  cloudflareSignin(input: CloudflareSigninInput) : never { throw new Error('This feature belongs to the hosted edition'); }
   legacySession() { return this.service.legacySession(); }
   bootstrap() { return this.service.bootstrap(); }
   authenticate(value: string, workspaceId?: string) { return this.service.authenticate(value, workspaceId); }

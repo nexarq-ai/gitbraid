@@ -1,6 +1,7 @@
 import { ApiError, assertMutationOrigin, readJson } from './domain';
 import { deliverPasswordReset, deliverVerification, emailConfigured, type InvitationDelivery } from './email';
 import type { AppEnv } from './env';
+import { cloudflareSigninConfigured } from './cloudflare';
 import { handleHostedOnboarding, type AuthenticateRequest } from './hosted-onboarding';
 
 function authenticatedResponse(result: { token: string; user: unknown; workspaceId: string; recoveryCodes?: string[] }): Response {
@@ -14,13 +15,6 @@ function requireEmail(env: AppEnv) { if (!emailConfigured(env)) throw new ApiErr
 async function sendVerification(env: AppEnv, email: string, token: string, origin: string): Promise<Verification> {
   const delivery = await deliverVerification(env, { email, token, origin });
   return delivery.status === 'sent' ? { status: 'sent' } : { status: delivery.status, code: delivery.code };
-}
-async function withVerification<T extends { verificationToken: string; user: { email: string } }>(env: AppEnv, result: T, origin: string): Promise<Omit<T, 'verificationToken'> & { verification: Verification }> {
-  const { verificationToken, ...rest } = result;
-  return { ...rest, verification: await sendVerification(env, result.user.email, verificationToken, origin) };
-}
-export async function signupWithVerification(env: AppEnv, body: Record<string, unknown>, origin: string) {
-  return withVerification(env, await env.GITFLARE_SECURITY.getByName('security').signup(body), origin);
 }
 async function handleAccountEmail(request: Request, env: AppEnv, authenticate: AuthenticateRequest, ctx?: ExecutionContext): Promise<Response | null> {
   const url = new URL(request.url); const path = url.pathname;
@@ -50,7 +44,7 @@ async function handleAccountEmail(request: Request, env: AppEnv, authenticate: A
 }
 export async function handleOnboarding(request: Request, env: AppEnv, authenticate: AuthenticateRequest, ctx?: ExecutionContext): Promise<Response | null> {
   const path = new URL(request.url).pathname; const service = env.GITFLARE_SECURITY.getByName('security');
-  if (path === '/api/auth/config' && request.method === 'GET') return Response.json({ ...await service.authConfig(), passwordReset: emailConfigured(env), emailVerification: env.EDITION !== 'self-hosted' && emailConfigured(env) }, noStore);
+  if (path === '/api/auth/config' && request.method === 'GET') return Response.json({ ...await service.authConfig(), passwordReset: emailConfigured(env), emailVerification: env.EDITION !== 'self-hosted' && emailConfigured(env), cloudflareSignin: env.EDITION !== 'self-hosted' && cloudflareSigninConfigured(env) }, noStore);
   const account = await handleAccountEmail(request, env, authenticate, ctx);
   if (account) return account;
   if (request.method !== 'POST' || !['/api/setup/start', '/api/setup/verify', '/api/mfa/verify', '/api/mfa/enroll', '/api/users/create', '/api/invitations/register'].includes(path)) return handleHostedOnboarding(request, env, authenticate);
@@ -59,7 +53,13 @@ export async function handleOnboarding(request: Request, env: AppEnv, authentica
   const body = await readJson(request);
   if (path === '/api/setup/start') return Response.json(await service.startSetup(body), { headers: { 'Cache-Control': 'no-store' } });
   if (path === '/api/setup/verify' || path === '/api/mfa/verify') return authenticatedResponse(await service.verifyMfa(body, path === '/api/setup/verify'));
-  if (path === '/api/invitations/register') { const result = await service.registerInvitedUser(body); return 'token' in result ? authenticatedResponse(await withVerification(env, result, new URL(request.url).origin)) : Response.json(result, { headers: { 'Cache-Control': 'no-store' } }); }
+  if (path === '/api/invitations/register') {
+    if (env.EDITION !== 'self-hosted') throw new ApiError(410, 'EMAIL_SIGNUP_RETIRED', 'New accounts are created with Continue with Cloudflare. Existing accounts can still sign in with email.');
+    const result = await service.registerInvitedUser(body);
+    if (!('token' in result)) return Response.json(result, noStore);
+    const { verificationToken: _verificationToken, ...session } = result;
+    return authenticatedResponse(session);
+  }
   const principal = await authenticate(request, env);
   if (path === '/api/mfa/enroll') return Response.json(await service.enrollMfa(principal), { headers: { 'Cache-Control': 'no-store' } });
   return Response.json(await service.createInstallationUser(principal, body), { headers: { 'Cache-Control': 'no-store' } });
