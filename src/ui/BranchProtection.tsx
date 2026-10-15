@@ -5,6 +5,7 @@ import { Input } from "@cloudflare/kumo/components/input";
 import { CopyIcon, GitBranchIcon, GitPullRequestIcon, LockSimpleIcon, PlusIcon, ShieldCheckIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
 import type { AccessSnapshot, BranchChangeResult, BranchInfo, BranchList, BranchProtection as Protection, BranchRuleInput, LanderRole, Repository } from "../shared/types";
 import { request } from "./api";
+import CheckSettings from "./CheckSettings";
 import { ErrorNotice, relativeTime } from "./components";
 import { navigate } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
@@ -43,6 +44,7 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
   const [error, setError] = useState("");
   const mutation = useRef<{ signature: string; key: string } | null>(null);
   const [canContribute, setCanContribute] = useState(false);
+  const [canLand, setCanLand] = useState(false);
   const [draft, setDraft] = useState<{ name: string; source: "branch" | "commit"; branch: string; sha: string } | null>(null);
   const [deleting, setDeleting] = useState<BranchInfo | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
@@ -53,7 +55,7 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
 
   useEffect(() => {
     let active = true;
-    request<AccessSnapshot>("/api/access").then(access => { if (active) setCanContribute(access.permissions.includes("contribute")); }).catch(() => {});
+    request<AccessSnapshot>("/api/access").then(access => { if (active) { setCanContribute(access.permissions.includes("contribute")); setCanLand(access.permissions.includes("land")); } }).catch(() => {});
     return () => { active = false; };
   }, []);
 
@@ -184,6 +186,7 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
           {canManage && <div className="branch-rule-footer">{protection.updatedAt && <small>Last saved {relativeTime(protection.updatedAt)}{protection.updatedBy ? ` by ${protection.updatedBy}` : ""}</small>}<Button variant="primary" size="base" loading={busy} disabled={busy || invalid} onClick={() => void save()}>Save rules</Button></div>}
         </div>
       </section>
+      <CheckSettings repositoryId={repository.id} canChange={canLand} onNotify={onNotify} />
     </div>
   );
 }

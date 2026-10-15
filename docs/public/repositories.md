@@ -34,6 +34,6 @@ See the [AI client and agent guide](agents.md), [MCP connection guide](mcp.md), 
 
 A mission runs two to four agents in one of two modes. **Combine** gives each agent one part, shares each agent's assignment, notes and touched files with its peers, then merges and tests the parts together. **Race** has every agent attempt the whole mission; the passing candidates are shown side by side and a reviewer selects the one exact commit that can be approved and landed.
 
-A repository may commit a root `gitflare.json` to set its test command, the paths agents may edit, an npm dependency install, a preview command and a test timeout. It is read from the pinned base commit and agents cannot change it, tests, manifests or lockfiles. Dependency install runs with network access limited to read-only requests to the npm registry and without package install scripts.
+A repository may commit a root `gitflare.json` to set its test command, the paths agents may edit, an npm dependency install, a preview command, a test timeout of up to 900 seconds and a runner size. It is read from the pinned base commit and agents cannot change it, tests, manifests or lockfiles. Dependency install runs with network access limited to read-only requests to the npm registry and without package install scripts.
 
 These capabilities are covered by automated tests. They have not yet been run end to end on Cloudflare; the live evidence above still describes a two-agent combine mission on the dependency-free fixture.

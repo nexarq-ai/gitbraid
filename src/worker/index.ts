@@ -5,6 +5,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
 import { createArtifactsRepository, repositoryHead } from './artifacts';
 import { ApiError, assertMutationOrigin, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString } from './domain';
+import { checkSettingsSnapshot, normalizeCheckSettings, retryCheckSettings } from './check-settings';
 import type { AppEnv } from './env';
 import { executionReadiness } from './execution';
 import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflowId, retireWorkerPreview } from './background-work';
@@ -423,6 +424,23 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
     return branchApi(request, { artifacts: env.ARTIFACTS, repository, coordinator: env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`), principal, access }, branchWrite[2] ? 'delete' : 'create');
   }
+  const checkSettingsRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/check-settings$/.exec(url.pathname);
+  if (checkSettingsRoute) {
+    const repository = await catalog.getRepository(checkSettingsRoute[1]);
+    if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+    const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
+    if (request.method === 'GET') {
+      await access.authorize(principal, 'read', 'repository', repository.id);
+      return Response.json(checkSettingsSnapshot(repository.id, await coordinator.getCheckSettings(), await coordinator.getCheckDurations()));
+    }
+    if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use GET or POST for check settings.');
+    assertMutationOrigin(request);
+    const key = requireIdempotencyKey(request), body = await readJson(request, 4096);
+    await access.authorize(principal, 'land', 'repository', repository.id);
+    const saved = await coordinator.setCheckSettings(key, normalizeCheckSettings(body), principal.userId);
+    await access.auditRepositoryChange(principal, 'repository.check-settings', repository.id);
+    return Response.json(checkSettingsSnapshot(repository.id, saved, await coordinator.getCheckDurations()));
+  }
   const branchRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/(branches|branch-protection|pulls)$/.exec(url.pathname);
   if (branchRoute) {
     const repository = await catalog.getRepository(branchRoute[1]);
@@ -452,7 +470,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const draft = await coordinator.createMission(key, { repositoryId: repository.id, expectedBaseSha: current.headSha, title, prompt: description ?? `Merge ${branch} into ${repository.defaultBranch}.`, branchChange: { branch, headSha, targetBranch: repository.defaultBranch, ...(description ? { description } : {}) } }, authorization, models);
     return Response.json(await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models), { status: 202 });
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert|pull))?$/.exec(url.pathname);
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert|pull|retry-checks))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -603,6 +621,16 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${input.repositoryId}`);
     const mission = await coordinator.createMission(key, input, { principal, workspaceId: principal.workspaceId, creatorId: principal.userId }, await coordinatorRead('getModelConnections', () => catalog.getModelConnections()));
     return Response.json(mission, { status: 201 });
+  }
+  if (match?.[2] === 'retry-checks') {
+    const { mission, repository } = await findMission(env, match[1], principal.workspaceId);
+    await access.authorize(principal, 'land', 'repository', repository.id, mission.id);
+    const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
+    const adjusted = retryCheckSettings(mission, await coordinator.getCheckSettings(), body.adjustment);
+    await coordinator.setCheckSettings(`${key.slice(0, 100)}-check-settings`, adjusted, principal.userId);
+    await access.auditRepositoryChange(principal, `repository.check-settings.retry-${String(body.adjustment)}`, repository.id);
+    match[2] = mission.branchChange ? 'pull' : 'start';
+    if (mission.branchChange) body.action = 'update';
   }
   if (match?.[2] && match[2] !== 'attempts') {
     const { mission, repository } = await findMission(env, match[1], principal.workspaceId);

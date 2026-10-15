@@ -30,6 +30,7 @@ export const mcpToolNames = [
   'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_ai_settings', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_deployments', 'gitflare_deploy',
   'gitflare_list_issues', 'gitflare_read_issue', 'gitflare_create_issue', 'gitflare_comment_issue', 'gitflare_update_issue',
   'gitflare_list_branches', 'gitflare_create_branch', 'gitflare_delete_branch', 'gitflare_create_pull_request', 'gitflare_update_pull_request', 'gitflare_branch_protection',
+  'gitflare_check_settings', 'gitflare_retry_checks',
 ] as const;
 
 const identifier = z.string().min(1).max(100).regex(/^[a-zA-Z0-9-]+$/);
@@ -47,13 +48,13 @@ const destructive = { ...mutation, destructiveHint: true };
 const external = { ...mutation, openWorldHint: true };
 const commit = z.string().regex(/^[a-f0-9]{40}$/).describe('Exact 40-character commit SHA observed in current evidence.');
 const evidenceInput = { view: z.enum(['summary', 'context', 'runs', 'changes', 'checks', 'events', 'reviews']).default('summary').describe('Evidence to return.'), offset, limit: z.number().int().min(1).max(20).default(5).describe('Items per page.'), detail_offset: offset.describe('Start character within each long text field.'), detail_limit: z.number().int().min(1).max(8000).default(3000).describe('Characters per long text field.') };
-const LAND_TOOLS = new Set(['gitflare_deploy', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_import_repository_archive', 'gitflare_import_repository_url']);
+const LAND_TOOLS = new Set(['gitflare_check_settings', 'gitflare_retry_checks', 'gitflare_deploy', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_import_repository_archive', 'gitflare_import_repository_url']);
 const ADMIN_TOOLS = new Set(['gitflare_manage_access', 'gitflare_manage_model_connection', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_ai_settings', 'gitflare_branch_protection', 'gitflare_manage_ai_key', 'gitflare_manage_ai_gateway']);
 
 export function requiredAccess(name: string, annotations: { readOnlyHint?: boolean } | undefined, input: Record<string, unknown>): AccessLevel {
   if (annotations?.readOnlyHint) return 'read';
   if (name === 'gitflare_ai_settings' && input.enabled === undefined) return 'read';
-  if (name === 'gitflare_branch_protection' && input.action !== 'set') return 'read';
+  if ((name === 'gitflare_branch_protection' || name === 'gitflare_check_settings') && input.action !== 'set') return 'read';
   if (name === 'gitflare_cloudflare_connection' && ['status', 'accounts', 'resources'].includes(String(input.action))) return 'read';
   if (name === 'gitflare_cloudflare_project' && ['get', 'usage'].includes(String(input.action))) return 'read';
   if (name === 'gitflare_import_repository_url' && input.action === 'status') return 'read';
@@ -443,6 +444,19 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     if (!input.rules || !input.idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Setting branch protection requires rules and an idempotency key.');
     return call<Record<string, unknown>>(path, { rules: input.rules }, input.idempotency_key);
   }));
+  server.registerTool('gitflare_check_settings', {
+    title: 'Read or set check time limit and runner size', description: 'Read check settings, learned durations and the auto-increase ceiling, or replace them with action set. Settings apply to new attempts; omitted fields use defaults. gitflare.json at the base wins. Larger runners cost more per second. Reading needs read access; set needs the Owner or Maintainer role and land access.',
+    inputSchema: z.object({ repository_id: repositoryId, action: z.enum(['read', 'set']).default('read'), test_timeout_seconds: z.number().int().min(60).max(900).optional().describe('Check time limit in seconds.'), runner: z.enum(['standard-1', 'standard-2', 'standard-3', 'standard-4']).optional().describe('Container size: standard-1 1/2 vCPU 4 GiB, standard-2 1 vCPU 6 GiB, standard-3 2 vCPU 8 GiB, standard-4 4 vCPU 12 GiB.'), auto_increase: z.object({ enabled: z.boolean(), max_timeout_seconds: z.number().int().min(60).max(900), max_runner: z.enum(['standard-1', 'standard-2', 'standard-3', 'standard-4']) }).strict().optional().describe('Retry a timed-out check once with double time and the next runner, up to these limits. Default: enabled, 900 s, standard-3.'), idempotency_key: requestKey.optional() }).strict(), annotations: { ...mutation, idempotentHint: true },
+  }, input => guarded(async () => {
+    const path = `/api/repositories/${input.repository_id}/check-settings`;
+    if (input.action === 'read') return call<Record<string, unknown>>(path);
+    if (!input.idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Setting check settings requires an idempotency key.');
+    return call<Record<string, unknown>>(path, { testTimeoutSeconds: input.test_timeout_seconds ?? null, runner: input.runner ?? null, autoIncrease: input.auto_increase ? { enabled: input.auto_increase.enabled, maxTimeoutSeconds: input.auto_increase.max_timeout_seconds, maxRunner: input.auto_increase.max_runner } : null }, input.idempotency_key);
+  }));
+  server.registerTool('gitflare_retry_checks', {
+    title: 'Retry a timed-out check with more time or a larger runner', description: 'After a check timed out, raise the repository check time limit to 10 minutes (15 if it had 10) with adjustment timeout, or use the next larger runner with adjustment runner, then start a new attempt (proposals update from their stream). Uses billed compute. Needs the Owner or Maintainer role and land access.',
+    inputSchema: z.object({ mission_id: missionId, adjustment: z.enum(['timeout', 'runner']).describe('timeout: more time; runner: next larger runner.'), idempotency_key: requestKey }).strict(), annotations: external,
+  }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/retry-checks`, { adjustment: input.adjustment }, input.idempotency_key))));
   server.registerTool('gitflare_workspace_status', {
     title: 'Inspect workspace setup and MCP capabilities', description: 'Read workspace mode, service readiness, the MCP endpoint, authentication mode and tool list. Configuration is not proof that a client connected or a run succeeded. Read-only.',
     inputSchema: z.object({}).strict(), annotations: readOnly,

@@ -50,8 +50,8 @@
     },
     {
       "path": "docs/public/repositories.md",
-      "size": 9947,
-      "sha256": "9c83ca02433087f5395e3fdd7fa3ce9b4ccd48cb1e5473f9b3a5589dd741d196"
+      "size": 9983,
+      "sha256": "ee6f8f1b26cec066b4e313905838f6ba1ff06033e5c950ed5b306b9fca8becd9"
     },
     {
       "path": "index.html",
@@ -91,7 +91,7 @@
     {
       "path": "README.md",
       "size": 4783,
-      "sha256": "f6210d72ffefff2b68abfb17b87e6f0d0b90813cafb8fe2dd3d8117ae580e787"
+      "sha256": "038ab13c3b6fe757975d09d5b4ea0aad19423eeddf963f3ef82f92ebe2f2fdb6"
     },
     {
       "path": "runner/Dockerfile",
@@ -100,8 +100,8 @@
     },
     {
       "path": "runner/sandbox.ts",
-      "size": 17538,
-      "sha256": "0257549e03b0c8f6327f3670f1749d427b5b924e05f9237f21bcb6d9e03fc583"
+      "size": 19147,
+      "sha256": "785aa21e5c2f5a59e8d7d585a6994e1f882c13425de9bfdec601e9149fcad9c2"
     },
     {
       "path": "scripts/deploy-self-hosted.mjs",
@@ -140,8 +140,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 10680,
-      "sha256": "4ef36638592d4f7d7c7955806bd568befd3e39467a2aa144cf049e81cbc639ff"
+      "size": 11724,
+      "sha256": "ac7b7d98c9d7edc04ffadf5ce650beed604f0251bb9e7a6a1b59dba698dcd5b9"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -250,8 +250,18 @@
     },
     {
       "path": "src/ui/BranchProtection.tsx",
-      "size": 17000,
-      "sha256": "3c8c302c523010b19c3603279fe34344be89d3951dc5198b31da8f49d59fa06e"
+      "size": 17240,
+      "sha256": "49cc80735fb9bb7a959fec57ba90ef54af9ddf6dd0446f4241f3696c81621be7"
+    },
+    {
+      "path": "src/ui/check-settings.css",
+      "size": 1241,
+      "sha256": "5f2d11c8b211209a97674673a6d834ca9c075396d4a6e7a55f9f791bbcd1266d"
+    },
+    {
+      "path": "src/ui/CheckSettings.tsx",
+      "size": 9969,
+      "sha256": "44620213e51331130e18688f0ef0ee456900393c3bf6ad00a1d7e081f1b9b2a5"
     },
     {
       "path": "src/ui/cloudflare-connection.css",
@@ -335,8 +345,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 53160,
-      "sha256": "461722806919edebf8bdf49d568585255aad8673eeae82c9f0ef11ea52787841"
+      "size": 54613,
+      "sha256": "5446e82900b0766af073532dd4aa410014e59fc12cd61f425c7fd505f483c115"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -485,13 +495,18 @@
     },
     {
       "path": "src/worker/budgets.ts",
-      "size": 1665,
-      "sha256": "7f94ec1db28ca8b7ef9603207666a1ed893d8d2547605ee5f204d9a0a1f946e6"
+      "size": 1841,
+      "sha256": "a60ad8d31d2e870b006dc8f300b7584714a84bedb12543daa349a1401e85db76"
     },
     {
       "path": "src/worker/capacity.ts",
       "size": 1423,
       "sha256": "e366090c95bebd646adde230811ac2c04eaa0764ea7963d72cd3cd119f76894c"
+    },
+    {
+      "path": "src/worker/check-settings.ts",
+      "size": 7772,
+      "sha256": "6de476ebe4f109a50fc721704796d234575c46f827d946b4a83aa0cd8fe5df6e"
     },
     {
       "path": "src/worker/client-access.ts",
@@ -510,8 +525,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 68498,
-      "sha256": "6919433285a374b7e434c0cbaac92a4dce71401399fa5ce4fcf6358841df43c8"
+      "size": 70288,
+      "sha256": "d466f48982c77d05a80e59dbeb8683d804e1184e1c347364f4a05be2b056735a"
     },
     {
       "path": "src/worker/deployments.ts",
@@ -550,8 +565,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 62789,
-      "sha256": "964fbc23ed6d9232a2c2461726bbc1f42361a58f28a7e9c091f81c2e0ce1df6b"
+      "size": 68760,
+      "sha256": "414e2e593adf85e4a7409b1c5faa26c3c4b745ee793f1d73ca8338836301926f"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -560,8 +575,8 @@
     },
     {
       "path": "src/worker/git-http.ts",
-      "size": 17036,
-      "sha256": "62c293177c395dee9017cb2477f86c4f5586f663be57a06d5d4ad9611da6fc28"
+      "size": 20186,
+      "sha256": "6defa90d5fcf4b3dbea6aecdfb49d8ad1556bea2f54f42c120a1f5d7d87ab2a6"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -575,8 +590,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 73841,
-      "sha256": "019ef7b649d06f6021aa9ae69dff3cf51cda243000eefd085173c90c31ea8ce3"
+      "size": 76027,
+      "sha256": "c5f548382863a186b8cb7fc8daf15a6378f07d458787602eb66a54aa5d4408de"
     },
     {
       "path": "src/worker/issues.ts",
@@ -585,8 +600,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 73060,
-      "sha256": "0fab4cef6d1407aba7edcd980d1f321be40adb9ca4feb0a287acf83e357ca96b"
+      "size": 76045,
+      "sha256": "a2aedc4d201e6a792cb624218ca712c9f5b9f93733c0429e2584125590d7c3e8"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -670,8 +685,8 @@
     },
     {
       "path": "src/worker/repository-policy.ts",
-      "size": 7568,
-      "sha256": "5864ea90a8ad6cf718570b011223230f99626d195258e6ddf028f86095a472ff"
+      "size": 11923,
+      "sha256": "983ed3402bb86b4e46c9ab3ae881ee7d23b80d1ebd09dffd4ad30a9b3b888b23"
     },
     {
       "path": "src/worker/repository-skills.ts",
@@ -680,8 +695,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 129667,
-      "sha256": "7755607655dfd41404d9a2d0217b49e9a690babfa41423f2dd863dd7890b5b5e"
+      "size": 130019,
+      "sha256": "9f727b4b93329f4a0b539eb2d5e68a40c838bba2548d5d3d5f3c386de791dc95"
     },
     {
       "path": "src/worker/skill-edit.ts",
@@ -695,8 +710,8 @@
     },
     {
       "path": "src/worker/url-import.ts",
-      "size": 31367,
-      "sha256": "a4fed30673af043a846be72cc4a58cba7b703ad040fd7a053318cd8f8b4c15e9"
+      "size": 32429,
+      "sha256": "c295a9aad0b97d18c3b8b6081c73f85994cb3857758bb8a96c0c2589e743cde3"
     },
     {
       "path": "src/worker/worker-bundle.ts",
@@ -710,8 +725,8 @@
     },
     {
       "path": "src/worker/workflow.ts",
-      "size": 5306,
-      "sha256": "d1963f752dc4b4a6eed62be81ef9770f4f21daf610c1d6bb80ae3b2ad3cbada7"
+      "size": 6136,
+      "sha256": "5f2faa34858f5aac747141ac0a06e8f7f3c199ef661a64af3b7f73b947a70162"
     },
     {
       "path": "tsconfig.json",

@@ -1,10 +1,13 @@
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import type { ArtifactsBinding } from '../src/worker/artifacts';
 import { COREPACK_ENV, INSTALL_EXCLUDES, INSTALL_TIMEOUT_MS, installCommand, NPM_REGISTRY, registryHosts, YARN_REGISTRY, type InstallPlan } from '../src/worker/package-manager';
+import { MAX_TEST_TIMEOUT_MS } from '../src/worker/budgets';
+import { DEFAULT_RUNNER, isRunnerSize, type RunnerSize } from '../src/worker/repository-policy';
 import { beginUrlImportJob, importJobDependencies, proxyImportSource, resumeUrlImportJob, type ImportSourceProps, type UrlImportEnv, type UrlImportJob } from '../src/worker/url-import';
 
 export interface GitPermission { name: string; remote: string; write: boolean }
-export interface CommandResult { exitCode: number; stdout: string; stderr: string }
+export interface CommandResult { exitCode: number; stdout: string; stderr: string; timedOut?: boolean }
+export interface PrepareOptions { runner?: RunnerSize }
 interface RunnerEnv extends Omit<UrlImportEnv, 'ARTIFACTS'> { ARTIFACTS: ArtifactsBinding; RUNNER_IMAGE?: string }
 interface OutboundProps { repositories: GitPermission[] }
 interface RegistryProps { hosts?: string[] }
@@ -15,6 +18,49 @@ const PREVIEW_HOST = 'http://localhost:8080';
 export const SANDBOX_MAX_LIFETIME_MS = 7_200_000;
 export const COMMAND_OUTPUT_CAP = 65_536;
 export const BUNDLE_OUTPUT_CAP = 16 * 1024 * 1024;
+const DEADLINE_GRACE_MS = 10_000;
+const TIMEOUT_EXIT_CODES = [124, 137, 143];
+
+function joinChunks(chunks: Uint8Array[]): Uint8Array {
+  const merged = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
+  return merged;
+}
+
+export async function readCappedOutput(stream: ReadableStream<Uint8Array> | null, cap: number, strict = false): Promise<string> {
+  if (!stream) return '';
+  const reader = stream.getReader();
+  const headCap = strict ? cap : Math.floor(cap / 4);
+  const tailCap = cap - headCap;
+  const head: Uint8Array[] = [];
+  let tail: Uint8Array[] = [];
+  let headBytes = 0, tailBytes = 0, bytes = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    bytes += next.value.byteLength;
+    if (strict && bytes > cap) {
+      await reader.cancel();
+      throw new Error(`Command output exceeded ${cap} bytes`);
+    }
+    let value = next.value.slice();
+    if (headBytes < headCap) {
+      const taken = value.subarray(0, headCap - headBytes);
+      head.push(taken);
+      headBytes += taken.byteLength;
+      value = value.subarray(taken.byteLength);
+    }
+    if (!value.byteLength) continue;
+    tail.push(value);
+    tailBytes += value.byteLength;
+    while (tail.length > 1 && tailBytes - tail[0]!.byteLength >= tailCap) tailBytes -= tail.shift()!.byteLength;
+  }
+  const decoder = new TextDecoder();
+  if (bytes <= cap) return decoder.decode(joinChunks([...head, ...tail]));
+  const kept = joinChunks(tail);
+  return `${decoder.decode(joinChunks(head))}\n[output truncated] ${bytes - cap} bytes omitted; the last ${tailCap} bytes follow\n${decoder.decode(kept.subarray(kept.byteLength - tailCap))}`;
+}
 
 export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
   async fetch(request: Request): Promise<Response> {
@@ -100,13 +146,15 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     if (container?.running) void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(600_000));
   }
 
-  async prepare(repositories: GitPermission[]): Promise<void> {
+  async prepare(repositories: GitPermission[], options: PrepareOptions = {}): Promise<void> {
     const container = this.ctx.container;
     if (!container) throw new Error('Container binding is not configured');
+    const instance = options.runner ?? DEFAULT_RUNNER;
+    if (!isRunnerSize(instance)) throw new Error(`Unsupported runner size ${String(instance)}`);
     if (container.running) await container.destroy();
     await this.ctx.storage.setAlarm(Date.now() + SANDBOX_MAX_LIFETIME_MS);
     const image = container.images?.tools ?? this.env.RUNNER_IMAGE ?? 'cloudflare/debian-trixie';
-    container.start({ image, instance: 'standard-1', entrypoint: ['sleep', 'infinity'], enableInternet: false });
+    container.start({ image, instance, entrypoint: ['sleep', 'infinity'], enableInternet: false });
     let stage = 'container startup';
     let timer: ReturnType<typeof setTimeout> | undefined;
     const stopped = container.monitor().then(() => { throw new Error('Container stopped before runner preparation completed'); });
@@ -191,7 +239,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
   }
 
   async check(script: string, timeoutMs: number): Promise<CommandResult> {
-    return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, 300_000);
+    return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, MAX_TEST_TIMEOUT_MS);
   }
 
   async collect(script: string, timeoutMs: number, capBytes: number): Promise<CommandResult> {
@@ -207,35 +255,17 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
       timer = setTimeout(() => {
         reject(new Error('Sandbox command exceeded its execution deadline'));
         void Promise.resolve().then(() => container.destroy()).catch(() => { console.error('runner.command.timeout.cleanup.failed'); });
-      }, seconds * 1000 + 2500);
+      }, seconds * 1000 + DEADLINE_GRACE_MS);
     });
-    const collect = async (stream: ReadableStream | null): Promise<string> => {
-      if (!stream) return '';
-      const reader = stream.getReader();
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      for (;;) {
-        const next = await reader.read();
-        if (next.done) break;
-        if (bytes < cap) chunks.push(next.value.slice(0, cap - bytes));
-        bytes += next.value.byteLength;
-        if (strict && bytes > cap) {
-          await reader.cancel();
-          throw new Error(`Command output exceeded ${cap} bytes`);
-        }
-      }
-      const merged = new Uint8Array(Math.min(bytes, cap));
-      let offset = 0;
-      for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
-      return new TextDecoder().decode(merged) + (bytes > cap ? '\n[output truncated]' : '');
-    };
+    const started = Date.now();
     const execution = (async () => {
       const process = await container.exec(['timeout', '--kill-after=2s', `${seconds}s`, ...argv], {
         cwd,
         env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', CI: 'true', ...COREPACK_ENV, COREPACK_ENABLE_NETWORK: '0', ...extraEnv },
       });
-      const [stdout, stderr, exitCode] = await Promise.all([collect(process.stdout), collect(process.stderr), process.exitCode]);
-      return { stdout, stderr, exitCode };
+      const [stdout, stderr, exitCode] = await Promise.all([readCappedOutput(process.stdout, cap, strict), readCappedOutput(process.stderr, cap, strict), process.exitCode]);
+      const timedOut = TIMEOUT_EXIT_CODES.includes(exitCode) && Date.now() - started >= seconds * 1000 - 1000;
+      return timedOut ? { stdout, stderr, exitCode, timedOut } : { stdout, stderr, exitCode };
     })();
     try { return await Promise.race([execution, timeout]); }
     finally { clearTimeout(timer); }

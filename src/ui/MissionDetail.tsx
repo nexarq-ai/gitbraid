@@ -26,6 +26,7 @@ import { request } from "./api";
 import { EmptyState, ErrorNotice, relativeTime, Status } from "./components";
 import AgentAssignment from "./AgentAssignment";
 import AttemptHistory from "./AttemptHistory";
+import { CheckEscalationNote, CheckTimeoutPanel } from "./CheckSettings";
 import DiffView, {
   lineAnchor,
   type LineAnchor,
@@ -169,6 +170,34 @@ export default function MissionDetail({
         failure instanceof Error
           ? failure.message
           : "The mission could not be updated.",
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function retryChecks(adjustment: "timeout" | "runner") {
+    if (!mission || busy) return;
+    setBusy("retry-checks");
+    setError("");
+    const signature = JSON.stringify({ id, epoch: mission.epoch, action: "retry-checks", adjustment });
+    if (mutation.current?.signature !== signature)
+      mutation.current = { signature, key: crypto.randomUUID() };
+    try {
+      const result = await request<Mission>(
+        `/api/missions/${encodeURIComponent(id)}/retry-checks`,
+        { adjustment },
+        mutation.current.key,
+      );
+      revision.current++;
+      setMission(result);
+      mutation.current = null;
+      onUpdate();
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "The checks could not be retried.",
       );
     } finally {
       setBusy("");
@@ -1120,6 +1149,16 @@ export default function MissionDetail({
                         {check.durationMs !== undefined &&
                           ` • ${(check.durationMs / 1000).toFixed(1)}s`}
                       </p>
+                    )}
+                    <CheckEscalationNote check={check} />
+                    {check.timeout && check.status === "failed" && (
+                      <CheckTimeoutPanel
+                        mission={mission}
+                        check={{ ...check, timeout: check.timeout }}
+                        canRetry={permissions.includes("land")}
+                        busy={busy === "retry-checks"}
+                        onRetry={(adjustment) => void retryChecks(adjustment)}
+                      />
                     )}
                     {check.output && (
                       <details open={check.status === "failed"}>

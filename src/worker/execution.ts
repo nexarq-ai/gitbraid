@@ -1,7 +1,7 @@
-import type { AgentRun, BranchChange, Check, FileChange, Mission, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
+import type { AgentRun, BranchChange, Check, CheckPlan, FileChange, Mission, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
 import { branchName } from './branch-protection';
 import { forkRepository, validGitSha, type ArtifactInfo, type ArtifactsBinding } from './artifacts';
-import type { CommandResult, GitPermission } from '../../runner/sandbox';
+import type { CommandResult, GitPermission, PrepareOptions } from '../../runner/sandbox';
 import { loadRepositorySkillContext } from './repository-skills';
 import { validateRepositorySkillChange } from './skill-edit';
 import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
@@ -11,10 +11,11 @@ import { classifyPreview, previewPlan } from './preview-plan';
 import { buildWorkerBundle, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type WorkerBundle } from './worker-bundle';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
 import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, runnerFor, type InstallPlan } from './package-manager';
-import { DEFAULT_EDITABLE, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
+import type { LearnedLimits } from './check-settings';
+import { DEFAULT_EDITABLE, escalatedLimits, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
 
 export interface SandboxRunner {
-  prepare(repositories: GitPermission[]): Promise<void>;
+  prepare(repositories: GitPermission[], options?: PrepareOptions): Promise<void>;
   command(argv: string[], cwd?: string, timeoutMs?: number): Promise<CommandResult>;
   destroy(): Promise<void>;
   install?(plan: InstallPlan): Promise<CommandResult>;
@@ -40,8 +41,9 @@ export interface ExecutionResult {
   candidateSha: string | null;
   integrationForkName?: string;
   error?: string;
+  learnedLimits?: LearnedLimits;
 }
-export interface ExecutionInput { repository: Repository; mission: Mission; testCommand: string; modelConnections?: ModelConnection[] }
+export interface ExecutionInput { repository: Repository; mission: Mission; testCommand: string; modelConnections?: ModelConnection[]; checkSettings?: CheckPlan | null }
 export type ReportExecution = (result: ExecutionResult) => Promise<void>;
 export type AuthorityGuard = () => Promise<void>;
 const unrestricted: AuthorityGuard = async () => {};
@@ -93,7 +95,7 @@ export function missingBaselineTests(baselineStdout: string, candidateStdout: st
   return [...reportedTests(baselineStdout, false)].filter(([name, count]) => (passing.get(name) ?? 0) < count).map(([name]) => name);
 }
 
-const FAILURE_LINE = /^\s*not ok\b|^\s*(npm ERR!|npm error)|\b(Error|ERR_[A-Z_]+|FAIL|failed|Cannot find|not found|No test files|exceeded its execution deadline)\b/;
+const FAILURE_LINE = /^\s*not ok\b|^\s*(npm ERR!|npm error)|\b(Error|ERR_[A-Z_]+|FAIL|failed|Cannot find|not found|No test files|exceeded its execution deadline|Timed out after)\b/;
 
 export function checkFailureSummary(output: string): string {
   const lines = output.split('\n').map((line) => line.trim()).filter((line) => line && !/^# (tests|suites|pass|cancelled|skipped|todo|duration_ms) /.test(line) && !/^(TAP version|1\.\.\d+|---|\.\.\.)$/.test(line));
@@ -102,19 +104,49 @@ export function checkFailureSummary(output: string): string {
   return summary ? summary.slice(0, 400) : 'the test command produced no output. Open Checks for details.';
 }
 
-export function checkFromCommand(id: string, name: string, candidateSha: string, result: CommandResult, durationMs: number, baseline?: CommandResult, evidence: RepositoryPolicy['evidence'] = 'tap'): Check {
+export type CheckLimits = Pick<RepositoryPolicy, 'testTimeoutMs' | 'testTimeoutSource' | 'runner' | 'runnerSource'>;
+
+const LIMIT_SOURCE = { 'gitflare.json': 'limit from gitflare.json timeoutSeconds', repository: 'limit from the repository check settings', learned: 'limit learned from recent check durations', auto: 'automatically increased limit', default: 'default limit' } as const;
+
+function lastCharacters(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const keep = Math.max(0, limit - 48);
+  return `[${text.length - keep} earlier characters omitted]\n${keep ? text.slice(text.length - keep) : ''}`;
+}
+
+export function commandOutput(result: Pick<CommandResult, 'stdout' | 'stderr'>, limit = outputLimit): string {
+  const stdout = result.stdout.replace(/\s+$/, '');
+  const stderr = result.stderr.replace(/\s+$/, '');
+  if (!stderr) return lastCharacters(stdout, limit);
+  if (!stdout) return lastCharacters(stderr, limit);
+  const stdoutHeader = '--- stdout ---\n', stderrHeader = '\n--- stderr ---\n';
+  const room = limit - stdoutHeader.length - stderrHeader.length;
+  const stderrRoom = Math.min(stderr.length, Math.max(Math.floor(room / 3), room - stdout.length));
+  return `${stdoutHeader}${lastCharacters(stdout, room - stderrRoom)}${stderrHeader}${lastCharacters(stderr, stderrRoom)}`;
+}
+
+export function timeoutNotice(result: CommandResult, limits: CheckLimits | undefined, subject = ''): string {
+  if (!result.timedOut) return '';
+  const limit = limits ? ` after ${Math.round(limits.testTimeoutMs / 1000)} s on ${limits.runner} (${LIMIT_SOURCE[limits.testTimeoutSource]})` : '';
+  return `${subject}Timed out${limit}. Raise the check time limit (repository check settings, or timeoutSeconds in gitflare.json, up to 900 s) or choose a larger runner.\n`;
+}
+
+export function checkFromCommand(id: string, name: string, candidateSha: string, result: CommandResult, durationMs: number, baseline?: CommandResult, evidence: RepositoryPolicy['evidence'] = 'tap', limits?: CheckLimits): Check {
   const tests = result.stdout.match(/^# tests (\d+)$/m);
   const passed = result.stdout.match(/^# pass (\d+)$/m);
   const hasCompleteEvidence = !!tests && !!passed && Number(tests[1]) > 0 && Number(passed[1]) === Number(tests[1]) && /^# fail 0$/m.test(result.stdout) && /^# cancelled 0$/m.test(result.stdout) && /^# duration_ms [\d.]+$/m.test(result.stdout);
   const truncated = result.stdout.includes('[output truncated]') || result.stderr.includes('[output truncated]');
-  if (evidence === 'exit-code') return { id, name: `${name} (exit code only)`, candidateSha, durationMs, status: result.exitCode === 0 && !truncated ? 'passed' : 'failed', output: `${result.stdout}\n${result.stderr}`.slice(0, outputLimit) };
+  const timedOut = timeoutNotice(result, limits) + (baseline ? timeoutNotice(baseline, limits, 'Base commit test run: ') : '');
+  const body = (prefix: string) => `${prefix}${commandOutput(result, outputLimit - prefix.length)}`;
+  const timeout = (result.timedOut || baseline?.timedOut) && limits ? { timeout: { seconds: Math.round(limits.testTimeoutMs / 1000), runner: limits.runner, timeoutSource: limits.testTimeoutSource, runnerSource: limits.runnerSource } } : {};
+  if (evidence === 'exit-code') return { id, name: `${name} (exit code only)`, candidateSha, durationMs, status: result.exitCode === 0 && !result.timedOut && !truncated ? 'passed' : 'failed', output: body(timedOut), ...timeout };
   const baselineCount = baseline?.stdout.match(/^# tests (\d+)$/m);
   const baselineComplete = !baseline || (!!baselineCount && Number(baselineCount[1]) > 0 && /^# duration_ms [\d.]+$/m.test(baseline.stdout) && !`${baseline.stdout}\n${baseline.stderr}`.includes('[output truncated]'));
   const retainedCount = !baselineCount || (!!tests && Number(tests[1]) >= Number(baselineCount[1]));
   const missing = baseline ? missingBaselineTests(baseline.stdout, result.stdout) : [];
   const coverageNotice = !baselineComplete ? 'The base test report was incomplete; candidate coverage cannot be verified.\n' : !retainedCount ? 'The candidate reported fewer tests than the base commit.\n' : '';
   const notice = missing.length ? `Tests reported at the base commit did not run and pass on this candidate: ${missing.slice(0, 20).join('; ')}\n` : '';
-  return { id, name, candidateSha, durationMs, status: result.exitCode === 0 && hasCompleteEvidence && !truncated && baselineComplete && retainedCount && !missing.length ? 'passed' : 'failed', output: `${coverageNotice}${notice}${result.stdout}\n${result.stderr}`.slice(0, outputLimit) };
+  return { id, name, candidateSha, durationMs, status: result.exitCode === 0 && !result.timedOut && hasCompleteEvidence && !truncated && baselineComplete && retainedCount && !missing.length ? 'passed' : 'failed', output: body(`${timedOut}${coverageNotice}${notice}`), ...timeout };
 }
 
 const shellTool = { type: 'function', name: 'shell', description: 'Run a bounded shell command in the isolated repository. Read and edit files, inspect changes, and run available tests. Network access is limited to your task fork.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false }, strict: true };
@@ -285,13 +317,13 @@ async function verifySkillBytes(sandbox: SandboxRunner, change: RepositorySkillC
   if (actual.split(/\s+/)[0] !== hash) throw new Error('Skill candidate content differs from the exact requested bytes');
 }
 
-async function loadPolicy(sandbox: SandboxRunner, baseSha: string, defaultTestCommand: string): Promise<RepositoryPolicy> {
+async function loadPolicy(sandbox: SandboxRunner, baseSha: string, defaultTestCommand: string, settings?: CheckPlan | null): Promise<RepositoryPolicy> {
   const file = await sandbox.command(['git', 'show', `${baseSha}:${POLICY_FILE}`], '/workspace/repo');
   const tree = await sandbox.command(['git', 'ls-tree', '-r', '--name-only', baseSha], '/workspace/repo');
   const baseFiles = tree.exitCode === 0 && tree.stdout.trim() ? tree.stdout.split('\n').filter(Boolean) : undefined;
   const manifest = baseFiles?.includes('package.json') ? await sandbox.command(['git', 'show', `${baseSha}:package.json`], '/workspace/repo') : undefined;
   const lockHead = baseFiles ? await readLockHead(sandbox, baseFiles, baseSha) : null;
-  return parseRepositoryPolicy(file.exitCode === 0 && file.stdout.trim() ? file.stdout : null, defaultTestCommand, baseFiles, manifest?.exitCode === 0 ? manifest.stdout : null, lockHead);
+  return parseRepositoryPolicy(file.exitCode === 0 && file.stdout.trim() ? file.stdout : null, defaultTestCommand, baseFiles, manifest?.exitCode === 0 ? manifest.stdout : null, lockHead, settings);
 }
 
 const LOCK_HEAD_BYTES = 4096;
@@ -347,11 +379,34 @@ async function touchedFiles(sandbox: SandboxRunner): Promise<string[] | null> {
   return status.stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean).sort().slice(0, 200);
 }
 
-async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, baseSha: string, policy: RepositoryPolicy, assertAuthority: AuthorityGuard, skillChange?: RepositorySkillChange, isActive: () => Promise<boolean> = async () => true, humanBranch = false): Promise<{ check: Check; changes: FileChange[] }> {
+export function mergeLearnedLimits(current: LearnedLimits | undefined, next: LearnedLimits): LearnedLimits {
+  const runners = ['standard-1', 'standard-2', 'standard-3', 'standard-4'];
+  const seconds = Math.max(current?.testTimeoutSeconds ?? 0, next.testTimeoutSeconds ?? 0);
+  const runner = [current?.runner, next.runner].filter((value): value is NonNullable<LearnedLimits['runner']> => !!value).sort((a, b) => runners.indexOf(b) - runners.indexOf(a))[0];
+  return { ...(seconds ? { testTimeoutSeconds: seconds } : {}), ...(runner ? { runner } : {}) };
+}
+
+type Escalate = (message: string) => Promise<void>;
+
+async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, baseSha: string, policy: RepositoryPolicy, assertAuthority: AuthorityGuard, skillChange?: RepositorySkillChange, isActive: () => Promise<boolean> = async () => true, humanBranch = false, onEscalate: Escalate = async () => {}): Promise<{ check: Check; changes: FileChange[]; learned?: LearnedLimits }> {
+  const first = await verifyOnce(env, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive, humanBranch);
+  const timeout = first.check.timeout;
+  const next = timeout && first.check.status === 'failed' ? escalatedLimits(timeout, policy.autoIncrease) : null;
+  if (!timeout || !next || !await isActive()) return first;
+  await onEscalate(`Timed out after ${timeout.seconds} s on ${timeout.runner}; retrying with ${next.seconds} s on ${next.runner}`);
+  const escalated: RepositoryPolicy = { ...policy, testTimeoutMs: next.seconds * 1000, testTimeoutSource: timeout.timeoutSource === 'gitflare.json' ? timeout.timeoutSource : 'auto', runner: next.runner, runnerSource: timeout.runnerSource === 'gitflare.json' ? timeout.runnerSource : 'auto' };
+  const second = await verifyOnce(env, `${key}-escalated`, fork, sha, baseSha, escalated, assertAuthority, skillChange, isActive, humanBranch);
+  second.check.escalatedFrom = timeout;
+  if (second.check.status !== 'passed') return second;
+  const learned: LearnedLimits = { ...(escalated.testTimeoutSource === 'auto' && next.seconds > timeout.seconds ? { testTimeoutSeconds: next.seconds } : {}), ...(escalated.runnerSource === 'auto' && next.runner !== timeout.runner ? { runner: next.runner } : {}) };
+  return { ...second, learned };
+}
+
+async function verifyOnce(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, baseSha: string, policy: RepositoryPolicy, assertAuthority: AuthorityGuard, skillChange?: RepositorySkillChange, isActive: () => Promise<boolean> = async () => true, humanBranch = false): Promise<{ check: Check; changes: FileChange[] }> {
   const sandbox = env.SANDBOX.getByName(`${key}-verify`);
   try {
     await assertAuthority();
-    await sandbox.prepare([{ ...fork, write: false }]);
+    await sandbox.prepare([{ ...fork, write: false }], { runner: policy.runner });
     await clone(sandbox, fork, baseSha);
     // Dependencies and baseline come from the base commit, before any candidate code executes in this sandbox
     if (policy.install && !policy.untested) await installDependencies(sandbox, policy.install, assertAuthority, isActive);
@@ -377,11 +432,11 @@ async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string,
       const starter = await resolveStarterCheck(sandbox);
       if (!starter) return { check: { id: key, name: 'Repository test suite', candidateSha: sha, status: 'failed', output: 'This repository had no tests at the base commit, and the candidate did not add any. Add a node:test file named *.test.mjs, or a package.json with a working "test" script, so the change can be checked.' }, changes };
       if (starter.install) await installDependencies(sandbox, starter.install, assertAuthority, isActive);
-      checkPolicy = { ...policy, testCommand: starter.testCommand, evidence: starter.evidence };
+      checkPolicy = { ...policy, testCommand: starter.testCommand, evidence: starter.evidence, testTimeoutMs: policy.testTimeoutSource === 'default' || policy.testTimeoutSource === 'learned' ? startingTimeoutMs(starter.testCommand, { learnedTimeoutSeconds: Math.round(policy.testTimeoutMs / 1000), autoIncrease: policy.autoIncrease }) : policy.testTimeoutMs };
     }
     const start = Date.now();
     const result = await runCheck(sandbox, checkPolicy);
-    const check = checkFromCommand(key, 'Repository test suite', sha, result, Date.now() - start, baseline, checkPolicy.evidence);
+    const check = checkFromCommand(key, 'Repository test suite', sha, result, Date.now() - start, baseline, checkPolicy.evidence, checkPolicy);
     if (policy.untested) check.name = `${check.name} (tests added by the agent; the repository had none)`;
     return { check, changes };
   } finally { await sandbox.destroy(); }
@@ -423,14 +478,15 @@ export async function applyBranchMerge(sandbox: SandboxRunner, remote: string, c
   return { mode: 'conflict', conflicts: conflicted.stdout.split('\n').map((line) => line.trim()).filter(Boolean), output: `${merged.stdout}\n${merged.stderr}`.slice(0, outputLimit) };
 }
 
-async function verifyRevert(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, change: RevertChange, defaultTestCommand: string, assertAuthority: AuthorityGuard, isActive: () => Promise<boolean>): Promise<{ check: Check; changes: FileChange[] }> {
+async function verifyRevert(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string, fork: ArtifactInfo, sha: string, change: RevertChange, defaultTestCommand: string, assertAuthority: AuthorityGuard, isActive: () => Promise<boolean>, runner: RepositoryPolicy['runner'], settings?: CheckPlan | null): Promise<{ check: Check; changes: FileChange[]; learned?: LearnedLimits }> {
   const sandbox = env.SANDBOX.getByName(`${key}-verify`);
   try {
     await assertAuthority();
-    await sandbox.prepare([{ ...fork, write: false }]);
+    // The restored revision's policy is only readable after cloning
+    await sandbox.prepare([{ ...fork, write: false }], { runner });
     // The restored revision was itself approved and landed, so its tests define what the revert must keep passing
     await clone(sandbox, fork, change.previousSha);
-    const policy = await loadPolicy(sandbox, change.previousSha, defaultTestCommand);
+    const policy = await loadPolicy(sandbox, change.previousSha, defaultTestCommand, settings);
     if (policy.install && !policy.untested) await installDependencies(sandbox, policy.install, assertAuthority, isActive);
     const baseline = policy.evidence === 'tap' && !policy.untested ? await runCheck(sandbox, policy) : undefined;
     await checked(sandbox, ['git', 'checkout', '--detach', sha]);
@@ -453,7 +509,7 @@ async function verifyRevert(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: s
     }
     const start = Date.now();
     const result = await runCheck(sandbox, policy);
-    const check = checkFromCommand(key, 'Repository test suite', sha, result, Date.now() - start, baseline, policy.evidence);
+    const check = checkFromCommand(key, 'Repository test suite', sha, result, Date.now() - start, baseline, policy.evidence, policy);
     check.name = `${check.name} (tests of the restored revision ${change.previousSha.slice(0, 12)})`;
     return { check, changes };
   } finally { await sandbox.destroy(); }
@@ -538,7 +594,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       run.summary = 'Runner prepared. Cloning the recorded base commit';
       await publish();
       await clone(sandbox, fork, baseSha);
-      const policy = await loadPolicy(sandbox, baseSha, input.testCommand);
+      const policy = await loadPolicy(sandbox, baseSha, input.testCommand, input.checkSettings);
       sharedPolicy ??= policy;
       if (policy.install) {
         run.summary = `Installing dependencies at the base commit with ${describeInstall(policy.install)}`;
@@ -625,7 +681,9 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       run.branch = 'gitflare-candidate';
       run.summary = 'Candidate pushed. Preparing a fresh verification runner';
       await publish();
-      const { check, changes } = revertChange ? await verifyRevert({ SANDBOX }, key, fork, sha, revertChange, input.testCommand, assertAuthority, isActive) : await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive, !!branchChange);
+      const escalate: Escalate = async (message) => { run.summary = message; await publish(); };
+      const { check, changes, learned } = revertChange ? await verifyRevert({ SANDBOX }, key, fork, sha, revertChange, input.testCommand, assertAuthority, isActive, policy.runner, input.checkSettings) : await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive, !!branchChange, escalate);
+      if (learned && (learned.testTimeoutSeconds || learned.runner)) result.learnedLimits = mergeLearnedLimits(result.learnedLimits, learned);
       run.changedFiles = changes.map((change) => change.path);
       run.touchedFiles = run.changedFiles;
       result.changes.push(...changes.map((change) => ({ ...change, runIds: [run.id] })));
@@ -693,7 +751,8 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     await assertAuthority();
     await checked(sandbox, ['git', 'push', 'origin', 'HEAD:refs/heads/gitflare-candidate']);
     result.candidateSha = sha;
-    const { check } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive);
+    const { check, learned } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive, false, async (message) => { for (const run of result.runs) run.summary = `Combined candidate: ${message}`; await publish(); });
+    if (learned && (learned.testTimeoutSeconds || learned.runner)) result.learnedLimits = mergeLearnedLimits(result.learnedLimits, learned);
     check.id = 'integration';
     check.name = check.name.replace('Repository test suite', 'Combined candidate tests');
     result.checks.push(check);

@@ -1352,6 +1352,7 @@ export class SecurityService {
     return { ok: true, workspaceId };
   }
   clearApprovals(p: Principal, missionId: string) { return this.shard(p.workspaceId).clearApprovals(p, missionId); }
+  auditRepositoryChange(p: Principal, action: string, repositoryId: string) { return this.shard(p.workspaceId).audit([{ actorId: p.userId, action, resourceId: repositoryId }]); }
   async clientSession(p: Principal, client: string, lifetimeMs: number) {
     const value = mintToken(p.workspaceId);
     const session = await this.shard(p.workspaceId).clientSession(p, client, lifetimeMs, await hashToken(value));
@@ -1362,7 +1363,7 @@ export class SecurityService {
   assertLand(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, repositoryId?: string, rule?: ReviewRule) { return this.shard(p.workspaceId).assertLand(p, missionId, candidateSha, baseSha, epoch, repositoryId, rule); }
 }
 
-const PUBLIC_METHODS = new Set(['connectionStore', 'projectStore', 'rateLimit', 'signup', 'login', 'legacySession', 'bootstrap', 'authenticate', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshot', 'action', 'authConfig', 'startSetup', 'enrollMfa', 'verifyMfa', 'createInstallationUser', 'registerInvitedUser', 'verifyEmail', 'resendVerification', 'requestPasswordReset', 'confirmPasswordReset', 'cloudflareSigninState', 'cloudflareSignin', 'registerMachine', 'claimMachine', 'acceptInvite', 'clearApprovals', 'clientSession', 'logout', 'recordApproval', 'assertLand']);
+const PUBLIC_METHODS = new Set(['connectionStore', 'projectStore', 'rateLimit', 'signup', 'login', 'legacySession', 'bootstrap', 'authenticate', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshot', 'action', 'authConfig', 'startSetup', 'enrollMfa', 'verifyMfa', 'createInstallationUser', 'registerInvitedUser', 'verifyEmail', 'resendVerification', 'requestPasswordReset', 'confirmPasswordReset', 'cloudflareSigninState', 'cloudflareSignin', 'registerMachine', 'claimMachine', 'acceptInvite', 'clearApprovals', 'auditRepositoryChange', 'clientSession', 'logout', 'recordApproval', 'assertLand']);
 export type SecurityEnv = { GITFLARE_SECURITY: DurableObjectNamespace<GitflareSecurity> } & { [K in keyof SecurityOptions]?: unknown };
 // While a deployment still runs a global instance without the shard protocol, its original methods serve the call
 export function securityClient(env: SecurityEnv): SecurityService {
@@ -1423,6 +1424,7 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   action(p: Principal, action: string, body: Record<string, unknown>) { return this.service.action(p, action, body); }
   acceptInvite(p: Principal, value: string) { return this.service.acceptInvite(p, value); }
   clearApprovals(p: Principal, missionId: string) { return this.service.clearApprovals(p, missionId); }
+  auditRepositoryChange(p: Principal, action: string, repositoryId: string) { return this.service.auditRepositoryChange(p, action, repositoryId); }
   clientSession(p: Principal, client: string, lifetimeMs: number) { return this.service.clientSession(p, client, lifetimeMs); }
   logout(p: Principal) { return this.service.logout(p); }
   recordApproval(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, checks: { name: string; status: string; candidateSha?: string }[], creatorId?: string, rule?: ReviewRule) { return this.service.recordApproval(p, missionId, sha, baseSha, epoch, checks, creatorId, rule); }

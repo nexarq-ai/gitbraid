@@ -75,6 +75,41 @@ export interface AgentRun {
   skillWarnings?: string[];
 }
 
+export type RunnerSize = 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';
+export type CheckLimitSource = 'gitflare.json' | 'repository' | 'learned' | 'auto' | 'default';
+
+export interface CheckTimeout {
+  seconds: number;
+  runner: RunnerSize;
+  timeoutSource: CheckLimitSource;
+  runnerSource: CheckLimitSource;
+}
+
+export interface AutoIncrease {
+  enabled: boolean;
+  maxTimeoutSeconds: number;
+  maxRunner: RunnerSize;
+}
+
+export interface CheckSettings {
+  testTimeoutSeconds?: number;
+  runner?: RunnerSize;
+  autoIncrease?: AutoIncrease;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export interface CheckPlan extends CheckSettings {
+  learnedTimeoutSeconds?: number;
+}
+
+export interface RepositoryCheckSettings extends CheckSettings {
+  repositoryId: string;
+  autoIncrease: AutoIncrease;
+  history: { samples: number; p90Seconds?: number; learnedTimeoutSeconds?: number };
+  limits: { minTimeoutSeconds: number; maxTimeoutSeconds: number; runners: RunnerSize[] };
+}
+
 export interface Check {
   id: string;
   name: string;
@@ -83,6 +118,8 @@ export interface Check {
   candidateSha?: string;
   output?: string;
   durationMs?: number;
+  timeout?: CheckTimeout;
+  escalatedFrom?: CheckTimeout;
 }
 
 export interface MissionEvent {
