@@ -589,6 +589,11 @@
       "sha256": "3113eb36cad21a843aad5747bb3c10945eb8bdc8209b6fde5ac6ddafb0c3c20c"
     },
     {
+      "path": "src/worker/mission-storage.ts",
+      "size": 3954,
+      "sha256": "e097a74886559b52965ed583889fa2eb7771dfb7cebebe5642fa90439c2c84ea"
+    },
+    {
       "path": "src/worker/model-adapter.ts",
       "size": 17438,
       "sha256": "396bcdd3db7b58117d256c021a84115987cd953645d7a9212bb4f06c3841efc0"
