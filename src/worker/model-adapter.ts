@@ -1,4 +1,4 @@
-import { anthropicInput, anthropicOutput, isSonnet55, nativeModelId } from './anthropic-adapter';
+import { AnthropicOutputError, anthropicInput, anthropicOutput, isSonnet55, nativeModelId, type AnthropicIssue } from './anthropic-adapter';
 import type { ModelConnection, ModelUsage } from '../shared/types';
 import { gatewayMetadata, gatewayUrl, providerRequest, type ModelRoute } from './gateway-routing';
 
@@ -21,8 +21,48 @@ export type ToolCall = { call_id: string; name: string; arguments: string };
 export interface ModelMessage { output: InputItem[]; calls: ToolCall[]; text: string; usage?: ModelUsage }
 export type ModelFailureCode = 'invalid_shape' | 'provider_error' | 'incomplete_response' | 'invalid_tool_call' | 'empty_response' | 'tool_limit' | 'unexpected_verification_tools' | 'invalid_final_summary';
 
+export type ModelIssue = AnthropicIssue | 'truncated_response';
+export interface ModelFailureDetail { issue?: ModelIssue; stopReason?: string | null; httpStatus?: number; gatewayLogId?: string }
+const TRANSIENT_ISSUES: ModelIssue[] = ['overloaded', 'truncated_response', 'empty_content'];
+
 export class ModelResponseError extends Error {
-  constructor(public readonly code: ModelFailureCode, message: string, public readonly nativeEmptyToolResponse = false) { super(message); this.name = 'ModelResponseError'; }
+  constructor(public readonly code: ModelFailureCode, message: string, public readonly nativeEmptyToolResponse = false, public readonly detail: ModelFailureDetail = {}) { super(message); this.name = 'ModelResponseError'; }
+  get transient(): boolean { return !!this.detail.issue && TRANSIENT_ISSUES.includes(this.detail.issue); }
+}
+
+export class ModelHttpError extends Error {
+  constructor(message: string, public readonly status: number, public readonly gatewayLogId?: string) { super(message); this.name = 'ModelHttpError'; }
+}
+
+const ANTHROPIC_EXPLANATION: Record<AnthropicIssue, string> = {
+  max_tokens: 'the output token limit was reached before the turn finished',
+  pause_turn: 'the provider paused a long-running turn',
+  refusal: 'the model declined to continue',
+  context_window: 'the conversation exceeded the model context window',
+  unknown_stop_reason: 'the turn ended for an unrecognized reason',
+  overloaded: 'the provider was overloaded',
+  provider_error: 'the provider returned an error body',
+  empty_content: 'the turn ended with no text and no tool call',
+  incomplete_block: 'a content block was incomplete or malformed',
+  malformed: 'the response did not have the Messages shape',
+  tool_limit: 'the turn requested more than 4 tool calls',
+};
+const ANTHROPIC_CODE: Record<AnthropicIssue, ModelFailureCode> = { max_tokens: 'incomplete_response', pause_turn: 'incomplete_response', refusal: 'incomplete_response', context_window: 'incomplete_response', unknown_stop_reason: 'incomplete_response', overloaded: 'provider_error', provider_error: 'provider_error', empty_content: 'empty_response', incomplete_block: 'invalid_tool_call', malformed: 'invalid_shape', tool_limit: 'tool_limit' };
+
+export function gatewayLogId(response: Response): string | undefined {
+  const id = response.headers.get('cf-aig-log-id');
+  return id && /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : undefined;
+}
+
+function evidence(detail: ModelFailureDetail): string {
+  const parts = [detail.httpStatus !== undefined ? `HTTP ${detail.httpStatus}` : '', detail.gatewayLogId ? `AI Gateway log ${detail.gatewayLogId}` : ''].filter(Boolean);
+  return parts.length ? ` [${parts.join(', ')}]` : '';
+}
+
+function withResponse(error: unknown, detail: ModelFailureDetail): unknown {
+  if (!(error instanceof ModelResponseError) || (detail.httpStatus === undefined && !detail.gatewayLogId)) return error;
+  const merged = { ...error.detail, ...detail };
+  return new ModelResponseError(error.code, `${error.message}${evidence(detail)}`, error.nativeEmptyToolResponse, merged);
 }
 
 export interface ModelFailure {
@@ -102,7 +142,10 @@ export function normalizeModelMessage(body: unknown, protocol: ModelConnection['
       const usage = nativeUsage(raw);
       return usage ? { ...result, usage } : result;
     }
-    catch { throw new ModelResponseError('invalid_shape', 'Model returned invalid or incomplete Anthropic output'); }
+    catch (error) {
+      if (!(error instanceof AnthropicOutputError)) throw new ModelResponseError('invalid_shape', 'Model returned invalid Anthropic output', false, { issue: 'malformed' });
+      throw new ModelResponseError(ANTHROPIC_CODE[error.issue], `Model returned incomplete Anthropic output (${error.issue}: ${ANTHROPIC_EXPLANATION[error.issue]}; ${error.message})`, false, { issue: error.issue, stopReason: error.stopReason });
+    }
   }
   if (raw.error) throw new ModelResponseError('provider_error', 'Model returned no usable completed response');
   const calls: ToolCall[] = [];
@@ -179,7 +222,15 @@ export async function gatewayRejection(response: Response, modelId: string, work
   return `AI Gateway rejected ${modelId} with status ${response.status}${reason ? `: ${reason}` : ''}.${location ? ` The call came from Cloudflare location ${location}; some providers refuse requests from locations they do not serve.` : ''}${advice}`;
 }
 
-async function routedInference(env: ModelEnv, model: ModelConnection, parameters: Record<string, unknown>, route: ModelRoute, timeoutMs: number): Promise<unknown> {
+async function responseBody(response: Response, model: ModelConnection, workspaceKey?: string): Promise<{ body: unknown; detail: ModelFailureDetail }> {
+  const logId = gatewayLogId(response);
+  const detail: ModelFailureDetail = { httpStatus: response.status, ...(logId ? { gatewayLogId: logId } : {}) };
+  if (!response.ok) throw new ModelHttpError(`${await gatewayRejection(response, model.id, workspaceKey)}${logId ? ` [AI Gateway log ${logId}]` : ''}`, response.status, logId);
+  try { return { body: await response.json(), detail }; }
+  catch { throw new ModelResponseError('incomplete_response', `AI Gateway returned a truncated or unparsable response body${evidence(detail)}`, false, { ...detail, issue: 'truncated_response' }); }
+}
+
+async function routedInference(env: ModelEnv, model: ModelConnection, parameters: Record<string, unknown>, route: ModelRoute, timeoutMs: number): Promise<{ body: unknown; detail: ModelFailureDetail }> {
   const request = providerRequest(model, parameters, route);
   const signal = AbortSignal.timeout(Math.min(90_000, timeoutMs));
   let response: Response;
@@ -190,9 +241,7 @@ async function routedInference(env: ModelEnv, model: ModelConnection, parameters
     if (!env.AI?.gateway || !env.AI_GATEWAY_ID) throw new Error('AI Gateway connection is not configured');
     response = await env.AI.gateway(env.AI_GATEWAY_ID).run({ provider: request.provider, endpoint: request.endpoint, headers: request.headers, query: request.body }, { signal });
   }
-  if (!response.ok) throw new Error(await gatewayRejection(response, model.id, route.credential?.key));
-  try { return await response.json(); }
-  catch { throw new Error('AI Gateway returned an unparsable response'); }
+  return responseBody(response, model, route.credential?.key);
 }
 
 export async function inferenceMessage(env: ModelEnv, model: ModelConnection, input: InputItem[], tools: InputItem[], timeoutMs: number, maxTokens = 4096, onUsage?: (usage: ModelUsage | undefined) => Promise<void>): Promise<ModelMessage> {
@@ -206,7 +255,8 @@ export async function inferenceMessage(env: ModelEnv, model: ModelConnection, in
   else if (model.protocol === 'responses') parameters = { input, ...(tools.length ? { tools } : {}), max_output_tokens: maxTokens, ...(model.id === 'openai/gpt-6-luna' || model.id === 'openai/gpt-6.1-sol' ? { reasoning: { effort: 'low' }, include: ['reasoning.encrypted_content'] } : {}), store: false };
   else parameters = { messages: model.protocol === 'workers-ai' ? workersAIMessages(input) : chatMessages(input), ...(tools.length ? { tools: tools.map(tool => model.protocol === 'workers-ai' ? { name: tool.name, description: tool.description, parameters: tool.parameters } : { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }) } : {}), max_tokens: maxTokens, stream: false };
   let body: unknown;
-  if (route && routed) body = await routedInference(env, model, parameters, route, timeoutMs);
+  let detail: ModelFailureDetail = {};
+  if (route && routed) ({ body, detail } = await routedInference(env, model, parameters, route, timeoutMs));
   else if (!env.AI || !env.AI_GATEWAY_ID) throw new Error('AI Gateway connection is not configured');
   else if (model.protocol === 'anthropic' && isSonnet55(model.id)) {
     if (!env.AI.gateway) throw new Error('AI Gateway connection is not configured');
@@ -216,9 +266,7 @@ export async function inferenceMessage(env: ModelEnv, model: ModelConnection, in
       headers: { 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json', 'cf-aig-no-wholesale': 'true', ...metadataHeaders },
       query: { ...parameters, model: nativeModelId(model.id), cache_control: { type: 'ephemeral' } },
     }, { extraHeaders: { 'cf-aig-no-wholesale': 'true', ...metadataHeaders }, signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
-    if (!response.ok) throw new Error(await gatewayRejection(response, model.id));
-    try { body = await response.json(); }
-    catch { throw new Error('AI Gateway returned an unparsable response'); }
+    ({ body, detail } = await responseBody(response, model));
   } else {
     body = await env.AI.run(model.id, parameters, { gateway: { id: env.AI_GATEWAY_ID, ...(metadata ? { metadata } : {}) }, ...(model.source === 'gateway' ? { extraHeaders: { 'cf-aig-no-wholesale': 'true' } } : {}), signal: AbortSignal.timeout(Math.min(90_000, timeoutMs)) });
   }
@@ -228,7 +276,8 @@ export async function inferenceMessage(env: ModelEnv, model: ModelConnection, in
     return message;
   }
   catch (error) {
-    console.error(JSON.stringify({ event: 'model_output_rejected', ...classifyModelFailure(error), ...modelOutputShape(body) }));
-    throw error;
+    const reported = withResponse(error, detail);
+    console.error(JSON.stringify({ event: 'model_output_rejected', ...classifyModelFailure(reported), ...modelOutputShape(body), ...(reported instanceof ModelResponseError ? reported.detail : {}) }));
+    throw reported;
   }
 }

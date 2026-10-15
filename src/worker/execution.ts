@@ -244,21 +244,33 @@ function shellCommand(raw: string): string | null {
 }
 
 const MODEL_ATTEMPTS = 3;
+const MODEL_OUTPUT_TOKENS = 4096;
+export const EXTENDED_OUTPUT_TOKENS = 8192;
+export const MODEL_RETRY_BACKOFF_MS = 1000;
 
 async function modelMessageWithRetry(env: ExecutionEnv, model: ModelConnection, messages: InputItem[], deadline: number, isActive: () => Promise<boolean>, tools: InputItem[], onModelCall?: (usage: ModelUsage | undefined) => void): Promise<ModelMessage> {
+  let maxTokens = MODEL_OUTPUT_TOKENS;
+  let responseRetried = false;
   for (let attempt = 1; ; attempt++) {
     if (!await isActive()) throw new Error('Mission cancelled');
     await env.assertModelAllowed?.(model);
     let recorded = false;
-    try { return await inferenceMessage(env, model, messages, tools, remainingAgentBudget(deadline), 4096, async (usage) => { recorded = true; onModelCall?.(usage); }); }
+    try { return await inferenceMessage(env, model, messages, tools, remainingAgentBudget(deadline), maxTokens, async (usage) => { recorded = true; onModelCall?.(usage); }); }
     catch (error) {
       if (!recorded) onModelCall?.(undefined);
-      const status = (error as { status?: unknown } | null)?.status;
-      const gatewayStatus = /status (\d{3})$/.exec(error instanceof Error ? error.message : '')?.[1];
-      const code = typeof status === 'number' ? status : gatewayStatus ? Number(gatewayStatus) : 0;
-      if ([400, 401, 403].includes(code)) throw error;
-      if (attempt === MODEL_ATTEMPTS || error instanceof ModelResponseError) throw error;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** (attempt - 1), remainingAgentBudget(deadline))));
+      if (error instanceof ModelResponseError) {
+        const truncated = error.detail.issue === 'max_tokens' && maxTokens < EXTENDED_OUTPUT_TOKENS;
+        if (responseRetried || attempt >= MODEL_ATTEMPTS || !(error.transient || truncated)) throw error;
+        responseRetried = true;
+        if (truncated) maxTokens = EXTENDED_OUTPUT_TOKENS;
+        console.warn(JSON.stringify({ event: 'model_response_retry', model: model.id, ...error.detail, maxTokens }));
+      } else {
+        const status = (error as { status?: unknown } | null)?.status;
+        const gatewayStatus = /status (\d{3})\b/.exec(error instanceof Error ? error.message : '')?.[1];
+        const code = typeof status === 'number' ? status : gatewayStatus ? Number(gatewayStatus) : 0;
+        if ([400, 401, 403, 404, 413].includes(code) || attempt === MODEL_ATTEMPTS) throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(MODEL_RETRY_BACKOFF_MS * 2 ** (attempt - 1), remainingAgentBudget(deadline))));
     }
   }
 }

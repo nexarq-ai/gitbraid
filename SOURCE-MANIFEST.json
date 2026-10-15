@@ -480,8 +480,8 @@
     },
     {
       "path": "src/worker/anthropic-adapter.ts",
-      "size": 8561,
-      "sha256": "fea666ed398d2fdb0da2a145b75a8c2ab20550ac9054a9f79f44ad09d4a68baa"
+      "size": 10649,
+      "sha256": "ccf012a75d68bfe9b691edf0703638a7e6ab8a72a06f6a1b2f754e64f5efc07f"
     },
     {
       "path": "src/worker/artifacts.ts",
@@ -585,8 +585,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 75567,
-      "sha256": "7ec0d8e5439aa6fdb045e57189fd06cee56a71f5403f6c9ec5deb22cc4959b16"
+      "size": 76229,
+      "sha256": "a48750cfc79d16881d930b177bb75310fa6b150fb776cd2d4b087e51feff319d"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -645,8 +645,8 @@
     },
     {
       "path": "src/worker/model-adapter.ts",
-      "size": 17438,
-      "sha256": "396bcdd3db7b58117d256c021a84115987cd953645d7a9212bb4f06c3841efc0"
+      "size": 21148,
+      "sha256": "1f446e05fe7df28997527e186250802953b711b15c21ff64ff9e0f72fd07323a"
     },
     {
       "path": "src/worker/model-config.ts",
