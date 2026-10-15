@@ -15,7 +15,17 @@ To connect an OAuth-enabled deployment:
 3. Sign in to the intended Gitflare workspace and choose an access level: **Read only** (`gitflare:read`), **Read and propose** (`gitflare:write`), **Approve and land** (`gitflare:land`) or **Full access** (`gitflare:admin`). Each level includes the ones before it, and your workspace role still applies. A tool outside the chosen level returns `INSUFFICIENT_SCOPE`.
 4. In the client, discover Gitflare tools, list repositories, and read a file at a returned commit SHA. Confirm the response belongs to the intended workspace before authorizing writes.
 
-Access tokens last one hour and refresh automatically; refresh tokens rotate on use. A connection lasts up to 30 days. Revoke it earlier from **Settings → Access → Account → Sessions**, which ends the client's grant. Connections approved before access levels existed keep full access until they expire. Client-specific steps for Claude, Claude Code, Codex and ChatGPT are on the `/connectors` page of your installation.
+Access tokens last one hour and refresh automatically; refresh tokens rotate on use. A connection lasts up to 30 days. Revoke it earlier from **Settings → Access → Account → Sessions**, which ends the client's grant. Connections approved before access levels existed keep full access until they expire. Client-specific steps for Claude, Claude Code, Codex, ChatGPT, Cursor, VS Code (GitHub Copilot agent mode), OpenCode, Windsurf, Zed and any other MCP client are on the `/connectors` page of your installation and on **Connect AI clients** in the workspace, with copyable configuration that already contains your server URL.
+
+## Client callbacks
+
+During sign-in the client registers its callback addresses with Gitflare. Gitflare sends the authorization code only to:
+
+- an `https` address, such as Claude's, ChatGPT's, `https://vscode.dev/redirect` or Cursor's web agents callback;
+- a loopback `http` address on your computer, such as Cursor's `http://localhost:8787/callback`, VS Code's `http://127.0.0.1:33418/`, OpenCode's `http://127.0.0.1:19876/mcp/oauth/callback` or Claude Code's local callback. The loopback port may differ from the registered one;
+- Cursor's app callback, `cursor://anysphere.cursor-mcp/oauth/callback` (and `cursor://anysphere.cursor-retrieval/oauth/<server>/callback` from older releases).
+
+Other app-link schemes are refused, because any local app can claim one. Clients that cannot sign in with OAuth can use a personal MCP token, described below.
 
 For installations configured without OAuth storage, the server can also accept an account's personal bearer token. Use the client’s secure token store or environment-variable configuration; never paste the token into a prompt, repository file, or task assignment. The self-host installer is designed to create OAuth storage unless an existing namespace is supplied.
 
