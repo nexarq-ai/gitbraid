@@ -605,8 +605,8 @@
     },
     {
       "path": "src/worker/oauth.ts",
-      "size": 11582,
-      "sha256": "dfc1b1b880ac4359d30a5061393cc67858cabaf63ea1cf49b460c5e1b589be09"
+      "size": 11854,
+      "sha256": "66361f94d48188566aeaf079aa9bad7f7ab7918fe48babfc5ab31d7a5ed7f488"
     },
     {
       "path": "src/worker/onboarding.ts",
