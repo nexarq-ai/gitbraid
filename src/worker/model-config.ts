@@ -37,10 +37,14 @@ export function validateModelConnection(value: unknown): ModelConnection {
   return { id, label, source, protocol: protocol as ModelConnection['protocol'] };
 }
 
+export function modelNotConfiguredMessage(id: string): string {
+  return `The model ${id.slice(0, 120)} is not enabled in this workspace, so nothing was started. Choose an enabled model and start again, or ask a workspace Owner to enable it: only Owners can open Settings > AI models.`;
+}
+
 export function resolveModelConnection(models: ModelConnection[], id = DEFAULT_MODEL): ModelConnection {
   modelIdentifier(id);
   const model = models.find(entry => entry.id === id);
-  if (!model) throw new ApiError(409, 'MODEL_NOT_CONFIGURED', 'The selected model is not enabled in this workspace. Ask a workspace owner to configure it.');
+  if (!model) throw new ApiError(409, 'MODEL_NOT_CONFIGURED', modelNotConfiguredMessage(id));
   return validateModelConnection(model);
 }
 

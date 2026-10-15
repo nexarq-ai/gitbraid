@@ -18,6 +18,13 @@ export interface DetectionInput {
 export const NPM_REGISTRY = 'registry.npmjs.org';
 export const YARN_REGISTRY = 'registry.yarnpkg.com';
 export const INSTALL_TIMEOUT_MS = 300_000;
+export const INSTALL_ATTEMPTS = 2;
+// onHttpSocketEnd: Node's bundled undici asserts `!this.paused` when the proxied TLS socket ends mid-download (seen in corepack install)
+const TRANSIENT_INSTALL = /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|onHttpSocketEnd/;
+
+export function isTransientInstallFailure(output: string): boolean {
+  return TRANSIENT_INSTALL.test(output);
+}
 export const PNPM_STORE = '/tmp/gitflare-pnpm-store';
 export const LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock'] as const;
 export const DEPENDENCY_FILES = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|\.yarnrc\.yml|\.yarnrc|\.npmrc|\.pnpmfile\.cjs)$/;

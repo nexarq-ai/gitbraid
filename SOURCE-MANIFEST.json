@@ -345,8 +345,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 54613,
-      "sha256": "5446e82900b0766af073532dd4aa410014e59fc12cd61f425c7fd505f483c115"
+      "size": 54936,
+      "sha256": "a53f0e3c9d5404c547256175d3820ca751bcdd563995e84abd03e754b7af5eaf"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -525,8 +525,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 70835,
-      "sha256": "c46679489f3bac5d415d9876f377148a73a8653d5eaa393ff4d397e7b1954c68"
+      "size": 78771,
+      "sha256": "6eb195545cac1229a0b18f2a15218874b57cab426ae87b8b42d47e6c2efdfcde"
     },
     {
       "path": "src/worker/deployments.ts",
@@ -560,13 +560,13 @@
     },
     {
       "path": "src/worker/env.ts",
-      "size": 1983,
-      "sha256": "bfbcbfdbf6c29937fc1b51e8c991ef822bca7602f0e077f321b91025f34c264d"
+      "size": 2020,
+      "sha256": "b9d2ee5ff5d3af92d3108c2559a7439189054793183a77fcd81d5f9147137b15"
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 68760,
-      "sha256": "414e2e593adf85e4a7409b1c5faa26c3c4b745ee793f1d73ca8338836301926f"
+      "size": 71553,
+      "sha256": "80cbcaa3067a493c32efaedbc5c263bc237f3e86e6f433d131c2939dea23a724"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -590,8 +590,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 74114,
-      "sha256": "85cdd971d2e48cb2c30b7d27deee99b5bd2e178114b4fb9302c0430e54e8928f"
+      "size": 74202,
+      "sha256": "e0e554011bba3ed122f23f5e81e64294e8f779fb62bb77781f1a754e5d0d0fd4"
     },
     {
       "path": "src/worker/issues.ts",
@@ -630,8 +630,8 @@
     },
     {
       "path": "src/worker/model-config.ts",
-      "size": 5894,
-      "sha256": "a669c7b9c48cbb2a7336286ef334a48e4146bc98b81b2a9af4b13756b8b24078"
+      "size": 6120,
+      "sha256": "789100a22ec47effd264f86773f52f0ef06dc124cb8cade5557c0eb6f52e8157"
     },
     {
       "path": "src/worker/oauth.ts",
@@ -645,8 +645,8 @@
     },
     {
       "path": "src/worker/package-manager.ts",
-      "size": 7458,
-      "sha256": "7378bcb3bf8542ba3a1b17f4b25e59140788b42526d9eedb3033e5a82170e4ab"
+      "size": 7923,
+      "sha256": "30d42c9c0336edc3a35135258b4c035a56217eab8eea93c9b6f35819cdf0791f"
     },
     {
       "path": "src/worker/preview-capability.ts",

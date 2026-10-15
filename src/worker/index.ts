@@ -1,5 +1,5 @@
 import { listRepositorySkills } from './repository-skills';
-import { assertReviewClear, currentReviewRequests, reviewMissionInput } from './proposal-review';
+import { assertReviewClear, reviewMissionInput } from './proposal-review';
 import { timingSafeEqual } from 'node:crypto';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
@@ -13,7 +13,7 @@ import { backgroundPrincipal, deploymentsApi, deployWorkflowId, type DeployParam
 import type { ProjectSnapshot } from './cloudflare-projects';
 import { PREVIEW_STEP_MS } from './budgets';
 import { handleMcp, mcpToolNames } from './mcp';
-import { startWithDurableDispatch } from './coordinator';
+import { integrationPendingMessage, PREVIEW_STARTING_MESSAGE, startWithDurableDispatch } from './coordinator';
 import { hashToken, securityClient, type Principal, type Action } from './security';
 import { consume, rateLimitedResponse, rateSubject } from './rate-limits';
 import { listDocs, readDoc } from './docs';
@@ -622,28 +622,28 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       await access.authorize(principal, 'review', 'repository', repository.id, mission.id);
     }
     if (reviewInput) {
-      const reviewed = await coordinator.reviewMission(key, mission.id, reviewInput, principal.userId);
-      if (reviewInput.action === 'request_changes' && currentReviewRequests(reviewed).length) await access.clearApprovals(principal, mission.id);
+      const reviewed = await coordinator.reviewMission(key, mission.id, reviewInput, principal.userId, principal);
+      await coordinator.settleApprovalClears(mission.id, principal);
       return Response.json(reviewed);
     }
     if (match[2] === 'cancel') { const cancelled = await coordinator.cancelMission(key, mission.id); await retireWorkerPreview(env, repository.id, mission.id, principal.workspaceId); return Response.json(cancelled); }
     if (match[2] === 'pull') {
       if (!mission.branchChange) throw new ApiError(409, 'NOT_A_PULL_REQUEST', 'This mission is not a pull request.');
-      if (pullAction === 'close') { const closed = await coordinator.pullRequestAction(key, mission.id, 'close', principal.userId); await access.clearApprovals(principal, mission.id); await retireWorkerPreview(env, repository.id, mission.id, principal.workspaceId); return Response.json(closed); }
+      if (pullAction === 'close') { const closed = await coordinator.pullRequestAction(key, mission.id, 'close', principal.userId, undefined, principal); await coordinator.settleApprovalClears(mission.id, principal); await retireWorkerPreview(env, repository.id, mission.id, principal.workspaceId); return Response.json(closed); }
       await access.authorize(principal, 'contribute', 'repository', repository.id, mission.id);
       if (!env.MISSION_WORKFLOW || !executionReadiness(env, 'skill-edit').ready || !env.ARTIFACTS) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect the required services before running pull request checks.');
       await currentRepository(env, repository);
       const headSha = await repositoryHead(env.ARTIFACTS, repository.name, mission.branchChange.branch).catch(() => null);
       if (!headSha) throw new ApiError(404, 'BRANCH_NOT_FOUND', `Branch ${mission.branchChange.branch} no longer exists.`);
-      await coordinator.pullRequestAction(key, mission.id, pullAction as 'update' | 'reopen', principal.userId, headSha);
-      await access.clearApprovals(principal, mission.id);
+      await coordinator.pullRequestAction(key, mission.id, pullAction as 'update' | 'reopen', principal.userId, headSha, principal);
+      await coordinator.settleApprovalClears(mission.id, principal);
       const authorization = { principal, workspaceId: principal.workspaceId, creatorId: mission.authorization?.creatorId ?? principal.userId };
       return Response.json(await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, mission.id, authorization, await coordinatorRead('getModelConnections', () => catalog.getModelConnections())), { status: 202 });
     }
     if (match[2] === 'select') {
       if (!Number.isInteger(body.epoch)) throw new ApiError(400, 'INVALID_INPUT', 'Include the attempt number this selection applies to.');
-      const selected = await coordinator.selectCandidate(key, mission.id, requireString(body.runId, 'Agent run', 100), body.epoch as number, principal.userId);
-      await access.clearApprovals(principal, mission.id);
+      const selected = await coordinator.selectCandidate(key, mission.id, requireString(body.runId, 'Agent run', 100), body.epoch as number, principal.userId, principal);
+      await coordinator.settleApprovalClears(mission.id, principal);
       return Response.json(selected);
     }
     if (match[2] === 'preview') {
@@ -663,7 +663,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
           if (await coordinator.previewFailed(mission.id, claim.claimId)) await catalog.releasePreviewSlot(mission.id);
           throw new ApiError(503, 'PREVIEW_NOT_STARTED', 'The preview could not be scheduled. Try again.');
         }
-        return Response.json({ status: 'starting', candidateSha: mission.candidateSha }, { status: 202 });
+        return Response.json({ status: 'starting', candidateSha: mission.candidateSha, message: PREVIEW_STARTING_MESSAGE }, { status: 202 });
       }
       const current = await coordinator.getMission(mission.id);
       if (!current || current.epoch !== mission.epoch || current.candidateSha !== mission.candidateSha || !['needs_review', 'approved', 'integrating', 'integrated'].includes(current.status)) throw new ApiError(409, 'STALE_PREVIEW', 'The candidate changed while the preview was starting.');
@@ -703,7 +703,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const candidateSha = requireString(body.candidateSha, 'Candidate commit', 40, 40);
     const baseSha = requireString(body.baseSha, 'Base commit', 40, 40);
     if (!/^[a-f0-9]{40}$/.test(candidateSha) || !/^[a-f0-9]{40}$/.test(baseSha)) throw new ApiError(400, 'INVALID_COMMIT', 'Commit identifiers must be 40 lowercase hexadecimal characters.');
-    if (match[2] === 'revoke') { const result = await coordinator.revokeApproval(key, mission.id, candidateSha, baseSha); await access.clearApprovals(principal, mission.id); return Response.json(result); }
+    if (match[2] === 'revoke') { const result = await coordinator.revokeApproval(key, mission.id, candidateSha, baseSha, principal); await coordinator.settleApprovalClears(mission.id, principal); return Response.json(result); }
     const current = await currentRepository(env, repository);
     if (match[2] === 'integrate') {
       if (!env.SANDBOX || !env.ARTIFACTS || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect Artifacts, Sandbox and the Mission Workflow before integrating.');
@@ -716,7 +716,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
         if (current.headSha === candidateSha) return Response.json(await coordinator.completeIntegration(mission.id, claim.mission.epoch, candidateSha, claim.claimId));
         if (await backgroundState(env.MISSION_WORKFLOW, landingWorkflowId(claim.claimId)) === 'running') return Response.json(claim.mission, { status: 202 });
         if (await coordinator.releaseStaleIntegration(mission.id, claim.claimId)) throw new ApiError(409, 'INTEGRATION_RELEASED', 'An earlier landing attempt ended without updating the canonical branch. Its claim was released; retry landing.');
-        throw new ApiError(409, 'INTEGRATION_PENDING', 'An integration is in progress or needs reconciliation. The canonical branch has not confirmed the approved commit.');
+        throw new ApiError(409, 'INTEGRATION_PENDING', integrationPendingMessage(candidateSha));
       }
       if (await dispatchBackground(env.MISSION_WORKFLOW, landingWorkflowId(claim.claimId), { kind: 'land', repositoryId: repository.id, missionId: mission.id, epoch: claim.mission.epoch, candidateSha, baseSha, claimId: claim.claimId, principal }) === 'missing') {
         await coordinator.integrationFailed(mission.id, claim.mission.epoch, claim.claimId, 'not_pushed');
@@ -725,6 +725,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       return Response.json(claim.mission, { status: 202 });
     }
     assertReviewClear(mission);
+    await coordinator.settleApprovalClears(mission.id, principal);
     const approval = await access.recordApproval(principal, mission.id, candidateSha, baseSha, mission.epoch, mission.checks, mission.authorization?.creatorId, await landingReviewRule(env, repository));
     if (!approval.ready) return Response.json({ ...mission, approval });
     return Response.json(await coordinator.approveMission(key, mission.id, candidateSha, baseSha, principal.userId));

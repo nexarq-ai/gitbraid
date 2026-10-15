@@ -10,7 +10,7 @@ export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { classifyPreview, previewPlan } from './preview-plan';
 import { buildWorkerBundle, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type WorkerBundle } from './worker-bundle';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
-import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, runnerFor, type InstallPlan } from './package-manager';
+import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, INSTALL_ATTEMPTS, isTransientInstallFailure, runnerFor, type InstallPlan } from './package-manager';
 import type { LearnedLimits } from './check-settings';
 import { DEFAULT_EDITABLE, escalatedLimits, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
 
@@ -271,8 +271,31 @@ async function checked(sandbox: SandboxRunner, argv: string[], cwd = '/workspace
   return result.stdout.trim();
 }
 
-async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string): Promise<void> {
-  await checked(sandbox, ['git', 'clone', '--', fork.remote, '/workspace/repo'], '/workspace');
+export const CLONE_TIMEOUT_MS = 120_000;
+export const CLONE_ATTEMPTS = 2;
+const TIMEOUT_EXIT_CODES = [124, 137, 143];
+const TRANSIENT_CLONE = /Could not resolve host|Connection (?:reset|refused|timed out)|Operation timed out|early EOF|RPC failed|unexpected disconnect|remote end hung up|Recv failure|SSL_(?:ERROR|read)|TLS connection|returned error: 5\d\d|HTTP\/2 stream/i;
+
+export type CloneRetry = (message: string) => Promise<void>;
+
+function cloneFailure(result: CommandResult, attempt: number): { message: string; transient: boolean } {
+  const timedOut = !!result.timedOut || TIMEOUT_EXIT_CODES.includes(result.exitCode);
+  const detail = (result.stderr.trim() || result.stdout.trim()).split('\n').slice(-6).join('\n').slice(-800);
+  const outcome = timedOut ? `timed out after ${Math.round(CLONE_TIMEOUT_MS / 1000)} s (exit ${result.exitCode})` : `failed (exit ${result.exitCode})`;
+  return { message: `Git clone ${outcome} on attempt ${attempt} of ${CLONE_ATTEMPTS}${detail ? `: ${detail}` : ''}`, transient: timedOut || TRANSIENT_CLONE.test(detail) };
+}
+
+async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string, onRetry: CloneRetry = async () => {}): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    const started = Date.now();
+    const result = await sandbox.command(['git', 'clone', '--', fork.remote, '/workspace/repo'], '/workspace', CLONE_TIMEOUT_MS);
+    if (result.exitCode === 0) break;
+    const failure = cloneFailure(result, attempt);
+    console.warn(JSON.stringify({ event: 'git_clone_failed', attempt, attempts: CLONE_ATTEMPTS, exitCode: result.exitCode, timedOut: !!result.timedOut, transient: failure.transient, durationMs: Date.now() - started }));
+    if (!failure.transient || attempt >= CLONE_ATTEMPTS) throw new Error(failure.message);
+    await onRetry(`${failure.message}. Retrying the clone in a clean directory`);
+    await checked(sandbox, ['rm', '-rf', '--', '/workspace/repo'], '/workspace');
+  }
   await checked(sandbox, ['git', 'checkout', '--detach', baseSha]);
   await checked(sandbox, ['git', 'config', 'user.name', 'Gitflare']);
   await checked(sandbox, ['git', 'config', 'user.email', 'agent@gitflare.invalid']);
@@ -353,17 +376,17 @@ async function resolveStarterCheck(sandbox: SandboxRunner): Promise<ReturnType<t
   return starterCheck(files, manifest.exitCode === 0 ? manifest.stdout : null, await readLockHead(sandbox, files));
 }
 
-const TRANSIENT_INSTALL = /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|ENETUNREACH/;
-
-async function installDependencies(sandbox: SandboxRunner, plan: InstallPlan, assertAuthority: AuthorityGuard = unrestricted, isActive: () => Promise<boolean> = async () => true): Promise<void> {
+export async function installDependencies(sandbox: SandboxRunner, plan: InstallPlan, assertAuthority: AuthorityGuard = unrestricted, isActive: () => Promise<boolean> = async () => true): Promise<void> {
   if (!sandbox.install) throw new Error('This runner cannot install dependencies');
   let result: CommandResult | undefined;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 1; attempt <= INSTALL_ATTEMPTS; attempt++) {
     if (!await isActive()) throw new Error('Mission cancelled');
     await assertAuthority();
     result = await sandbox.install(plan);
     if (result.exitCode === 0) return;
-    if (attempt === 1 || !TRANSIENT_INSTALL.test(`${result.stderr}\n${result.stdout}`)) break;
+    const transient = isTransientInstallFailure(`${result.stderr}\n${result.stdout}`);
+    if (attempt === INSTALL_ATTEMPTS || !transient) break;
+    console.warn(JSON.stringify({ event: 'dependency_install_retry', installer: plan.installer, attempt, attempts: INSTALL_ATTEMPTS, exitCode: result.exitCode, timedOut: !!result.timedOut }));
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
   throw new Error(`Dependency installation with ${describeInstall(plan)} failed (${result!.exitCode}): ${(result!.stderr.trim() || result!.stdout).slice(-1000)}`);
@@ -395,7 +418,15 @@ async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string,
   if (!timeout || !next || !await isActive()) return first;
   await onEscalate(`Timed out after ${timeout.seconds} s on ${timeout.runner}; retrying with ${next.seconds} s on ${next.runner}`);
   const escalated: RepositoryPolicy = { ...policy, testTimeoutMs: next.seconds * 1000, testTimeoutSource: timeout.timeoutSource === 'gitflare.json' ? timeout.timeoutSource : 'auto', runner: next.runner, runnerSource: timeout.runnerSource === 'gitflare.json' ? timeout.runnerSource : 'auto' };
-  const second = await verifyOnce(env, `${key}-escalated`, fork, sha, baseSha, escalated, assertAuthority, skillChange, isActive, humanBranch);
+  let second: Awaited<ReturnType<typeof verifyOnce>>;
+  try { second = await verifyOnce(env, `${key}-escalated`, fork, sha, baseSha, escalated, assertAuthority, skillChange, isActive, humanBranch); }
+  catch (error) {
+    if (!await isActive()) throw error;
+    const reason = error instanceof Error ? error.message : 'the retry runner failed';
+    console.error(JSON.stringify({ event: 'check_escalation_failed', key, seconds: next.seconds, runner: next.runner, message: reason.slice(0, 300) }));
+    await onEscalate(`Timed out after ${timeout.seconds} s on ${timeout.runner}; the automatic retry with ${next.seconds} s on ${next.runner} could not run`);
+    return { ...first, check: { ...first.check, output: `Automatic retry with ${next.seconds} s on ${next.runner} could not run: ${reason.slice(0, 600)}\n${first.check.output ?? ''}`.slice(0, outputLimit) } };
+  }
   second.check.escalatedFrom = timeout;
   if (second.check.status !== 'passed') return second;
   const learned: LearnedLimits = { ...(escalated.testTimeoutSource === 'auto' && next.seconds > timeout.seconds ? { testTimeoutSeconds: next.seconds } : {}), ...(escalated.runnerSource === 'auto' && next.runner !== timeout.runner ? { runner: next.runner } : {}) };
@@ -593,7 +624,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       await sandbox.prepare([{ ...fork, write: true }, ...(canonical ? [{ ...canonical, write: false }] : [])]);
       run.summary = 'Runner prepared. Cloning the recorded base commit';
       await publish();
-      await clone(sandbox, fork, baseSha);
+      await clone(sandbox, fork, baseSha, async (message) => { run.summary = message; await publish(); });
       const policy = await loadPolicy(sandbox, baseSha, input.testCommand, input.checkSettings);
       sharedPolicy ??= policy;
       if (policy.install) {
