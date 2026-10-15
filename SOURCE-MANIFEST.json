@@ -565,8 +565,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 68760,
-      "sha256": "414e2e593adf85e4a7409b1c5faa26c3c4b745ee793f1d73ca8338836301926f"
+      "size": 71553,
+      "sha256": "80cbcaa3067a493c32efaedbc5c263bc237f3e86e6f433d131c2939dea23a724"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -645,8 +645,8 @@
     },
     {
       "path": "src/worker/package-manager.ts",
-      "size": 7458,
-      "sha256": "7378bcb3bf8542ba3a1b17f4b25e59140788b42526d9eedb3033e5a82170e4ab"
+      "size": 7923,
+      "sha256": "30d42c9c0336edc3a35135258b4c035a56217eab8eea93c9b6f35819cdf0791f"
     },
     {
       "path": "src/worker/preview-plan.ts",
