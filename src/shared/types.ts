@@ -204,6 +204,18 @@ export interface ModelConnection {
   verification?: { status: 'verified' | 'failed'; checkedAt: string; detail: string };
 }
 
+export type AiKeyProvider = 'openai' | 'anthropic' | 'google-ai-studio' | 'groq' | 'mistral' | 'deepseek' | 'grok';
+export interface AiKeySummary { provider: AiKeyProvider; last4: string; addedBy: string; addedAt: string; verifiedModel: string }
+export interface AiGatewaySummary { accountId: string; gatewayId: string; authenticated: boolean; tokenLast4?: string; updatedBy: string; updatedAt: string }
+export interface AiKeysSnapshot {
+  providers: { id: AiKeyProvider; label: string }[];
+  keys: AiKeySummary[];
+  gateway: AiGatewaySummary | null;
+  operatorAccess: boolean;
+  ready: boolean;
+  verification?: { provider: AiKeyProvider; model: string; detail: string };
+}
+
 export interface ModelConnectionsSnapshot {
   gateway: { id: string | null; configured: boolean };
   workersAI: { enabled: boolean };

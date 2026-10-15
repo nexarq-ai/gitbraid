@@ -11,6 +11,7 @@ import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './r
 import { defaultModelConnections, pinMissionModels, validateModelConnection } from './model-config';
 import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readIssue, recordIssueOutcome, type IssueActor, type IssueChange, type IssueQuery } from './issues';
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
+import type { AiCredentials, StoredAiGateway, StoredAiKey } from './ai-keys';
 
 interface Receipt<T> { fingerprint: string; result: T }
 interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
@@ -146,6 +147,30 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   }
 
   getModelConnections(): ModelConnection[] { return this.store.get<ModelConnection[]>('model-connections') ?? defaultModelConnections(); }
+
+  getAiCredentials(): AiCredentials { return { keys: this.store.get<StoredAiKey[]>('ai-keys') ?? [], gateway: this.store.get<StoredAiGateway>('ai-gateway') ?? null }; }
+
+  saveAiKey(record: StoredAiKey): AiCredentials {
+    return this.ctx.storage.transactionSync(() => {
+      this.store.put('ai-keys', [...this.getAiCredentials().keys.filter(key => key.provider !== record.provider), record]);
+      return this.getAiCredentials();
+    });
+  }
+
+  removeAiKey(provider: string): AiCredentials {
+    return this.ctx.storage.transactionSync(() => {
+      const keys = this.getAiCredentials().keys;
+      if (!keys.some(key => key.provider === provider)) throw new ApiError(404, 'AI_KEY_NOT_FOUND', 'No key is stored for this provider.');
+      this.store.put('ai-keys', keys.filter(key => key.provider !== provider));
+      return this.getAiCredentials();
+    });
+  }
+
+  saveAiGateway(record: StoredAiGateway | null): AiCredentials {
+    if (record) this.store.put('ai-gateway', record);
+    else this.store.delete('ai-gateway');
+    return this.getAiCredentials();
+  }
 
   getAiEnabled(): boolean { return this.store.get<boolean>('ai-enabled') ?? true; }
 
