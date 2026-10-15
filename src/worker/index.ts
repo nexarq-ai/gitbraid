@@ -29,7 +29,7 @@ import { draftMission, draftRequest, repositorySnapshot } from './mission-draft'
 import { handleIssues } from './issues';
 import { releaseApi } from './releases';
 import { modelConnectionsSnapshot, modelIdentifier, resolveModelConnection, validateModelConnection, verifyModelConnection } from './model-config';
-import { aiKeyProvider, aiKeysSnapshot, assertModelAccess, assertWorkspaceAi, createModelAccess, encryptAiGateway, encryptAiKey, ownGatewayInput, providerKey, storedOwnGateway, storedProviderKey, verificationModel, verifyProviderKey, type AiCredentials } from './ai-keys';
+import { aiKeyProvider, aiKeysSnapshot, assertModelAccess, assertWorkspaceAi, createModelAccess, encryptAiGateway, encryptAiKey, ownGatewayInput, providerKey, reserveOperatorUsage, storedOwnGateway, storedProviderKey, verificationModel, verifyProviderKey, type AiCredentials } from './ai-keys';
 import { IMPORT_REQUEST_MAX_BYTES, RepositoryImportFailure, buildImportPack, importFingerprint, inspectRepositoryImport, parseImportArchive, pushRepositoryImport, validateImportInput } from './repository-import';
 import { handleGitRequest, listBranches, type GitHttpDependencies } from './git-http';
 import { branchApi } from './branches';
@@ -558,7 +558,9 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     await access.authorize(principal, 'contribute', 'repository', repositoryId);
     await security(env).rateLimit(`mission-draft:${principal.userId}`, 30, 3_600_000);
     const model = resolveModelConnection(await coordinatorRead('getModelConnections', () => catalog.getModelConnections()), typeof body.model === 'string' ? body.model : undefined);
-    assertModelAccess(env, principal.workspaceId, await aiCredentials(catalog), [model]);
+    const credentials = await aiCredentials(catalog);
+    assertModelAccess(env, principal.workspaceId, credentials, [model]);
+    await reserveOperatorUsage(env, principal.workspaceId, credentials, [model], 'draft', key, catalog);
     const snapshot = await repositorySnapshot(env.ARTIFACTS, repository);
     try { return Response.json({ ...await draftMission({ ...env, modelAccess: createModelAccess(env, principal.workspaceId, { getAiCredentials: () => aiCredentials(catalog) }) }, model, draft, snapshot), baseSha: snapshot.commitSha, model: model.id }); }
     catch (error) {
@@ -657,7 +659,9 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
         await requireAi(env, catalog);
         const credentials = await aiCredentials(catalog);
         assertWorkspaceAi(env, principal.workspaceId, credentials);
-        assertModelAccess(env, principal.workspaceId, credentials, mission.runs.flatMap(run => run.modelConfig ? [run.modelConfig] : []));
+        const models = mission.runs.flatMap(run => run.modelConfig ? [run.modelConfig] : []);
+        assertModelAccess(env, principal.workspaceId, credentials, models);
+        await reserveOperatorUsage(env, principal.workspaceId, credentials, models, 'mission', `${mission.id}:${mission.epoch}`, catalog);
       }
       const readiness = executionReadiness(env, mission.skillChange || mission.revertChange || mission.branchChange ? 'skill-edit' : 'agent');
       if (!readiness.ready || !env.MISSION_WORKFLOW) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', `Connect the required services before running agents: ${[...readiness.missing, ...(!env.MISSION_WORKFLOW ? ['Mission Workflow'] : [])].join(', ')}.`);

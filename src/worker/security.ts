@@ -13,7 +13,7 @@ export const ROLE_ACTIONS: Record<Role, Action[]> = {
   Viewer: ['read'], Contributor: ['read', 'contribute', 'execute'], Reviewer: ['read', 'review'],
   Maintainer: ['read', 'contribute', 'execute', 'review', 'land'], Deployer: ['read', 'deploy'], Owner: ['read', 'contribute', 'execute', 'review', 'land', 'deploy', 'migrate', 'manage'],
 };
-interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean; cloudflareId?: string; revision?: number }
+interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean; cloudflareId?: string; revision?: number; reviewer?: { workspaceId: string }; disabled?: boolean }
 interface Member { userId: string; workspaceId: string; role: Role; repositoryIds?: string[] }
 interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean; client?: string }
 type PublicSession = Omit<Session, 'hash'>;
@@ -36,6 +36,8 @@ interface Installation { workspaceName?: string; workspaceId?: string; pendingUs
 interface EmailToken { id: string; userId: string; email: string; kind: 'verify' | 'reset'; expiresAt: number }
 interface LoginFailures { count: number; lockedUntil: number; updatedAt: number }
 interface MachineRegistration { id: string; requestHash: string; response: string; workspaceId: string; userId: string; claimHash: string; expiresAt: number; claimedBy?: string }
+export type ReviewerOperation = 'create' | 'rotate' | 'disable';
+export interface ReviewerAccountResult { email: string; userId: string; workspaceId: string; created: boolean; disabled: boolean; password?: string }
 export interface MfaChallengeResult { mfaRequired: true; challengeId: string; expiresAt: number; enrollmentRequired: boolean; secret?: string; otpauthUri?: string }
 interface State { cloudflareConnections: Record<string, CloudflareConnection>; cloudflareStates: Record<string, CloudflareOAuthState>; cloudflareSignins: Record<string, CloudflareSigninState>; cloudflareLinks: Record<string, CloudflareLink>; cloudflareProjects: Record<string, ProjectRecord>; mfa: MfaRecord[]; challenges: AuthChallenge[]; emailTokens: EmailToken[]; loginFailures: Record<string, LoginFailures>; installations: Record<string, Installation>; machines: MachineRegistration[]; users: User[]; members: Member[]; sessions: Session[]; workspaces: WorkspaceRecord[]; invitations: Invitation[]; teams: Team[]; grants: Grant[]; credentials: Credential[]; audit: Audit[]; protections: Record<string, Protection>; approvals: Record<string, string[]>; limits: Record<string, { count: number; until: number }> }
 interface ProjectRecord { mapping: ProjectMapping | null; plans: MigrationPlan[] }
@@ -257,7 +259,7 @@ export class IdentityStore {
     return entry;
   }
   private passwordUser(current: User | undefined, authenticated: User): User {
-    if (!current || current.email !== authenticated.email || current.salt !== authenticated.salt || current.hash !== authenticated.hash || current.machine) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
+    if (!current || current.email !== authenticated.email || current.salt !== authenticated.salt || current.hash !== authenticated.hash || current.machine || current.disabled) throw new ApiError(401, 'AUTH_REQUIRED', 'The email or password was not accepted.');
     return current;
   }
 
@@ -276,7 +278,7 @@ export class IdentityStore {
   loginAttempt(input: { userId?: string; email: string; salt?: string; hash: string; client: string }) {
     return this.write(async unit => {
       const current = input.userId ? await this.user(unit, input.userId) : undefined;
-      if (!current || current.email !== input.email || current.salt !== input.salt || current.machine) return { user: null, locked: false, mfaEnabled: false };
+      if (!current || current.email !== input.email || current.salt !== input.salt || current.machine || current.disabled) return { user: null, locked: false, mfaEnabled: false };
       const clientKey = `${current.id}|${input.client.slice(0, 64)}`; const now = Date.now();
       const failures = await Promise.all([clientKey, current.id].map(async id => [id, await unit.get<LoginFailures>(key.failures(id))] as const));
       if (failures.some(([, value]) => liveFailure(value, now) && value.lockedUntil > now)) return { user: null, locked: false, mfaEnabled: false };
@@ -300,7 +302,7 @@ export class IdentityStore {
   applyLink(userId: string, linkId?: string) {
     return this.write(async unit => {
       const link = linkId ? await unit.get<CloudflareLink>(key.link(linkId)) : undefined; const user = await this.user(unit, userId);
-      if (!user || !link || link.expiresAt <= Date.now() || link.email !== user.email || user.cloudflareId || await unit.get<string>(key.cloudflare(link.cloudflareId))) return null;
+      if (!user || !link || link.expiresAt <= Date.now() || link.email !== user.email || user.cloudflareId || user.reviewer || await unit.get<string>(key.cloudflare(link.cloudflareId))) return null;
       unit.delete(key.link(link.id)); unit.delete(key.linkEmail(link.email));
       user.cloudflareId = link.cloudflareId; user.emailVerified = true; await this.putUser(unit, user);
       return user;
@@ -414,7 +416,7 @@ export class IdentityStore {
     return this.write(async unit => {
       if (!await this.limitAllows(unit, limitKey, 3, 3_600_000)) return null;
       const user = await this.userByEmail(unit, email);
-      if (!user || user.machine || !user.hash) return null;
+      if (!user || user.machine || user.reviewer || !user.hash) return null;
       await this.replaceEmailTokens(unit, user.id, candidate => candidate.kind !== 'reset', { id, userId: user.id, email, kind: 'reset', expiresAt: Date.now() + RESET_TOKEN_MS });
       return user.id;
     });
@@ -440,11 +442,13 @@ export class IdentityStore {
   cloudflareLinkRequest(userId: string, link: CloudflareLink) {
     return this.write(async unit => {
       const user = await this.user(unit, userId);
-      if (!user || user.cloudflareId || !user.hash) throw new ApiError(409, 'CLOUDFLARE_IDENTITY_CONFLICT', 'This email belongs to a Gitflare account linked to a different Cloudflare login.');
+      if (!user || user.cloudflareId || user.reviewer || !user.hash) throw new ApiError(409, 'CLOUDFLARE_IDENTITY_CONFLICT', 'This email belongs to a Gitflare account linked to a different Cloudflare login.');
       const previous = await unit.get<string>(key.linkEmail(user.email)); if (previous) unit.delete(key.link(previous));
       unit.put(key.link(link.id), { ...link, email: user.email }); unit.put(key.linkEmail(user.email), link.id);
     });
   }
+  reviewerCreate(user: User) : never { throw new Error('This feature belongs to the hosted edition'); }
+  reviewerUpdate(email: string, change: { salt: string; hash: string } | { disabled: true }) : never { throw new Error('This feature belongs to the hosted edition'); }
   machine(id: string) { return this.read(unit => unit.get<MachineRegistration>(key.machine(id))); }
   createMachine(user: User, registration: MachineRegistration) {
     return this.write(async unit => {
@@ -805,6 +809,10 @@ export class WorkspaceStore {
     await this.load(); if (!this.initialized) return;
     await this.change(() => { this.data.revision.set(userId, Math.max(revision, this.data.revision.get(userId) ?? 0)); for (const session of this.data.session.values()) if (session.userId === userId) session.revoked = true; });
   }
+  async revokeUserCredentials(userId: string): Promise<void> {
+    await this.load(); if (!this.initialized) return;
+    await this.change(() => { for (const credential of this.data.credential.values()) if (credential.userId === userId) credential.revoked = true; });
+  }
   async audit(entries: AuditInput[]): Promise<void> { await this.load(); if (this.initialized) await this.change(change => { change.audit.push(...entries); }, { full: false }); }
   async auditMember(userId: string, action: string): Promise<void> { await this.load(); if (this.initialized && this.data.member.has(userId)) await this.change(change => { change.audit.push({ actorId: userId, action }); }, { full: false }); }
   async initWorkspace(input: { record: WorkspaceRecord; members: Member[]; credentials?: Credential[]; connection?: CloudflareConnection; audit?: AuditInput[] }, idempotent = false): Promise<boolean> {
@@ -1033,8 +1041,8 @@ function validActions(value: unknown): Action[] { if (!Array.isArray(value) || !
 
 type Remote<T> = { [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never };
 export interface SecurityPeer { identityCall(op: string, args: unknown[]): Promise<unknown>; shardCall(workspaceId: string, op: string, args: unknown[]): Promise<unknown> }
-const IDENTITY_OPS = new Set(['rateLimit', 'users', 'account', 'accountByEmail', 'hints', 'addHint', 'removeHint', 'mfaEnabled', 'installationWorkspace', 'selfHostedAllowed', 'lookup', 'index', 'loginAttempt', 'loginFinish', 'applyLink', 'beginMfa', 'challenge', 'verifyChallenge', 'finishOutbox', 'revokeAccount', 'startSetup', 'createUser', 'deleteUser', 'verifyEmail', 'resendVerification', 'requestReset', 'confirmReset', 'cloudflareSigninState', 'cloudflareLookup', 'cloudflareLinkRequest', 'machine', 'createMachine', 'claimMachine', 'legacyWorkspace', 'legacyImported', 'migrationStatus']);
-const SHARD_OPS = new Set(['ensureImported', 'authenticateToken', 'sessionPrincipal', 'sessionState', 'isMember', 'validatePrincipal', 'enrollmentAllowed', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshotPart', 'membership', 'bootstrapAllowed', 'createSession', 'clientSession', 'revokeSession', 'revokeUserSessions', 'audit', 'auditMember', 'initWorkspace', 'peekInvite', 'acceptInvite', 'addMember', 'claimAgent', 'action', 'connectionStore', 'projectStore', 'clearApprovals', 'recordApproval', 'assertLand']);
+const IDENTITY_OPS = new Set(['rateLimit', 'users', 'account', 'accountByEmail', 'hints', 'addHint', 'removeHint', 'mfaEnabled', 'installationWorkspace', 'selfHostedAllowed', 'lookup', 'index', 'loginAttempt', 'loginFinish', 'applyLink', 'beginMfa', 'challenge', 'verifyChallenge', 'finishOutbox', 'revokeAccount', 'startSetup', 'createUser', 'deleteUser', 'verifyEmail', 'resendVerification', 'requestReset', 'confirmReset', 'cloudflareSigninState', 'cloudflareLookup', 'cloudflareLinkRequest', 'reviewerCreate', 'reviewerUpdate', 'machine', 'createMachine', 'claimMachine', 'legacyWorkspace', 'legacyImported', 'migrationStatus']);
+const SHARD_OPS = new Set(['ensureImported', 'authenticateToken', 'sessionPrincipal', 'sessionState', 'isMember', 'validatePrincipal', 'enrollmentAllowed', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshotPart', 'membership', 'bootstrapAllowed', 'createSession', 'clientSession', 'revokeSession', 'revokeUserSessions', 'revokeUserCredentials', 'audit', 'auditMember', 'initWorkspace', 'peekInvite', 'acceptInvite', 'addMember', 'claimAgent', 'action', 'connectionStore', 'projectStore', 'clearApprovals', 'recordApproval', 'assertLand']);
 function remote<T>(call: (op: string, args: unknown[]) => Promise<unknown>, inDurableObject: boolean): Remote<T> {
   return new Proxy({}, {
     get: (_target, op) => typeof op !== 'string' || op === 'then' ? undefined : async (...args: unknown[]) => {
@@ -1131,6 +1139,7 @@ export class SecurityService {
     if (linked) await this.auditAccount(current.id, 'account:cloudflare-linked');
     return { token: value, user: safeUser(linked ?? current), workspaceId, ...(linked ? { cloudflareLinked: true } : {}) };
   }
+  async reviewerAccount(operation: ReviewerOperation, body: Record<string, unknown>): Promise<ReviewerAccountResult> { throw new Error('This feature belongs to the hosted edition'); }
   async legacySession() {
     if (this.options.EDITION === 'self-hosted') fail('BOOTSTRAP_DISABLED');
     const value = mintToken('legacy');
@@ -1241,6 +1250,7 @@ export class SecurityService {
   }
   async enrollMfa(p: Principal): Promise<MfaChallengeResult> {
     await this.shard(p.workspaceId).enrollmentAllowed(p);
+    if ((await this.identity().account(p.userId))?.reviewer) fail('REVIEWER_ACCOUNT', 'This shared reviewer account cannot enroll an authenticator.');
     if (await this.identity().mfaEnabled(p.userId)) throw new ApiError(409, 'MFA_ALREADY_ENABLED', 'This account already has an authenticator.');
     return this.beginMfa(p.userId, p.workspaceId, { principal: p });
   }

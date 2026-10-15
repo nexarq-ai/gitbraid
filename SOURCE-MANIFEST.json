@@ -445,8 +445,8 @@
     },
     {
       "path": "src/worker/ai-keys.ts",
-      "size": 9672,
-      "sha256": "44b7a12c4610d909b97d701941a62ca6fe0faa9ea6054468af94f2d551d53e11"
+      "size": 11180,
+      "sha256": "3bcc8366ebbbb8902c5a41c7a548120e332c5eeb53b9d17ef7b45b1e6f159e1a"
     },
     {
       "path": "src/worker/anthropic-adapter.ts",
@@ -500,8 +500,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 64279,
-      "sha256": "5814b4c173ef87222ccd9020a55794d1ab4062c9b5c7ea5637802f9aac1d1ca2"
+      "size": 65532,
+      "sha256": "b15e9df9000d72079414c4b44a8f8255d36b05547d0bc654c0013e988c2f64b5"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -560,8 +560,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 70549,
-      "sha256": "ad963ab0ccc837f8ff22ca500af75b3c66583260c403fffbc071f4d250626209"
+      "size": 70883,
+      "sha256": "a217446a249221aa53f0bb124d82ca707aef6e51359d958554828bbc5a8d6201"
     },
     {
       "path": "src/worker/issues.ts",
@@ -660,8 +660,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 128365,
-      "sha256": "7f7892852cd4060043ba9e7443e419a53b6bda80ad6c931fb551334c07999ebd"
+      "size": 129667,
+      "sha256": "7755607655dfd41404d9a2d0217b49e9a690babfa41423f2dd863dd7890b5b5e"
     },
     {
       "path": "src/worker/skill-edit.ts",

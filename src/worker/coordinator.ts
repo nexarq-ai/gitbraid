@@ -15,7 +15,7 @@ import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readI
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 import { capacityError, catalogName, liveSlots, MISSION_SLOT_GRACE_MS, slotKey, WORKSPACE_MISSION_LIMIT, WORKSPACE_PREVIEW_LIMIT, type CapacitySlot } from './capacity';
 import { missionStepTimeoutMs } from './budgets';
-import type { AiCredentials, StoredAiGateway, StoredAiKey } from './ai-keys';
+import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
 
 interface Receipt<T> { fingerprint: string; result: T }
 export interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
@@ -155,7 +155,29 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   getModelConnections(): ModelConnection[] { return this.store.get<ModelConnection[]>('model-connections') ?? defaultModelConnections(); }
 
-  getAiCredentials(): AiCredentials { return { keys: this.store.get<StoredAiKey[]>('ai-keys') ?? [], gateway: this.store.get<StoredAiGateway>('ai-gateway') ?? null }; }
+  getAiCredentials(): AiCredentials { return { keys: this.store.get<StoredAiKey[]>('ai-keys') ?? [], gateway: this.store.get<StoredAiGateway>('ai-gateway') ?? null, operatorModels: this.store.get<OperatorModelGrant>('operator-models') ?? null }; }
+
+  setOperatorModels(grant: OperatorModelGrant | null): AiCredentials {
+    if (grant) this.store.put('operator-models', grant);
+    else this.store.delete('operator-models');
+    return this.getAiCredentials();
+  }
+
+  reserveOperatorUsage(kind: OperatorUsageKind, id: string, now = Date.now()): { allowed: boolean; limit: number } {
+    return this.ctx.storage.transactionSync(() => {
+      const grant = this.store.get<OperatorModelGrant>('operator-models');
+      if (!grant) return { allowed: true, limit: 0 };
+      const limit = kind === 'mission' ? grant.missionsPerDay : grant.draftsPerDay;
+      const day = new Date(now).toISOString().slice(0, 10);
+      const yesterday = new Date(now - 86_400_000).toISOString().slice(0, 10);
+      this.store.delete(`operator-usage:${kind}:${yesterday}`);
+      const used = this.store.get<string[]>(`operator-usage:${kind}:${day}`) ?? [];
+      if (used.includes(id)) return { allowed: true, limit };
+      if (used.length >= limit) return { allowed: false, limit };
+      this.store.put(`operator-usage:${kind}:${day}`, [...used, id]);
+      return { allowed: true, limit };
+    });
+  }
 
   saveAiKey(record: StoredAiKey): AiCredentials {
     return this.ctx.storage.transactionSync(() => {
