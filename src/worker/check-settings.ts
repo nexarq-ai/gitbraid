@@ -1,4 +1,4 @@
-import type { AutoIncrease, Check, CheckPlan, CheckSettings, Mission, RepositoryCheckSettings, RunnerSize } from '../shared/types';
+import type { AutoIncrease, Check, CheckOverride, CheckPlan, CheckSettings, Mission, RepositoryCheckSettings, RunnerSize } from '../shared/types';
 import { ApiError } from './domain';
 import { autoIncreaseOf, isRunnerSize, MAX_TIMEOUT_SECONDS, RUNNER_SIZES } from './repository-policy';
 
@@ -88,6 +88,21 @@ export function nextRunner(runner: RunnerSize): RunnerSize | undefined {
   return RUNNER_SIZES[RUNNER_SIZES.indexOf(runner) + 1];
 }
 
+export type RetryPlan = { kind: 'settings'; settings: CheckSettingsInput } | { kind: 'override'; override: Pick<CheckOverride, 'testTimeoutSeconds' | 'runner'> };
+
+export function retryPlan(mission: Pick<Mission, 'checks' | 'status'>, current: CheckSettings | undefined | null, adjustment: unknown, owner: boolean): RetryPlan {
+  const check = timedOutCheck(mission);
+  const fixed = adjustment === 'timeout' ? check?.timeout.timeoutSource : adjustment === 'runner' ? check?.timeout.runnerSource : undefined;
+  if (!owner || !check || !RETRYABLE_STATUSES.includes(mission.status) || (fixed !== 'gitflare.json' && fixed !== 'owner')) return { kind: 'settings', settings: retryCheckSettings(mission, current, adjustment) };
+  if (adjustment === 'timeout') {
+    if (check.timeout.seconds >= MAX_TIMEOUT_SECONDS) throw new ApiError(409, 'LIMIT_AT_MAXIMUM', `The check already used the maximum ${MAX_TIMEOUT_SECONDS} s. Choose a larger runner instead.`);
+    return { kind: 'override', override: { testTimeoutSeconds: check.timeout.seconds < RETRY_TIMEOUT_SECONDS ? RETRY_TIMEOUT_SECONDS : MAX_TIMEOUT_SECONDS } };
+  }
+  const larger = nextRunner(check.timeout.runner);
+  if (!larger) throw new ApiError(409, 'LIMIT_AT_MAXIMUM', `The check already ran on the largest runner, ${check.timeout.runner}. Raise the time limit instead.`);
+  return { kind: 'override', override: { runner: larger } };
+}
+
 export function retryCheckSettings(mission: Pick<Mission, 'checks' | 'status'>, current: CheckSettings | undefined | null, adjustment: unknown): CheckSettingsInput {
   if (!RETRY_ADJUSTMENTS.includes(adjustment as RetryAdjustment)) throw new ApiError(400, 'INVALID_RETRY_ADJUSTMENT', 'Choose "timeout" or "runner".');
   if (!RETRYABLE_STATUSES.includes(mission.status)) throw new ApiError(409, 'MISSION_ACTIVE', 'Wait for the current attempt to finish before retrying its checks.');
@@ -95,11 +110,11 @@ export function retryCheckSettings(mission: Pick<Mission, 'checks' | 'status'>, 
   if (!check) throw new ApiError(409, 'CHECK_NOT_TIMED_OUT', 'No check in the latest attempt timed out.');
   const settings = keptSettings(current);
   if (adjustment === 'timeout') {
-    if (check.timeout.timeoutSource === 'gitflare.json') throw new ApiError(409, 'POLICY_FILE_SETS_LIMIT', 'gitflare.json at the base revision sets timeoutSeconds, which takes precedence over repository settings. Change it there.');
+    if (check.timeout.timeoutSource === 'gitflare.json') throw new ApiError(409, 'POLICY_FILE_SETS_LIMIT', 'gitflare.json at the base revision sets timeoutSeconds, which takes precedence over repository settings. Change it there, or ask an Owner to override it for this proposal.');
     if (check.timeout.seconds >= MAX_TIMEOUT_SECONDS) throw new ApiError(409, 'LIMIT_AT_MAXIMUM', `The check already used the maximum ${MAX_TIMEOUT_SECONDS} s. Choose a larger runner instead.`);
     return { ...settings, testTimeoutSeconds: check.timeout.seconds < RETRY_TIMEOUT_SECONDS ? RETRY_TIMEOUT_SECONDS : MAX_TIMEOUT_SECONDS };
   }
-  if (check.timeout.runnerSource === 'gitflare.json') throw new ApiError(409, 'POLICY_FILE_SETS_LIMIT', 'gitflare.json at the base revision sets runner, which takes precedence over repository settings. Change it there.');
+  if (check.timeout.runnerSource === 'gitflare.json') throw new ApiError(409, 'POLICY_FILE_SETS_LIMIT', 'gitflare.json at the base revision sets runner, which takes precedence over repository settings. Change it there, or ask an Owner to override it for this proposal.');
   const larger = nextRunner(check.timeout.runner);
   if (!larger) throw new ApiError(409, 'LIMIT_AT_MAXIMUM', `The check already ran on the largest runner, ${check.timeout.runner}. Raise the time limit instead.`);
   return { ...settings, runner: larger };

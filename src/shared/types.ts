@@ -77,7 +77,7 @@ export interface AgentRun {
 }
 
 export type RunnerSize = 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';
-export type CheckLimitSource = 'gitflare.json' | 'repository' | 'learned' | 'auto' | 'default';
+export type CheckLimitSource = 'owner' | 'gitflare.json' | 'repository' | 'learned' | 'auto' | 'default';
 
 export interface CheckTimeout {
   seconds: number;
@@ -100,8 +100,16 @@ export interface CheckSettings {
   updatedBy?: string;
 }
 
+export interface CheckOverride {
+  testTimeoutSeconds?: number;
+  runner?: RunnerSize;
+  actorId: string;
+  at: string;
+}
+
 export interface CheckPlan extends CheckSettings {
   learnedTimeoutSeconds?: number;
+  override?: CheckOverride;
 }
 
 export interface RepositoryCheckSettings extends CheckSettings {

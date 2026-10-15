@@ -150,8 +150,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 11748,
-      "sha256": "f5407f9ea41c11dbc1c0f14f85e779acf3eb5b48c74cf7892c823c9718943d9f"
+      "size": 11909,
+      "sha256": "10c055da24e6f315daf20e56f6cac7a3be965ff40274bc16df4d6253195dc691"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -270,8 +270,8 @@
     },
     {
       "path": "src/ui/CheckSettings.tsx",
-      "size": 9969,
-      "sha256": "44620213e51331130e18688f0ef0ee456900393c3bf6ad00a1d7e081f1b9b2a5"
+      "size": 10110,
+      "sha256": "1836ad20a6c0d5461c2099d47f6d725cb69dcf9fada056d44f5f480407bae7e0"
     },
     {
       "path": "src/ui/cloudflare-connection.css",
@@ -515,8 +515,8 @@
     },
     {
       "path": "src/worker/check-settings.ts",
-      "size": 7772,
-      "sha256": "6de476ebe4f109a50fc721704796d234575c46f827d946b4a83aa0cd8fe5df6e"
+      "size": 9280,
+      "sha256": "b3c503c9cd8c1add828dc1f453b3f66ac32cefe0101899144fec2401a9ca9a30"
     },
     {
       "path": "src/worker/client-access.ts",
@@ -535,8 +535,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 79416,
-      "sha256": "28723bc4592160e88bc99637d837a486e8301afdf61dd1c6846936081ef5c8f5"
+      "size": 80328,
+      "sha256": "b7baa62a76f3baae1b5c97d6443435091f9c234b440437cc52fd969601ba520a"
     },
     {
       "path": "src/worker/deployments.ts",
@@ -575,8 +575,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 71553,
-      "sha256": "80cbcaa3067a493c32efaedbc5c263bc237f3e86e6f433d131c2939dea23a724"
+      "size": 71605,
+      "sha256": "b8caae733803ac506c897754595d66a354233dd8e89f6bdac7719312bdd0b09b"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -600,8 +600,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 75631,
-      "sha256": "87dc5484512643cbc12f560d885c1dfbb7595c55c45233ce5253c7fc1cf7f81a"
+      "size": 75957,
+      "sha256": "c44be9e8b806be676433e66b18691854e7029430381de27a2109190cb141e290"
     },
     {
       "path": "src/worker/issues.ts",
@@ -610,8 +610,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 76396,
-      "sha256": "4743d8c9c5e903a7d26656581888a60f5f5e5155fee980271b13c1c2f181034f"
+      "size": 76516,
+      "sha256": "d0fbd7a6504a6001e8e520465d684a5b1e9fc6dd2a91e8f5eeb1208a19c778b7"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -700,8 +700,8 @@
     },
     {
       "path": "src/worker/repository-policy.ts",
-      "size": 11923,
-      "sha256": "983ed3402bb86b4e46c9ab3ae881ee7d23b80d1ebd09dffd4ad30a9b3b888b23"
+      "size": 12203,
+      "sha256": "0fa4dc453bd00d9d2eea9593f1299067fdc9f9e878490b3f3d5436dec0869cbf"
     },
     {
       "path": "src/worker/repository-skills.ts",
@@ -740,8 +740,8 @@
     },
     {
       "path": "src/worker/workflow.ts",
-      "size": 6136,
-      "sha256": "5f2faa34858f5aac747141ac0a06e8f7f3c199ef661a64af3b7f73b947a70162"
+      "size": 6163,
+      "sha256": "4c5d5b9d6c5a3bfef1588cfcd1c42e7fdf458fa58e1657c5ed3f2c1d5f86b9f0"
     },
     {
       "path": "src/worker/workspace-summaries.ts",

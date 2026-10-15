@@ -14,7 +14,7 @@ export const RUNNER_LABELS: Record<RunnerSize, string> = {
   "standard-4": "standard-4 · 4 vCPU, 12 GiB",
 };
 const RUNNERS = Object.keys(RUNNER_LABELS) as RunnerSize[];
-const SOURCE_LABELS: Record<CheckLimitSource, string> = { "gitflare.json": "set by gitflare.json", repository: "repository setting", learned: "learned from recent runs", auto: "automatically increased", default: "default" };
+const SOURCE_LABELS: Record<CheckLimitSource, string> = { owner: "Owner override for this proposal", "gitflare.json": "set by gitflare.json", repository: "repository setting", learned: "learned from recent runs", auto: "automatically increased", default: "default" };
 const seconds = (value: string) => value.trim() ? Number(value) : null;
 
 export default function CheckSettings({ repositoryId, canChange, onNotify }: { repositoryId: string; canChange: boolean; onNotify: (message: string) => void }) {
@@ -113,16 +113,16 @@ export function CheckTimeoutPanel({ mission, check, canRetry, busy, onRetry }: {
   const { seconds: limit, runner, timeoutSource, runnerSource } = check.timeout;
   const larger = nextRunner(runner);
   const retryable = ["failed", "cancelled", "needs_review"].includes(mission.status);
-  const timeoutLocked = timeoutSource === "gitflare.json";
-  const runnerLocked = runnerSource === "gitflare.json";
+  const timeoutLocked = timeoutSource === "gitflare.json" || timeoutSource === "owner";
+  const runnerLocked = runnerSource === "gitflare.json" || runnerSource === "owner";
   return (
     <div className="check-timeout" role="status">
       <p><TimerIcon size={16} /><strong>Timed out after {limit} s on {runner}</strong> <span>({SOURCE_LABELS[timeoutSource]} limit, {SOURCE_LABELS[runnerSource]} runner)</span></p>
       {canRetry ? (
         <div className="check-timeout-actions">
-          <Button variant="primary" size="base" icon={ArrowCounterClockwiseIcon} loading={busy} disabled={busy || !retryable || timeoutLocked || limit >= 900} onClick={() => onRetry("timeout")}>{limit < 600 ? "Retry with 10 minutes" : "Retry with 15 minutes"}</Button>
-          <Button variant="secondary" size="base" icon={CpuIcon} disabled={busy || !retryable || runnerLocked || !larger} onClick={() => onRetry("runner")}>{larger ? `Retry on a larger runner (${larger})` : "Largest runner already used"}</Button>
-          {(timeoutLocked || runnerLocked) && <small>gitflare.json at the base revision sets {timeoutLocked && runnerLocked ? "both values" : timeoutLocked ? "timeoutSeconds" : "runner"}; change it there.</small>}
+          <Button variant="primary" size="base" icon={ArrowCounterClockwiseIcon} loading={busy} disabled={busy || !retryable || limit >= 900} onClick={() => onRetry("timeout")}>{limit < 600 ? "Retry with 10 minutes" : "Retry with 15 minutes"}</Button>
+          <Button variant="secondary" size="base" icon={CpuIcon} disabled={busy || !retryable || !larger} onClick={() => onRetry("runner")}>{larger ? `Retry on a larger runner (${larger})` : "Largest runner already used"}</Button>
+          {(timeoutLocked || runnerLocked) && <small>gitflare.json at the base revision sets {timeoutLocked && runnerLocked ? "both values" : timeoutLocked ? "timeoutSeconds" : "runner"}. Only an Owner can retry past it; the override applies to this proposal only and is logged.</small>}
           {!retryable && <small>Wait for the current attempt to finish.</small>}
         </div>
       ) : <p className="check-timeout-note">Owners and Maintainers can retry this with more time or a larger runner.</p>}

@@ -24,13 +24,13 @@ export function autoIncreaseOf(settings?: CheckPlan | null): AutoIncrease {
   return settings?.autoIncrease ?? DEFAULT_AUTO_INCREASE;
 }
 
-const FIXED: CheckLimitSource = 'gitflare.json';
+export function isFixedSource(source: CheckLimitSource): boolean { return source === 'gitflare.json' || source === 'owner'; }
 
 export function escalatedLimits(timeout: CheckTimeout, auto: AutoIncrease): { seconds: number; runner: RunnerSize } | null {
   if (!auto.enabled) return null;
-  const seconds = timeout.timeoutSource === FIXED ? timeout.seconds : Math.max(timeout.seconds, Math.min(timeout.seconds * 2, MAX_TIMEOUT_SECONDS, auto.maxTimeoutSeconds));
+  const seconds = isFixedSource(timeout.timeoutSource) ? timeout.seconds : Math.max(timeout.seconds, Math.min(timeout.seconds * 2, MAX_TIMEOUT_SECONDS, auto.maxTimeoutSeconds));
   const current = RUNNER_SIZES.indexOf(timeout.runner);
-  const runner = timeout.runnerSource === FIXED ? timeout.runner : RUNNER_SIZES[Math.max(current, Math.min(current + 1, RUNNER_SIZES.indexOf(auto.maxRunner)))]!;
+  const runner = isFixedSource(timeout.runnerSource) ? timeout.runner : RUNNER_SIZES[Math.max(current, Math.min(current + 1, RUNNER_SIZES.indexOf(auto.maxRunner)))]!;
   return seconds > timeout.seconds || runner !== timeout.runner ? { seconds, runner } : null;
 }
 
@@ -88,8 +88,8 @@ function startingTimeout(command: string, settings: CheckPlan | null | undefined
 }
 
 function withLimits(policy: RepositoryPolicy, explicit: { timeoutSeconds?: number; runner?: RunnerSize }, settings?: CheckPlan | null): RepositoryPolicy {
-  const timeout: [number, CheckLimitSource] = explicit.timeoutSeconds !== undefined ? [explicit.timeoutSeconds * 1000, 'gitflare.json'] : settings?.testTimeoutSeconds !== undefined ? [settings.testTimeoutSeconds * 1000, 'repository'] : startingTimeout(policy.testCommand, settings);
-  const runner: [RunnerSize, CheckLimitSource] = explicit.runner !== undefined ? [explicit.runner, 'gitflare.json'] : settings?.runner !== undefined ? [settings.runner, 'repository'] : [defaultCheckRunner(policy.testCommand), 'default'];
+  const timeout: [number, CheckLimitSource] = settings?.override?.testTimeoutSeconds !== undefined ? [settings.override.testTimeoutSeconds * 1000, 'owner'] : explicit.timeoutSeconds !== undefined ? [explicit.timeoutSeconds * 1000, 'gitflare.json'] : settings?.testTimeoutSeconds !== undefined ? [settings.testTimeoutSeconds * 1000, 'repository'] : startingTimeout(policy.testCommand, settings);
+  const runner: [RunnerSize, CheckLimitSource] = settings?.override?.runner !== undefined ? [settings.override.runner, 'owner'] : explicit.runner !== undefined ? [explicit.runner, 'gitflare.json'] : settings?.runner !== undefined ? [settings.runner, 'repository'] : [defaultCheckRunner(policy.testCommand), 'default'];
   return { ...policy, testTimeoutMs: timeout[0], testTimeoutSource: timeout[1], runner: runner[0], runnerSource: runner[1], autoIncrease: autoIncreaseOf(settings) };
 }
 

@@ -18,7 +18,7 @@ interface Coordinator {
   getAiCredentials(): Promise<AiCredentials>;
   getRepository(repositoryId: string): Promise<Repository | undefined>;
   getMission(missionId: string): Promise<Mission | undefined>;
-  getCheckPlan?(): Promise<CheckPlan>;
+  getCheckPlan?(missionId?: string): Promise<CheckPlan>;
   applyLearnedCheckLimits?(missionId: string, epoch: number, learned: LearnedLimits): Promise<CheckSettings | null>;
   isMissionActive(missionId: string, epoch: number): Promise<boolean>;
   recordExecution(missionId: string, epoch: number, result: ExecutionResult, complete?: boolean): Promise<unknown>;
@@ -42,7 +42,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
     const timeout = missionStepTimeoutMs(planned ?? { runs: [] });
     try {
       await step.do('execute isolated agents and verify integration', { retries: { limit: 0, delay: '1 second' }, timeout }, async () => {
-        const [repository, mission, checkSettings] = await Promise.all([coordinator.getRepository(repositoryId), coordinator.getMission(missionId), coordinator.getCheckPlan?.()]);
+        const [repository, mission, checkSettings] = await Promise.all([coordinator.getRepository(repositoryId), coordinator.getMission(missionId), coordinator.getCheckPlan?.(missionId)]);
         if (!repository || !mission) throw new Error('Mission repository was not found');
         if (!await coordinator.isMissionActive(missionId, epoch)) return;
         const authorization = mission.authorization;

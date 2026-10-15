@@ -6,7 +6,7 @@ import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } fr
 import { createArtifactsRepository, repositoryHead } from './artifacts';
 import { ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
 import { repositoryLabel } from '../shared/repository-names';
-import { checkSettingsSnapshot, normalizeCheckSettings, retryCheckSettings } from './check-settings';
+import { checkSettingsSnapshot, normalizeCheckSettings, retryPlan } from './check-settings';
 import type { AppEnv } from './env';
 import { executionReadiness } from './execution';
 import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflowId, retireWorkerPreview } from './background-work';
@@ -627,9 +627,14 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const { mission, repository } = await findMission(env, match[1], principal.workspaceId);
     await access.authorize(principal, 'land', 'repository', repository.id, mission.id);
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
-    const adjusted = retryCheckSettings(mission, await coordinator.getCheckSettings(), body.adjustment);
-    await coordinator.setCheckSettings(`${key.slice(0, 100)}-check-settings`, adjusted, principal.userId);
-    await access.auditRepositoryChange(principal, `repository.check-settings.retry-${String(body.adjustment)}`, repository.id);
+    const plan = retryPlan(mission, await coordinator.getCheckSettings(), body.adjustment, principal.role === 'Owner');
+    if (plan.kind === 'override') {
+      await coordinator.setCheckOverride(`${key.slice(0, 100)}-check-override`, mission.id, plan.override, principal.userId);
+      await access.auditRepositoryChange(principal, `repository.check-override.retry-${String(body.adjustment)}`, repository.id);
+    } else {
+      await coordinator.setCheckSettings(`${key.slice(0, 100)}-check-settings`, plan.settings, principal.userId);
+      await access.auditRepositoryChange(principal, `repository.check-settings.retry-${String(body.adjustment)}`, repository.id);
+    }
     match[2] = mission.branchChange ? 'pull' : 'start';
     if (mission.branchChange) body.action = 'update';
   }

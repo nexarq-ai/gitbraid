@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { BranchChangeResult, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import type { BranchChangeResult, CheckOverride, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import { repositoryLabel } from '../shared/repository-names';
 import type { AppEnv } from './env';
@@ -157,7 +157,21 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   getCheckDurations(): number[] { return this.store.get<number[]>('check-durations') ?? []; }
 
-  getCheckPlan(): CheckPlan { return checkPlan(this.getCheckSettings(), this.getCheckDurations()); }
+  getCheckPlan(missionId?: string): CheckPlan {
+    const plan = checkPlan(this.getCheckSettings(), this.getCheckDurations());
+    const override = missionId ? this.store.get<CheckOverride>(`check-override:${missionId}`) : undefined;
+    return override ? { ...plan, override } : plan;
+  }
+
+  setCheckOverride(key: string, missionId: string, input: Pick<CheckOverride, 'testTimeoutSeconds' | 'runner'>, actorId: string): CheckOverride {
+    this.requiredMission(missionId);
+    return this.mutate(key, JSON.stringify(['check-override', missionId, input]), () => {
+      const previous = this.store.get<CheckOverride>(`check-override:${missionId}`);
+      const stored: CheckOverride = { ...(previous?.testTimeoutSeconds !== undefined ? { testTimeoutSeconds: previous.testTimeoutSeconds } : {}), ...(previous?.runner ? { runner: previous.runner } : {}), ...input, actorId, at: new Date().toISOString() };
+      this.store.put(`check-override:${missionId}`, stored);
+      return stored;
+    });
+  }
 
   applyLearnedCheckLimits(id: string, epoch: number, learned: LearnedLimits): CheckSettings | null {
     return this.ctx.storage.transactionSync(() => {

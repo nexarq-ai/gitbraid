@@ -12,7 +12,7 @@ import { buildWorkerBundle, readWorkerConfig, WorkerBuildFailure, workerConfigPa
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
 import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, INSTALL_ATTEMPTS, isTransientInstallFailure, runnerFor, type InstallPlan } from './package-manager';
 import type { LearnedLimits } from './check-settings';
-import { DEFAULT_EDITABLE, escalatedLimits, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
+import { DEFAULT_EDITABLE, escalatedLimits, isFixedSource, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
 
 export interface SandboxRunner {
   prepare(repositories: GitPermission[], options?: PrepareOptions): Promise<void>;
@@ -106,7 +106,7 @@ export function checkFailureSummary(output: string): string {
 
 export type CheckLimits = Pick<RepositoryPolicy, 'testTimeoutMs' | 'testTimeoutSource' | 'runner' | 'runnerSource'>;
 
-const LIMIT_SOURCE = { 'gitflare.json': 'limit from gitflare.json timeoutSeconds', repository: 'limit from the repository check settings', learned: 'limit learned from recent check durations', auto: 'automatically increased limit', default: 'default limit' } as const;
+const LIMIT_SOURCE = { owner: 'limit an Owner set for this proposal', 'gitflare.json': 'limit from gitflare.json timeoutSeconds', repository: 'limit from the repository check settings', learned: 'limit learned from recent check durations', auto: 'automatically increased limit', default: 'default limit' } as const;
 
 function lastCharacters(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -417,7 +417,7 @@ async function verify(env: Required<Pick<ExecutionEnv, 'SANDBOX'>>, key: string,
   const next = timeout && first.check.status === 'failed' ? escalatedLimits(timeout, policy.autoIncrease) : null;
   if (!timeout || !next || !await isActive()) return first;
   await onEscalate(`Timed out after ${timeout.seconds} s on ${timeout.runner}; retrying with ${next.seconds} s on ${next.runner}`);
-  const escalated: RepositoryPolicy = { ...policy, testTimeoutMs: next.seconds * 1000, testTimeoutSource: timeout.timeoutSource === 'gitflare.json' ? timeout.timeoutSource : 'auto', runner: next.runner, runnerSource: timeout.runnerSource === 'gitflare.json' ? timeout.runnerSource : 'auto' };
+  const escalated: RepositoryPolicy = { ...policy, testTimeoutMs: next.seconds * 1000, testTimeoutSource: isFixedSource(timeout.timeoutSource) ? timeout.timeoutSource : 'auto', runner: next.runner, runnerSource: isFixedSource(timeout.runnerSource) ? timeout.runnerSource : 'auto' };
   let second: Awaited<ReturnType<typeof verifyOnce>>;
   try { second = await verifyOnce(env, `${key}-escalated`, fork, sha, baseSha, escalated, assertAuthority, skillChange, isActive, humanBranch); }
   catch (error) {
