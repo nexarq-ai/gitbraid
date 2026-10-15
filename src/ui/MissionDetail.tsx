@@ -140,7 +140,7 @@ export default function MissionDetail({
   useEffect(() => { if (isActive) reschedule.current(); }, [isActive]);
 
   async function act(
-    action: "start" | "cancel" | "approve" | "integrate" | "revoke",
+    action: "start" | "retry-agents" | "drop-failed-agents" | "cancel" | "approve" | "integrate" | "revoke",
   ) {
     if (!mission || busy) return;
     setBusy(action);
@@ -428,6 +428,10 @@ export default function MissionDetail({
       </>
     );
   const active = ["queued", "running", "checking"].includes(mission.status);
+  const verifiedChecks = mission.raceChecks ?? mission.checks;
+  const verifiedRuns = mission.runs.filter((run) => run.status === "completed" && !!run.commitSha && !!run.forkName && verifiedChecks.some((check) => check.runId === run.id && check.status === "passed" && check.candidateSha === run.commitSha));
+  const unfinishedRuns = mission.runs.filter((run) => !verifiedRuns.includes(run));
+  const canRetryAgents = mission.epoch > 0 && ["failed", "cancelled"].includes(mission.status) && !mission.skillChange && !mission.revertChange && !mission.branchChange && unfinishedRuns.length > 0;
   const landing = mission.status === "integrating" && !mission.error;
   const overlap = mission.changes.filter((change) => change.runIds.length > 1);
   const unresolvedRequests = (mission.reviews ?? []).filter(
@@ -554,6 +558,29 @@ export default function MissionDetail({
                 : mission.status === "needs_review"
                   ? "Rerun on latest base"
                   : "Retry mission"}
+            </Button>
+          )}
+          {canRetryAgents && (
+            <Button
+              variant="primary"
+              size="base"
+              icon={ArrowCounterClockwiseIcon}
+              loading={busy === "retry-agents"}
+              disabled={!!busy || !permissions.includes("execute")}
+              onClick={() => void act("retry-agents")}
+            >
+              Retry failed agents ({unfinishedRuns.length})
+            </Button>
+          )}
+          {canRetryAgents && verifiedRuns.length > 0 && (
+            <Button
+              variant="secondary"
+              size="base"
+              loading={busy === "drop-failed-agents"}
+              disabled={!!busy || !permissions.includes("execute")}
+              onClick={() => void act("drop-failed-agents")}
+            >
+              Continue without failed agents
             </Button>
           )}
           {active && (
@@ -954,6 +981,12 @@ export default function MissionDetail({
                       <AgentAssignment run={run} mission={mission} />
                       {run.note && (
                         <p className="agent-note">Shared with the team: {run.note}</p>
+                      )}
+                      {run.reusedFromEpoch !== undefined && run.status === "completed" && (
+                        <p className="agent-note">Verified candidate carried over from attempt {run.reusedFromEpoch}; this agent did not run again.</p>
+                      )}
+                      {run.skipReason && run.status === "skipped" && (
+                        <p className="agent-note">Skipped: {run.skipReason}</p>
                       )}
                       {run.usage && run.usage.calls > 0 && (
                         <p className="agent-usage">Usage: {run.usage.calls} {run.usage.calls === 1 ? "call" : "calls"} · input {run.usage.inputTokens.toLocaleString()} · output {run.usage.outputTokens.toLocaleString()} · cache read {run.usage.cacheReadTokens.toLocaleString()} · cache write {run.usage.cacheWriteTokens.toLocaleString()}{run.usage.unreportedCalls > 0 ? ` · ${run.usage.unreportedCalls} without provider counts (unknown)` : ""}</p>

@@ -150,8 +150,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 11909,
-      "sha256": "10c055da24e6f315daf20e56f6cac7a3be965ff40274bc16df4d6253195dc691"
+      "size": 12001,
+      "sha256": "1191206ac0fb878739036187dcfa7dba769dc2cb4dd36c244352a50af54b4dd5"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -355,8 +355,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 55044,
-      "sha256": "e0bde375fcbcdfa7e4badc9c8e5c31a7e23a76634b2a99b9239a9d844657bf23"
+      "size": 56971,
+      "sha256": "6e401f6a6ff85987b104c052986636d0bfa3835570a731c50b31b1f4e457e3db"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -465,8 +465,8 @@
     },
     {
       "path": "src/ui/styles.css",
-      "size": 61926,
-      "sha256": "db528d68c4f4ebeba390c46e5ef0650820dda79bc7b9e8b9d1bba1544244f11a"
+      "size": 61941,
+      "sha256": "58710d24a58b3d9060628147193ce16e601c5b28dff609227c87a33e659237aa"
     },
     {
       "path": "src/ui/WorkspaceLoader.tsx",
@@ -540,8 +540,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 80328,
-      "sha256": "b7baa62a76f3baae1b5c97d6443435091f9c234b440437cc52fd969601ba520a"
+      "size": 85685,
+      "sha256": "67ca99c2abeb604f4e14dff37c4455da67e741ab74a7d1669ca2e63f2635252f"
     },
     {
       "path": "src/worker/d1-migrations.ts",
@@ -570,8 +570,8 @@
     },
     {
       "path": "src/worker/domain.ts",
-      "size": 10112,
-      "sha256": "45500b476a53c4edb3df58e6a9909c39e48be59b0c91184a24204e9b46d08eda"
+      "size": 10531,
+      "sha256": "0b8da8e8a002b7fec1a2025650c802180f3ae88aad8d9670bbda7d01847a7f87"
     },
     {
       "path": "src/worker/email.ts",
@@ -585,8 +585,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 76229,
-      "sha256": "a48750cfc79d16881d930b177bb75310fa6b150fb776cd2d4b087e51feff319d"
+      "size": 78802,
+      "sha256": "d4934d7ae14152490fd38bab2bdf306692abc295f7a6853e205c0b5dd3e61b31"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -610,8 +610,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 76748,
-      "sha256": "10982d2f9385eda958081921698dc18a963d40dc1c38d2a814a4e1d459f06166"
+      "size": 77241,
+      "sha256": "f9fd1af7b69930e39684049fe1817cb8dd04194e6d14ef367b9173768f4266c9"
     },
     {
       "path": "src/worker/issues.ts",
@@ -620,8 +620,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 78176,
-      "sha256": "dd19dad7bdec44edd858c46f035203703c8682139e3812d91931cfb7321b1dcb"
+      "size": 79105,
+      "sha256": "831c98ab76515dc0b58494017d24c3e35a4f0e16d3a2d730ae02a6cc432b9804"
     },
     {
       "path": "src/worker/mfa.ts",

@@ -585,7 +585,9 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   const repositorySkills = await loadRepositorySkillContext(skillSource, baseSha);
   const canonical = branchChange ? await skillSource.info() : undefined;
   const race = mission.mode === 'race';
-  const result: ExecutionResult = { runs: mission.runs.map((run) => ({ ...run })), checks: [], changes: [], candidateSha: null };
+  const reusing = (run: AgentRun) => !trusted && run.status === 'completed' && run.reusedFromEpoch !== undefined && !!run.commitSha && !!run.forkName;
+  const carried = new Set(mission.runs.filter(reusing).map((run) => run.id));
+  const result: ExecutionResult = { runs: mission.runs.map((run) => ({ ...run })), checks: (mission.checks ?? []).filter((check) => !!check.runId && carried.has(check.runId)), changes: (mission.changes ?? []).filter((change) => change.runIds.some((runId) => carried.has(runId))), candidateSha: null };
   const active = async () => {
     if (!await isActive()) return false;
     await assertAuthority();
@@ -600,12 +602,23 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     return reports;
   };
   const models = input.modelConnections ?? defaultModelConnections();
-  if (!trusted) for (const run of result.runs) {
+  const pin = (run: AgentRun) => {
     const model = run.modelConfig ?? resolveModelConnection(models, run.model ?? selectedModel(env, models));
     assertPinnedModel(models, model);
     run.modelConfig = structuredClone(model);
     run.model = model.id;
-  }
+  };
+  if (!trusted) for (const run of result.runs) if (run.status !== 'skipped' && !carried.has(run.id)) pin(run);
+  const reuseCandidate = async (run: AgentRun): Promise<ArtifactInfo | string> => {
+    const from = `attempt ${run.reusedFromEpoch}`;
+    if (run.candidateBaseSha !== baseSha) return `The default branch moved from ${(run.candidateBaseSha ?? 'an unknown commit').slice(0, 12)} to ${baseSha.slice(0, 12)} since ${from}; re-running this agent on the new base`;
+    try {
+      using handle = await ARTIFACTS.get(run.forkName!);
+      const head = (await handle.log({ ref: 'gitflare-candidate', limit: 1 }))[0]?.hash;
+      if (head !== run.commitSha) return `Candidate ${run.commitSha!.slice(0, 12)} from ${from} is no longer in fork ${run.forkName}; re-running this agent`;
+      return await handle.info();
+    } catch { return `Fork ${run.forkName} from ${from} could not be read; re-running this agent`; }
+  };
   const teamFor = (run: AgentRun): TeamBoard => ({
     status: async (note) => {
       if (note && note !== run.note) {
@@ -619,7 +632,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       });
     },
   });
-  const jobs = result.runs.map((run) => async () => {
+  const runAgent = async (run: AgentRun) => {
     const key = `gf-${mission.id}-${mission.epoch}-${run.id}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     const sandbox = SANDBOX.getByName(key);
     run.status = 'running';
@@ -726,6 +739,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       await checked(sandbox, ['git', 'push', 'origin', `HEAD:refs/heads/gitflare-candidate`]);
       run.commitSha = sha;
       run.branch = 'gitflare-candidate';
+      if (!trusted) run.candidateBaseSha = baseSha;
       run.summary = 'Candidate pushed. Preparing a fresh verification runner';
       await publish();
       const escalate: Escalate = async (message) => { run.summary = message; await publish(); };
@@ -748,19 +762,38 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       await sandbox.destroy();
       await publish();
     }
+  };
+  const jobs = result.runs.map((run, index) => async () => {
+    if (run.status === 'skipped') return;
+    if (!carried.has(run.id)) return runAgent(run);
+    if (!await active()) throw new Error('Mission cancelled');
+    const reused = await reuseCandidate(run);
+    if (typeof reused !== 'string') { forks.set(run.id, reused); return; }
+    result.checks = result.checks.filter((check) => check.runId !== run.id);
+    result.changes = result.changes.filter((change) => !change.runIds.includes(run.id));
+    const rerun: AgentRun = { id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, status: 'queued', changedFiles: [], summary: reused };
+    result.runs[index] = rerun;
+    await publish();
+    try { pin(rerun); }
+    catch (error) {
+      Object.assign(rerun, { status: 'failed', completedAt: new Date().toISOString(), error: error instanceof Error ? error.message : 'The pinned model is no longer enabled' });
+      await publish();
+      return;
+    }
+    return runAgent(rerun);
   });
   const settled = trusted ? await Promise.allSettled(jobs.map(job => job())) : await runConcurrent(jobs);
   if (race) {
     if (!result.runs.some((run) => run.status === 'completed')) result.error = 'No agent produced a passing candidate.';
     return result;
   }
-  if (settled.some((entry) => entry.status === 'rejected') || result.runs.some((run) => run.status !== 'completed') || !sharedPolicy) {
+  const included = result.runs.filter((run) => run.status !== 'skipped');
+  if (settled.some((entry) => entry.status === 'rejected') || !included.length || included.some((run) => run.status !== 'completed')) {
     result.error = 'One or more agents failed; no integration candidate was approved.';
     return result;
   }
-  const policy = sharedPolicy;
-  if (result.runs.length === 1) {
-    const only = result.runs[0];
+  if (included.length === 1) {
+    const only = included[0]!;
     const single = result.checks.find((item) => item.runId === only.id);
     const fork = forks.get(only.id);
     if (only.commitSha && fork && single?.status === 'passed' && validGitSha(only.commitSha)) {
@@ -773,7 +806,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   const key = `gf-${mission.id}-${mission.epoch}-integration`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const sandbox = SANDBOX.getByName(key);
   try {
-    for (const run of result.runs) run.summary = `${run.summary ?? 'Finished'} — integrating and running combined checks`;
+    for (const run of included) run.summary = `${run.summary ?? 'Finished'} — integrating and running combined checks`;
     await publish();
     if (!await active()) throw new Error('Mission cancelled');
     const fork = await forkRepository(ARTIFACTS, repository.name, key);
@@ -781,7 +814,8 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     await assertAuthority();
     await sandbox.prepare([{ ...fork, write: true }, ...[...forks.values()].map((item) => ({ ...item, write: false }))]);
     await clone(sandbox, fork, baseSha);
-    for (const run of result.runs) {
+    const policy = sharedPolicy ?? await loadPolicy(sandbox, baseSha, input.testCommand, input.checkSettings);
+    for (const run of included) {
       const candidate = forks.get(run.id)!;
       await checked(sandbox, ['git', 'fetch', '--', candidate.remote, 'refs/heads/gitflare-candidate']);
       const fetched = await checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
@@ -798,7 +832,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     await assertAuthority();
     await checked(sandbox, ['git', 'push', 'origin', 'HEAD:refs/heads/gitflare-candidate']);
     result.candidateSha = sha;
-    const { check, learned } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive, false, async (message) => { for (const run of result.runs) run.summary = `Combined candidate: ${message}`; await publish(); });
+    const { check, learned } = await verify({ SANDBOX }, key, fork, sha, baseSha, policy, assertAuthority, skillChange, isActive, false, async (message) => { for (const run of included) run.summary = `Combined candidate: ${message}`; await publish(); });
     if (learned && (learned.testTimeoutSeconds || learned.runner)) result.learnedLimits = mergeLearnedLimits(result.learnedLimits, learned);
     check.id = 'integration';
     check.name = check.name.replace('Repository test suite', 'Combined candidate tests');

@@ -1,5 +1,5 @@
 export type MissionStatus = 'draft' | 'queued' | 'running' | 'checking' | 'needs_review' | 'approved' | 'integrating' | 'integrated' | 'failed' | 'cancelled';
-export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
 export type MissionMode = 'combine' | 'race';
 export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 
@@ -74,6 +74,9 @@ export interface AgentRun {
   skills?: { name: string; path: string; commitSha: string; sha256: string }[];
   usage?: AgentUsage;
   skillWarnings?: string[];
+  reusedFromEpoch?: number;
+  candidateBaseSha?: string;
+  skipReason?: string;
 }
 
 export type RunnerSize = 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';

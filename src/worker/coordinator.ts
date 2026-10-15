@@ -722,6 +722,62 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return started;
   }
 
+  async retryAgents(key: string, id: string, mode: 'retry' | 'drop', runIds: string[] | undefined, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
+    await this.ensureDispatchAlarm(Date.now() + 1000);
+    const release = await this.reserveMissionCapacity(key, id, authorization);
+    const started = await this.releaseOnFailure(release, () => this.mutateMission(key, JSON.stringify([mode === 'retry' ? 'retry-agents' : 'drop-failed-agents', id, runIds ? [...runIds].sort() : null]), id, () => {
+      const mission = this.requiredMission(id);
+      if (!['failed', 'cancelled'].includes(mission.status) || mission.epoch === 0) throw new ApiError(409, 'MISSION_NOT_FAILED', 'Only a failed or cancelled attempt can retry or drop individual agents.');
+      if (mission.skillChange || mission.revertChange || mission.branchChange) throw new ApiError(409, 'TRUSTED_MISSION', 'This proposal has one trusted editor. Use Retry mission instead.');
+      const unknown = (runIds ?? []).filter((runId) => !mission.runs.some((run) => run.id === runId));
+      if (unknown.length) throw new ApiError(400, 'UNKNOWN_AGENT', `No agent with ID ${unknown[0]!.slice(0, 64)} belongs to this mission.`);
+      const checks = mission.raceChecks ?? mission.checks;
+      const reusable = (run: Mission['runs'][number]) => run.status === 'completed' && !!run.commitSha && !!run.forkName && !runIds?.includes(run.id) && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha);
+      const reused = mission.runs.filter(reusable);
+      const others = mission.runs.filter((run) => !reusable(run));
+      if (!others.length) throw new ApiError(409, 'NO_FAILED_AGENTS', 'Every agent has a verified candidate. Use Retry mission to rerun them all, or choose the agents to rerun.');
+      if (mode === 'drop' && !reused.length) throw new ApiError(409, 'NO_COMPLETED_AGENTS', 'No agent has a verified candidate to continue with. Retry the failed agents instead.');
+      const repository = this.getRepository(mission.repositoryId);
+      const previousEpoch = mission.epoch;
+      const previousBase = mission.baseSha;
+      this.archive(mission, 'retry');
+      if (authorization) mission.authorization = { ...authorization, creatorId: mission.authorization?.creatorId ?? authorization.creatorId };
+      const now = new Date().toISOString();
+      const reusedIds = new Set(reused.map((run) => run.id));
+      const keptChecks = checks.filter((check) => !!check.runId && reusedIds.has(check.runId));
+      const keptChanges = (mission.raceChanges ?? mission.changes).filter((change) => change.runIds.some((runId) => reusedIds.has(runId)));
+      const fresh = (run: Mission['runs'][number]) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, changedFiles: [] as string[] });
+      mission.runs = mission.runs.map((run) => {
+        if (reusedIds.has(run.id)) return { ...run, reusedFromEpoch: run.reusedFromEpoch ?? previousEpoch, ...(run.candidateBaseSha ?? previousBase ? { candidateBaseSha: run.candidateBaseSha ?? previousBase! } : {}) };
+        if (mode === 'drop') return { ...fresh(run), status: 'skipped' as const, completedAt: now, skipReason: run.skipReason ?? `Excluded in attempt ${previousEpoch + 1} after it ${run.status === 'cancelled' ? 'was cancelled' : 'failed'}${run.error ? `: ${failureLine(run.error)}` : ''}` };
+        const [pinned] = pinMissionModels({ ...mission, runs: [run] }, models).runs;
+        return { ...fresh(pinned!), status: 'queued' as const };
+      });
+      mission.status = 'queued';
+      mission.epoch += 1;
+      mission.baseSha = repository?.headSha ?? null;
+      mission.candidateSha = null;
+      mission.checks = keptChecks;
+      mission.changes = keptChanges;
+      delete mission.error;
+      delete mission.approvedAt;
+      delete mission.approvedBy;
+      delete mission.integrationForkName;
+      delete mission.selectedRunId;
+      delete mission.raceChecks;
+      delete mission.raceChanges;
+      const names = (runs: Mission['runs']) => runs.map((run) => run.name.slice(0, 60)).join(', ');
+      const moved = previousBase && mission.baseSha !== previousBase ? ` The default branch moved from ${previousBase.slice(0, 12)} to ${(mission.baseSha ?? 'none').slice(0, 12)}, so reused candidates will be re-run.` : '';
+      const reuseNote = reused.length ? ` Reusing ${reused.length} verified candidate${reused.length === 1 ? '' : 's'} from attempt ${previousEpoch} (${names(reused)}) after confirming each commit is still in its fork.` : '';
+      this.queueDispatch(mission);
+      return this.saveMission(mission, mode === 'retry'
+        ? `Attempt ${mission.epoch} queued to retry ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}).${reuseNote}${moved}`
+        : `Attempt ${mission.epoch} queued without ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}), now marked skipped.${reuseNote} Acceptance criteria are unchanged.${moved}`, mode === 'drop' ? 'warning' : 'info');
+    }));
+    if (started.status === 'queued') this.queueDispatch(started);
+    return started;
+  }
+
   async startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
     return this.startMission(key, id, authorization, models);
   }
@@ -927,7 +983,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const race = mission.mode === 'race';
       const passed = race
         ? eligibleRaceRuns(mission).length > 0
-        : !!mission.candidateSha && mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') && mission.runs.every((run) => run.status === 'completed');
+        : !!mission.candidateSha && mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') && mission.runs.every((run) => run.status === 'completed' || run.status === 'skipped') && mission.runs.some((run) => run.status === 'completed');
       mission.status = passed && !result.error ? 'needs_review' : 'failed';
       mission.error = result.error;
       return this.ctx.storage.transactionSync(() => {

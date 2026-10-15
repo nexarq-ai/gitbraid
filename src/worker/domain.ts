@@ -29,6 +29,12 @@ export function requireString(value: unknown, field: string, maxLength: number, 
   return value.trim();
 }
 
+export function agentRunIds(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length > 10 || value.some((id) => typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(id))) throw new ApiError(400, 'INVALID_INPUT', 'runIds must be a list of at most 10 agent IDs from this mission.');
+  return [...new Set(value as string[])];
+}
+
 export function repositoryName(value: unknown): string {
   const name = requireString(value, 'Repository name', 64);
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) || name.endsWith('.git')) {
