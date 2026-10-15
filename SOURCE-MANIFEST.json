@@ -40,8 +40,8 @@
     },
     {
       "path": "docs/public/mcp.md",
-      "size": 9362,
-      "sha256": "02d2d91e5f834198de0c9e433e8ca3aca6b555f32501782b554a7638a1e2ff60"
+      "size": 10060,
+      "sha256": "05956663c53559654cda448a53a66e8f8b77e4cee856a5ef4f0d4cd66b76fe12"
     },
     {
       "path": "docs/public/overview.md",
@@ -130,8 +130,8 @@
     },
     {
       "path": "src/ui/AccessSettings.tsx",
-      "size": 21721,
-      "sha256": "b7cc7599c0f8311b100627442d852be48480824309b2f92ab78613da05cc6d62"
+      "size": 21731,
+      "sha256": "6a354d4230b9b8d042b98e54149a5a2a7f30d582542e1902e3d49322f1b56e5e"
     },
     {
       "path": "src/ui/AgentAssignment.tsx",
@@ -510,8 +510,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 59232,
-      "sha256": "291819c2b53022f87ecc66e0dd286e33dc9a7f89c3857d4f055328011fc4ad5f"
+      "size": 62471,
+      "sha256": "876cc523246c81384658ad9386185f3ef32237cab0b5de851cb483f09e9a72a0"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -540,8 +540,8 @@
     },
     {
       "path": "src/worker/oauth.ts",
-      "size": 7940,
-      "sha256": "9764e725a1df74edaa398628cfb6c185f7795398043ea0571de4613f30225c33"
+      "size": 11582,
+      "sha256": "dfc1b1b880ac4359d30a5061393cc67858cabaf63ea1cf49b460c5e1b589be09"
     },
     {
       "path": "src/worker/onboarding.ts",
@@ -585,8 +585,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 68920,
-      "sha256": "37148ca0e57d73d738e7bceb5a840cf6ac01b0dcb8aa1c0e4bfc095c6a389ce1"
+      "size": 70102,
+      "sha256": "84df39c17936ffd1f215e5f0789781e3a041e793f60075e253f00cc8eba03423"
     },
     {
       "path": "src/worker/skill-edit.ts",
