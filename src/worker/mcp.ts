@@ -12,6 +12,7 @@ import { mutableSkillPath, SKILL_CONTENT_MAX_BYTES, SKILL_REQUEST_MAX_BYTES } fr
 import { pullRequestState } from '../shared/pull-requests';
 import { isOutdatedReview } from './proposal-review';
 import { ACCESS_HEADER, ACCESS_LABELS, accessFromHeader, accessScope, allows, type AccessLevel } from './client-access';
+import { URL_IMPORT_LIMITS } from './url-import';
 
 export type McpApi = (request: Request) => Promise<Response>;
 export const mcpToolNames = [
@@ -20,7 +21,7 @@ export const mcpToolNames = [
   'gitflare_model_connections', 'gitflare_manage_model_connection', 'gitflare_ai_keys', 'gitflare_manage_ai_key', 'gitflare_manage_ai_gateway',
   'gitflare_proposal_base', 'gitflare_repository_import_status', 'gitflare_import_repository_archive',
   'gitflare_list_releases', 'gitflare_read_release', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_release_notes',
-  'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_list_missions',
+  'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_import_repository_url', 'gitflare_list_missions',
   'gitflare_inspect_mission', 'gitflare_draft_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
   'gitflare_review_mission', 'gitflare_revert_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
@@ -44,7 +45,7 @@ const destructive = { ...mutation, destructiveHint: true };
 const external = { ...mutation, openWorldHint: true };
 const commit = z.string().regex(/^[a-f0-9]{40}$/).describe('Exact 40-character commit SHA observed in current evidence.');
 const evidenceInput = { view: z.enum(['summary', 'context', 'runs', 'changes', 'checks', 'events', 'reviews']).default('summary').describe('Evidence to return.'), offset, limit: z.number().int().min(1).max(20).default(5).describe('Items per page.'), detail_offset: offset.describe('Start character within each long text field.'), detail_limit: z.number().int().min(1).max(8000).default(3000).describe('Characters per long text field.') };
-const LAND_TOOLS = new Set(['gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_import_repository_archive']);
+const LAND_TOOLS = new Set(['gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_import_repository_archive', 'gitflare_import_repository_url']);
 const ADMIN_TOOLS = new Set(['gitflare_manage_access', 'gitflare_manage_model_connection', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_ai_settings', 'gitflare_branch_protection', 'gitflare_manage_ai_key', 'gitflare_manage_ai_gateway']);
 
 export function requiredAccess(name: string, annotations: { readOnlyHint?: boolean } | undefined, input: Record<string, unknown>): AccessLevel {
@@ -53,6 +54,7 @@ export function requiredAccess(name: string, annotations: { readOnlyHint?: boole
   if (name === 'gitflare_branch_protection' && input.action !== 'set') return 'read';
   if (name === 'gitflare_cloudflare_connection' && ['status', 'accounts', 'resources'].includes(String(input.action))) return 'read';
   if (name === 'gitflare_cloudflare_project' && ['get', 'usage'].includes(String(input.action))) return 'read';
+  if (name === 'gitflare_import_repository_url' && input.action === 'status') return 'read';
   return LAND_TOOLS.has(name) ? 'land' : ADMIN_TOOLS.has(name) ? 'admin' : 'write';
 }
 
@@ -272,6 +274,20 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     title: 'Connect an existing repository', description: 'Register an existing repository from this installation’s Artifacts namespace in the legacy workspace. Does not import external repositories. Needs the Owner role and write access.',
     inputSchema: z.object(repositoryInput).strict(), annotations: mutation,
   }, ({ idempotency_key, ...input }) => guarded(async () => ({ repository: await call<Repository>('/api/repositories/connect', input, idempotency_key) })));
+  server.registerTool('gitflare_import_repository_url', {
+    title: 'Import a repository from a Git URL', description: `Create a repository and import every branch and tag with full history from an HTTPS Git URL (GitHub, GitLab, Bitbucket, others). Private sources take token (+ username); it is never stored. Runs in the background: use status, then retry after a failure. Up to ${URL_IMPORT_LIMITS.packBytes / 1024 / 1024} MiB; no SSH or LFS. Needs Manage permission; start and retry need land access.`,
+    inputSchema: z.object({ action: z.enum(['start', 'status', 'retry']).default('start'), url: z.string().min(1).max(2048).optional(), name: z.string().min(1).max(64).optional(), description: z.string().max(500).optional(), token: z.string().min(1).max(1024).optional(), username: z.string().min(1).max(100).optional(), repository_id: identifier.optional(), idempotency_key: requestKey.optional() }).strict(), annotations: { ...mutation, idempotentHint: false },
+  }, ({ action, repository_id, idempotency_key, url, name, description, token, username }) => guarded(async () => {
+    const credential = { ...(token ? { token } : {}), ...(username ? { username } : {}) };
+    if (action === 'status' || action === 'retry') {
+      if (!repository_id) throw new ApiError(400, 'INVALID_INPUT', 'Provide repository_id.');
+      if (action === 'status') return call<Record<string, unknown>>(`/api/repositories/${repository_id}/import-url`);
+      if (!idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Provide idempotency_key.');
+      return { repository: await call<Repository>(`/api/repositories/${repository_id}/import-url/retry`, credential, idempotency_key) };
+    }
+    if (!url || !idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Provide url and idempotency_key.');
+    return { repository: await call<Repository>('/api/repositories/import-url', { url, ...(name ? { name } : {}), ...(description ? { description } : {}), ...credential }, idempotency_key) };
+  }));
   server.registerTool('gitflare_list_missions', {
     title: 'List repository missions', description: 'List missions with status, base and candidate SHAs and update time, optionally filtered by repository or status. Use gitflare_inspect_mission for evidence. Read-only.',
     inputSchema: z.object({ repository_id: repositoryId.optional(), status: z.enum(['draft', 'queued', 'running', 'checking', 'needs_review', 'approved', 'integrating', 'integrated', 'failed', 'cancelled']).optional().describe('Only missions in this status.'), offset, limit: pageLimit }).strict(), annotations: readOnly,
