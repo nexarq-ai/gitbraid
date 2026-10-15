@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { BranchChangeResult, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import type { BranchChangeResult, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
@@ -15,6 +15,7 @@ import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readI
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 import { capacityError, catalogName, liveSlots, MISSION_SLOT_GRACE_MS, slotKey, WORKSPACE_MISSION_LIMIT, WORKSPACE_PREVIEW_LIMIT, type CapacitySlot } from './capacity';
 import { missionStepTimeoutMs } from './budgets';
+import { AUTO_INCREASE_ACTOR, checkDurations, checkPlan, DURATION_SAMPLES, normalizeCheckSettings, withLearnedLimits, type CheckSettingsInput, type LearnedLimits } from './check-settings';
 import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type DeploySettings, type DeployState } from './deployments';
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
 
@@ -109,6 +110,34 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (receipt) { assertReplayFingerprint(receipt.fingerprint, fingerprint); return receipt.result; }
       this.store.put(`branch-request:${key}`, { fingerprint, result });
       return result;
+    });
+  }
+
+  getCheckSettings(): CheckSettings | undefined { return this.store.get<CheckSettings>('check-settings'); }
+
+  getCheckDurations(): number[] { return this.store.get<number[]>('check-durations') ?? []; }
+
+  getCheckPlan(): CheckPlan { return checkPlan(this.getCheckSettings(), this.getCheckDurations()); }
+
+  applyLearnedCheckLimits(id: string, epoch: number, learned: LearnedLimits): CheckSettings | null {
+    return this.ctx.storage.transactionSync(() => {
+      const fence = `learned-limits:${id}-${epoch}`;
+      if (this.store.get(fence)) return null;
+      this.store.put(fence, { at: new Date().toISOString() });
+      const next = withLearnedLimits(this.getCheckSettings(), learned);
+      if (!next) return null;
+      const stored: CheckSettings = { ...normalizeCheckSettings({ ...next }), updatedAt: new Date().toISOString(), updatedBy: AUTO_INCREASE_ACTOR };
+      this.store.put('check-settings', stored);
+      return stored;
+    });
+  }
+
+  setCheckSettings(key: string, input: CheckSettingsInput, actorId: string): CheckSettings {
+    const normalized = normalizeCheckSettings({ ...input });
+    return this.mutate(key, JSON.stringify(['check-settings', normalized]), () => {
+      const stored: CheckSettings = { ...normalized, updatedAt: new Date().toISOString(), updatedBy: actorId };
+      this.store.put('check-settings', stored);
+      return stored;
     });
   }
 
@@ -744,6 +773,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (result.integrationForkName !== undefined) mission.integrationForkName = result.integrationForkName;
     mission.status = 'running';
     if (complete) {
+      const durations = checkDurations(mission.checks);
+      if (durations.length) this.store.put('check-durations', [...this.getCheckDurations(), ...durations].slice(-DURATION_SAMPLES));
       const race = mission.mode === 'race';
       const passed = race
         ? eligibleRaceRuns(mission).length > 0

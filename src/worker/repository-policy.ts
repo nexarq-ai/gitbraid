@@ -1,7 +1,50 @@
+import type { AutoIncrease, CheckLimitSource, CheckPlan, CheckTimeout, RunnerSize } from '../shared/types';
+import { MAX_TEST_TIMEOUT_MS } from './budgets';
 import { detectPackageManager, hasInstallableDependencies, runnerFor, testScript, type InstallPlan, type PackageManager } from './package-manager';
 
 export const POLICY_FILE = 'gitflare.json';
 export const DEFAULT_EDITABLE = ['src/', 'docs/', 'README.md'];
+
+export type { RunnerSize } from '../shared/types';
+export const RUNNER_SIZES: readonly RunnerSize[] = ['standard-1', 'standard-2', 'standard-3', 'standard-4'];
+export const DEFAULT_RUNNER: RunnerSize = 'standard-1';
+export const PACKAGE_SCRIPT_RUNNER: RunnerSize = 'standard-2';
+export const DEFAULT_TEST_TIMEOUT_MS = 120_000;
+export const PACKAGE_SCRIPT_TEST_TIMEOUT_MS = 600_000;
+const MIN_TIMEOUT_SECONDS = 10;
+export const MAX_TIMEOUT_SECONDS = MAX_TEST_TIMEOUT_MS / 1000;
+
+export function isRunnerSize(value: unknown): value is RunnerSize {
+  return RUNNER_SIZES.includes(value as RunnerSize);
+}
+
+export const DEFAULT_AUTO_INCREASE: AutoIncrease = { enabled: true, maxTimeoutSeconds: 900, maxRunner: 'standard-3' };
+
+export function autoIncreaseOf(settings?: CheckPlan | null): AutoIncrease {
+  return settings?.autoIncrease ?? DEFAULT_AUTO_INCREASE;
+}
+
+const FIXED: CheckLimitSource = 'gitflare.json';
+
+export function escalatedLimits(timeout: CheckTimeout, auto: AutoIncrease): { seconds: number; runner: RunnerSize } | null {
+  if (!auto.enabled) return null;
+  const seconds = timeout.timeoutSource === FIXED ? timeout.seconds : Math.max(timeout.seconds, Math.min(timeout.seconds * 2, MAX_TIMEOUT_SECONDS, auto.maxTimeoutSeconds));
+  const current = RUNNER_SIZES.indexOf(timeout.runner);
+  const runner = timeout.runnerSource === FIXED ? timeout.runner : RUNNER_SIZES[Math.max(current, Math.min(current + 1, RUNNER_SIZES.indexOf(auto.maxRunner)))]!;
+  return seconds > timeout.seconds || runner !== timeout.runner ? { seconds, runner } : null;
+}
+
+export function isPackageScriptTest(command: string): boolean {
+  return /^(?:npm|pnpm|yarn)(?:\s+run)?\s+test(?:\s|$)/.test(command.trim());
+}
+
+export function defaultTestTimeoutMs(command: string): number {
+  return isPackageScriptTest(command) ? PACKAGE_SCRIPT_TEST_TIMEOUT_MS : DEFAULT_TEST_TIMEOUT_MS;
+}
+
+export function defaultCheckRunner(command: string): RunnerSize {
+  return isPackageScriptTest(command) ? PACKAGE_SCRIPT_RUNNER : DEFAULT_RUNNER;
+}
 
 export interface RepositoryPolicy {
   testCommand: string;
@@ -10,6 +53,10 @@ export interface RepositoryPolicy {
   install: InstallPlan | null;
   previewCommand: string;
   testTimeoutMs: number;
+  testTimeoutSource: CheckLimitSource;
+  runner: RunnerSize;
+  runnerSource: CheckLimitSource;
+  autoIncrease: AutoIncrease;
   starter: boolean;
   untested: boolean;
 }
@@ -33,19 +80,36 @@ function editablePath(value: unknown): string {
 
 const INSTALL_VALUES = ['npm', 'pnpm', 'yarn', 'auto'];
 
-export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: string, baseFiles?: string[], basePackageJson?: string | null, baseLockHead?: string | null): RepositoryPolicy {
-  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: null, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: 120_000, starter: false, untested: false };
+function startingTimeout(command: string, settings: CheckPlan | null | undefined): [number, CheckLimitSource] {
+  const fallback = defaultTestTimeoutMs(command);
+  const auto = autoIncreaseOf(settings);
+  const learned = auto.enabled && settings?.learnedTimeoutSeconds ? Math.min(settings.learnedTimeoutSeconds, auto.maxTimeoutSeconds, MAX_TIMEOUT_SECONDS) * 1000 : 0;
+  return learned > fallback ? [learned, 'learned'] : [fallback, 'default'];
+}
+
+function withLimits(policy: RepositoryPolicy, explicit: { timeoutSeconds?: number; runner?: RunnerSize }, settings?: CheckPlan | null): RepositoryPolicy {
+  const timeout: [number, CheckLimitSource] = explicit.timeoutSeconds !== undefined ? [explicit.timeoutSeconds * 1000, 'gitflare.json'] : settings?.testTimeoutSeconds !== undefined ? [settings.testTimeoutSeconds * 1000, 'repository'] : startingTimeout(policy.testCommand, settings);
+  const runner: [RunnerSize, CheckLimitSource] = explicit.runner !== undefined ? [explicit.runner, 'gitflare.json'] : settings?.runner !== undefined ? [settings.runner, 'repository'] : [defaultCheckRunner(policy.testCommand), 'default'];
+  return { ...policy, testTimeoutMs: timeout[0], testTimeoutSource: timeout[1], runner: runner[0], runnerSource: runner[1], autoIncrease: autoIncreaseOf(settings) };
+}
+
+export function startingTimeoutMs(command: string, settings?: CheckPlan | null): number {
+  return startingTimeout(command, settings)[0];
+}
+
+export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: string, baseFiles?: string[], basePackageJson?: string | null, baseLockHead?: string | null, settings?: CheckPlan | null): RepositoryPolicy {
+  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: null, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: DEFAULT_TEST_TIMEOUT_MS, testTimeoutSource: 'default', runner: DEFAULT_RUNNER, runnerSource: 'default', autoIncrease: DEFAULT_AUTO_INCREASE, starter: false, untested: false };
   if (raw === null) {
-    if (baseFiles === undefined) return fallback;
+    if (baseFiles === undefined) return withLimits(fallback, {}, settings);
     const untested = !baseFiles.some((path) => TEST_PATHS.test(path) && !path.includes('node_modules/'));
     const scripted = basePackageJson !== undefined && basePackageJson !== null ? packageTestCheck(baseFiles, basePackageJson, baseLockHead) : null;
-    return { ...fallback, starter: isStarterRepository(baseFiles), untested, ...(scripted ? { testCommand: scripted.testCommand, evidence: scripted.evidence, install: scripted.install } : {}) };
+    return withLimits({ ...fallback, starter: isStarterRepository(baseFiles), untested, ...(scripted ? { testCommand: scripted.testCommand, evidence: scripted.evidence, install: scripted.install } : {}) }, {}, settings);
   }
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Error(`${POLICY_FILE} is not valid JSON`); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${POLICY_FILE} must contain a JSON object`);
   const fields = parsed as Record<string, unknown>;
-  const unknown = Object.keys(fields).filter((key) => !['test', 'evidence', 'editable', 'install', 'preview', 'timeoutSeconds'].includes(key));
+  const unknown = Object.keys(fields).filter((key) => !['test', 'evidence', 'editable', 'install', 'preview', 'timeoutSeconds', 'runner'].includes(key));
   if (unknown.length) throw new Error(`${POLICY_FILE}: unsupported field "${unknown[0]}"`);
   const policy = { ...fallback };
   if (fields.test !== undefined) policy.testCommand = command(fields.test, 'test');
@@ -58,15 +122,20 @@ export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: st
     if (fields.install !== false && !INSTALL_VALUES.includes(fields.install as string)) throw new Error(`${POLICY_FILE}: "install" must be "npm", "pnpm", "yarn", "auto" or false`);
     policy.install = fields.install === false ? null : configuredInstall(fields.install as PackageManager | 'auto', baseFiles ?? [], basePackageJson ?? null, baseLockHead);
   }
+  const explicit: { timeoutSeconds?: number; runner?: RunnerSize } = {};
   if (fields.timeoutSeconds !== undefined) {
-    if (!Number.isInteger(fields.timeoutSeconds) || (fields.timeoutSeconds as number) < 10 || (fields.timeoutSeconds as number) > 300) throw new Error(`${POLICY_FILE}: "timeoutSeconds" must be a whole number between 10 and 300`);
-    policy.testTimeoutMs = (fields.timeoutSeconds as number) * 1000;
+    if (!Number.isInteger(fields.timeoutSeconds) || (fields.timeoutSeconds as number) < MIN_TIMEOUT_SECONDS || (fields.timeoutSeconds as number) > MAX_TIMEOUT_SECONDS) throw new Error(`${POLICY_FILE}: "timeoutSeconds" must be a whole number between ${MIN_TIMEOUT_SECONDS} and ${MAX_TIMEOUT_SECONDS}`);
+    explicit.timeoutSeconds = fields.timeoutSeconds as number;
+  }
+  if (fields.runner !== undefined) {
+    if (!isRunnerSize(fields.runner)) throw new Error(`${POLICY_FILE}: "runner" must be one of ${RUNNER_SIZES.map((size) => `"${size}"`).join(', ')}`);
+    explicit.runner = fields.runner;
   }
   if (fields.editable !== undefined) {
     if (!Array.isArray(fields.editable) || !fields.editable.length || fields.editable.length > 20) throw new Error(`${POLICY_FILE}: "editable" must list between 1 and 20 paths`);
     policy.editable = fields.editable.map(editablePath);
   }
-  return policy;
+  return withLimits(policy, explicit, settings);
 }
 
 function configuredInstall(value: PackageManager | 'auto', files: string[], packageJson: string | null, lockHead: string | null | undefined): InstallPlan | null {

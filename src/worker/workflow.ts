@@ -1,6 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { securityClient, type GitflareSecurity } from './security';
-import type { Mission, ModelConnection, Repository } from '../shared/types';
+import type { CheckPlan, CheckSettings, Mission, ModelConnection, Repository } from '../shared/types';
+import type { LearnedLimits } from './check-settings';
 import { assertPinnedModel } from './model-config';
 import { executeMission, type ExecutionEnv, type ExecutionResult } from './execution';
 import type { AppEnv } from './env';
@@ -17,6 +18,8 @@ interface Coordinator {
   getAiCredentials(): Promise<AiCredentials>;
   getRepository(repositoryId: string): Promise<Repository | undefined>;
   getMission(missionId: string): Promise<Mission | undefined>;
+  getCheckPlan?(): Promise<CheckPlan>;
+  applyLearnedCheckLimits?(missionId: string, epoch: number, learned: LearnedLimits): Promise<CheckSettings | null>;
   isMissionActive(missionId: string, epoch: number): Promise<boolean>;
   recordExecution(missionId: string, epoch: number, result: ExecutionResult, complete?: boolean): Promise<unknown>;
   releaseMissionSlot(missionId: string, epoch: number): Promise<void>;
@@ -39,7 +42,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
     const timeout = missionStepTimeoutMs(planned ?? { runs: [] });
     try {
       await step.do('execute isolated agents and verify integration', { retries: { limit: 0, delay: '1 second' }, timeout }, async () => {
-        const [repository, mission] = await Promise.all([coordinator.getRepository(repositoryId), coordinator.getMission(missionId)]);
+        const [repository, mission, checkSettings] = await Promise.all([coordinator.getRepository(repositoryId), coordinator.getMission(missionId), coordinator.getCheckPlan?.()]);
         if (!repository || !mission) throw new Error('Mission repository was not found');
         if (!await coordinator.isMissionActive(missionId, epoch)) return;
         const authorization = mission.authorization;
@@ -49,13 +52,18 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
         const catalog = this.env.GITFLARE_COORDINATOR.getByName(authorization.workspaceId === 'legacy' ? 'catalog:owner' : `catalog:${authorization.workspaceId}`);
         const modelConnections = await catalog.getModelConnections();
         const result = await executeMission(
-          { repository, mission, modelConnections, testCommand: this.env.TEST_COMMAND ?? 'node --test --test-reporter=tap tests/*.test.mjs' },
+          { repository, mission, modelConnections, checkSettings, testCommand: this.env.TEST_COMMAND ?? 'node --test --test-reporter=tap tests/*.test.mjs' },
           { ...this.env, assertModelAllowed: async model => assertPinnedModel(await catalog.getModelConnections(), model), modelAccess: createModelAccess(this.env, authorization.workspaceId, catalog) },
           async (progress) => { await coordinator.recordExecution(missionId, epoch, progress, false); },
           () => coordinator.isMissionActive(missionId, epoch),
           assertAuthority,
         );
         await coordinator.recordExecution(missionId, epoch, result, true);
+        if (result.learnedLimits && coordinator.applyLearnedCheckLimits) {
+          try {
+            if (await coordinator.applyLearnedCheckLimits(missionId, epoch, result.learnedLimits)) await securityClient(this.env).auditRepositoryChange(authorization.principal, 'repository.check-settings.auto-increase', repositoryId);
+          } catch (error) { console.error(JSON.stringify({ event: 'check_limits_learning_failed', repositoryId, missionId, epoch, message: error instanceof Error ? error.message : 'unknown' })); }
+        }
       });
     } catch (error) {
       const mission = await coordinator.getMission(missionId);
