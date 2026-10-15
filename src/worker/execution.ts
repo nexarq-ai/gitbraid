@@ -1,4 +1,4 @@
-import type { AgentRun, BranchChange, Check, CheckPlan, FileChange, Mission, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
+import type { AgentRun, BranchChange, Check, CheckPlan, FileChange, Mission, MissionEvent, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
 import { branchName } from './branch-protection';
 import { forkRepository, validGitSha, type ArtifactInfo, type ArtifactsBinding } from './artifacts';
 import type { CommandResult, GitPermission, PrepareOptions } from '../../runner/sandbox';
@@ -14,15 +14,15 @@ import { migrationDatabases, readMigrationFiles } from './d1-migrations';
 import type { BuiltTarget } from './deployments';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
 import { MAX_MISSION_AGENTS } from '../shared/mission-draft';
-import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, INSTALL_ATTEMPTS, isTransientInstallFailure, runnerFor, type InstallPlan } from './package-manager';
+import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, INSTALL_ATTEMPTS, isTransientInstallFailure, runnerFor, type InstallMode, type InstallPlan } from './package-manager';
 import type { LearnedLimits } from './check-settings';
-import { DEFAULT_EDITABLE, escalatedLimits, isFixedSource, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
+import { DEFAULT_EDITABLE, escalatedLimits, isFixedSource, isGeneratedPath, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
 
 export interface SandboxRunner {
   prepare(repositories: GitPermission[], options?: PrepareOptions): Promise<void>;
   command(argv: string[], cwd?: string, timeoutMs?: number): Promise<CommandResult>;
   destroy(): Promise<void>;
-  install?(plan: InstallPlan): Promise<CommandResult>;
+  install?(plan: InstallPlan, mode?: InstallMode): Promise<CommandResult>;
   check?(script: string, timeoutMs: number): Promise<CommandResult>;
   startPreview?(command?: string | string[], readinessMs?: number): Promise<void>;
   preview?(request: Request): Promise<Response>;
@@ -46,6 +46,7 @@ export interface ExecutionResult {
   integrationForkName?: string;
   error?: string;
   learnedLimits?: LearnedLimits;
+  events?: MissionEvent[];
 }
 export interface ExecutionInput { repository: Repository; mission: Mission; testCommand: string; modelConnections?: ModelConnection[]; checkSettings?: CheckPlan | null }
 export type ReportExecution = (result: ExecutionResult) => Promise<void>;
@@ -392,24 +393,88 @@ async function resolveStarterCheck(sandbox: SandboxRunner): Promise<ReturnType<t
   return starterCheck(files, manifest.exitCode === 0 ? manifest.stdout : null, await readLockHead(sandbox, files));
 }
 
-export async function installDependencies(sandbox: SandboxRunner, plan: InstallPlan, assertAuthority: AuthorityGuard = unrestricted, isActive: () => Promise<boolean> = async () => true): Promise<void> {
+export async function installDependencies(sandbox: SandboxRunner, plan: InstallPlan, assertAuthority: AuthorityGuard = unrestricted, isActive: () => Promise<boolean> = async () => true, mode: InstallMode = 'install'): Promise<void> {
   if (!sandbox.install) throw new Error('This runner cannot install dependencies');
   let result: CommandResult | undefined;
   for (let attempt = 1; attempt <= INSTALL_ATTEMPTS; attempt++) {
     if (!await isActive()) throw new Error('Mission cancelled');
     await assertAuthority();
-    result = await sandbox.install(plan);
+    result = mode === 'install' ? await sandbox.install(plan) : await sandbox.install(plan, mode);
     if (result.exitCode === 0) return;
     const transient = isTransientInstallFailure(`${result.stderr}\n${result.stdout}`);
     if (attempt === INSTALL_ATTEMPTS || !transient) break;
     console.warn(JSON.stringify({ event: 'dependency_install_retry', installer: plan.installer, attempt, attempts: INSTALL_ATTEMPTS, exitCode: result.exitCode, timedOut: !!result.timedOut }));
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  throw new Error(`Dependency installation with ${describeInstall(plan)} failed (${result!.exitCode}): ${(result!.stderr.trim() || result!.stdout).slice(-1000)}`);
+  throw new Error(`${mode === 'lockfile' ? 'Lockfile regeneration' : 'Dependency installation'} with ${describeInstall(plan)} failed (${result!.exitCode}): ${(result!.stderr.trim() || result!.stdout).slice(-1000)}`);
+}
+
+function runBounded(sandbox: SandboxRunner, script: string, timeoutMs: number): Promise<CommandResult> {
+  return sandbox.check ? sandbox.check(script, timeoutMs) : sandbox.command(['/bin/bash', '-lc', script], '/workspace/repo', Math.min(timeoutMs, 120_000));
 }
 
 function runCheck(sandbox: SandboxRunner, policy: RepositoryPolicy): Promise<CommandResult> {
-  return sandbox.check ? sandbox.check(policy.testCommand, policy.testTimeoutMs) : sandbox.command(['/bin/bash', '-lc', policy.testCommand], '/workspace/repo', Math.min(policy.testTimeoutMs, 120_000));
+  return runBounded(sandbox, policy.testCommand, policy.testTimeoutMs);
+}
+
+async function conflictedPaths(sandbox: SandboxRunner): Promise<string[]> {
+  const result = await sandbox.command(['git', 'diff', '--name-only', '--diff-filter=U'], '/workspace/repo');
+  return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
+async function detectedLockfile(sandbox: SandboxRunner, revision: string): Promise<string | null> {
+  const tree = await sandbox.command(['git', 'ls-tree', '-r', '--name-only', revision], '/workspace/repo');
+  const files = tree.exitCode === 0 ? tree.stdout.split('\n').filter(Boolean) : [];
+  if (!files.includes('package.json')) return null;
+  const manifest = await sandbox.command(['git', 'show', `${revision}:package.json`], '/workspace/repo');
+  return detectPackageManager({ files, packageJson: manifest.exitCode === 0 ? manifest.stdout : null, lockHead: await readLockHead(sandbox, files, revision) })?.lockfile ?? null;
+}
+
+async function keepIntegrationVersion(sandbox: SandboxRunner, paths: string[]): Promise<void> {
+  for (const path of paths) {
+    const ours = await sandbox.command(['git', 'checkout', '--ours', '--', path], '/workspace/repo');
+    await checked(sandbox, ours.exitCode === 0 ? ['git', 'add', '--', path] : ['git', 'rm', '-q', '-f', '--', path]);
+  }
+  const remaining = await conflictedPaths(sandbox);
+  if (remaining.length) throw new Error(`Merge conflicts remain in: ${remaining.join(', ')}`);
+  await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'commit', '--no-edit']);
+}
+
+class GeneratedFilesFailure extends Error {}
+
+async function workingTreeChanges(sandbox: SandboxRunner): Promise<string[]> {
+  const status = await sandbox.command(['git', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'], '/workspace/repo');
+  if (status.exitCode !== 0) throw new Error(`Command failed (${status.exitCode}): git status ${status.stderr.slice(0, 1000)}`);
+  return status.stdout.split('\0').filter(Boolean).map((entry) => entry.slice(3));
+}
+
+interface Regeneration { changed: string[]; lockfilePlan: InstallPlan | null; command: string | null }
+
+async function regenerateFiles(sandbox: SandboxRunner, policy: RepositoryPolicy, generated: string[], lockfile: string | null, assertAuthority: AuthorityGuard, isActive: () => Promise<boolean>): Promise<Regeneration> {
+  const files = async () => (await checked(sandbox, ['git', 'ls-files'])).split('\n').filter(Boolean);
+  let lockfilePlan: InstallPlan | null = null;
+  if (lockfile) {
+    lockfilePlan = (await workingTreeInstall(sandbox, await files())).plan;
+    if (!lockfilePlan || lockfilePlan.lockfile !== lockfile) throw new GeneratedFilesFailure(`${lockfile} conflicted between agents, but it is not the lockfile of the package manager detected after merging, so it cannot be regenerated.`);
+    await installDependencies(sandbox, lockfilePlan, assertAuthority, isActive, 'lockfile');
+  }
+  const command = generated.length ? policy.generated?.command ?? null : null;
+  if (command) {
+    const plan = policy.untested ? (await workingTreeInstall(sandbox, await files())).plan : policy.install;
+    if (plan) await installDependencies(sandbox, plan, assertAuthority, isActive);
+    if (!await isActive()) throw new Error('Mission cancelled');
+    await assertAuthority();
+    const result = await runBounded(sandbox, command, policy.testTimeoutMs);
+    if (result.exitCode !== 0 || result.timedOut) throw new GeneratedFilesFailure(`${timeoutNotice(result, policy, 'Generate command: ')}\`${command}\` failed (exit ${result.exitCode}).\n${commandOutput(result)}`);
+  }
+  const changed = await workingTreeChanges(sandbox);
+  const outside = changed.filter((path) => path !== lockfile && !isGeneratedPath(path, policy.generated?.paths ?? []));
+  if (outside.length) throw new GeneratedFilesFailure(`Regenerating generated files changed paths outside the generated paths: ${outside.slice(0, 20).join(', ')}. Only ${[...(policy.generated?.paths ?? []), ...(lockfile ? [lockfile] : [])].join(', ')} may change.`);
+  if (changed.length) {
+    await checked(sandbox, ['git', 'add', '-A', '--', ...changed]);
+    await checked(sandbox, ['git', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'Regenerate generated files']);
+  }
+  return { changed, lockfilePlan, command };
 }
 
 async function touchedFiles(sandbox: SandboxRunner): Promise<string[] | null> {
@@ -611,7 +676,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   if (!trusted) for (const run of result.runs) if (run.status !== 'skipped' && !carried.has(run.id)) pin(run);
   const reuseCandidate = async (run: AgentRun): Promise<ArtifactInfo | string> => {
     const from = `attempt ${run.reusedFromEpoch}`;
-    if (run.candidateBaseSha !== baseSha) return `The default branch moved from ${(run.candidateBaseSha ?? 'an unknown commit').slice(0, 12)} to ${baseSha.slice(0, 12)} since ${from}; re-running this agent on the new base`;
+    if (race && run.candidateBaseSha !== baseSha) return `The default branch moved from ${(run.candidateBaseSha ?? 'an unknown commit').slice(0, 12)} to ${baseSha.slice(0, 12)} since ${from}; re-running this agent on the new base`;
     try {
       using handle = await ARTIFACTS.get(run.forkName!);
       const head = (await handle.log({ ref: 'gitflare-candidate', limit: 1 }))[0]?.hash;
@@ -768,7 +833,14 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     if (!carried.has(run.id)) return runAgent(run);
     if (!await active()) throw new Error('Mission cancelled');
     const reused = await reuseCandidate(run);
-    if (typeof reused !== 'string') { forks.set(run.id, reused); return; }
+    if (typeof reused !== 'string') {
+      forks.set(run.id, reused);
+      if (run.candidateBaseSha !== baseSha) {
+        result.events = [...(result.events ?? []), { id: `gf-${mission.id}-${mission.epoch}-${run.id}-carried`, timestamp: new Date().toISOString(), runId: run.id, type: 'info', message: `${run.name}: carried over from attempt ${run.reusedFromEpoch}; verified against ${(run.candidateBaseSha ?? 'an unrecorded base').slice(0, 12)}, combined checks re-verify on ${baseSha.slice(0, 12)}` }];
+        await publish();
+      }
+      return;
+    }
     result.checks = result.checks.filter((check) => check.runId !== run.id);
     result.changes = result.changes.filter((change) => !change.runIds.includes(run.id));
     const rerun: AgentRun = { id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, status: 'queued', changedFiles: [], summary: reused };
@@ -796,7 +868,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     const only = included[0]!;
     const single = result.checks.find((item) => item.runId === only.id);
     const fork = forks.get(only.id);
-    if (only.commitSha && fork && single?.status === 'passed' && validGitSha(only.commitSha)) {
+    if (only.commitSha && fork && single?.status === 'passed' && validGitSha(only.commitSha) && (only.candidateBaseSha ?? baseSha) === baseSha) {
       result.integrationForkName = fork.name;
       result.candidateSha = only.commitSha;
       result.checks.push({ ...single, id: 'integration', name: 'Combined candidate tests (single agent: reused the exact verified candidate checks)' });
@@ -815,17 +887,40 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     await sandbox.prepare([{ ...fork, write: true }, ...[...forks.values()].map((item) => ({ ...item, write: false }))]);
     await clone(sandbox, fork, baseSha);
     const policy = sharedPolicy ?? await loadPolicy(sandbox, baseSha, input.testCommand, input.checkSettings);
+    const keptGenerated = new Set<string>();
+    let keptLockfile: string | null = null;
     for (const run of included) {
       const candidate = forks.get(run.id)!;
       await checked(sandbox, ['git', 'fetch', '--', candidate.remote, 'refs/heads/gitflare-candidate']);
       const fetched = await checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
       if (fetched !== run.commitSha) throw new Error('Candidate changed after verification');
       const merged = await sandbox.command(['git', '-c', 'core.hooksPath=/dev/null', 'merge', '--no-ff', '--no-edit', fetched], '/workspace/repo');
-      if (merged.exitCode !== 0) {
-        const conflicted = await sandbox.command(['git', 'diff', '--name-only', '--diff-filter=U'], '/workspace/repo');
-        result.checks.push({ id: 'integration-merge', name: 'Combine agent changes', status: 'failed', output: `Collision (Git merge conflict) adding ${run.name} in: ${conflicted.stdout.trim().split('\n').filter(Boolean).join(', ') || 'unknown files'}\n${merged.stdout}\n${merged.stderr}`.slice(0, outputLimit) });
+      if (merged.exitCode === 0) continue;
+      const conflicts = await conflictedPaths(sandbox);
+      const lockfile = conflicts.length ? await detectedLockfile(sandbox, 'HEAD') : null;
+      const blocking = conflicts.filter((path) => path !== lockfile && !isGeneratedPath(path, policy.generated?.paths ?? []));
+      if (!conflicts.length || blocking.length) {
+        result.checks.push({ id: 'integration-merge', name: 'Combine agent changes', status: 'failed', output: `Collision (Git merge conflict) adding ${run.name} in: ${(conflicts.length ? blocking : ['unknown files']).join(', ')}\n${merged.stdout}\n${merged.stderr}`.slice(0, outputLimit) });
         throw new Error(`Agent changes collide (Git merge conflict) when adding ${run.name}`);
       }
+      await keepIntegrationVersion(sandbox, conflicts);
+      for (const path of conflicts) if (path === lockfile) keptLockfile = path; else keptGenerated.add(path);
+    }
+    if (keptGenerated.size || keptLockfile) {
+      if (!await active()) throw new Error('Mission cancelled');
+      const kept = [...keptGenerated, ...(keptLockfile ? [keptLockfile] : [])];
+      for (const run of included) run.summary = `Combined candidate: regenerating ${kept.join(', ')}`;
+      await publish();
+      let regenerated: Regeneration;
+      try { regenerated = await regenerateFiles(sandbox, policy, [...keptGenerated], keptLockfile, assertAuthority, isActive); }
+      catch (error) {
+        if (error instanceof GeneratedFilesFailure) result.checks.push({ id: 'integration-generate', name: 'Regenerate generated files', status: 'failed', output: error.message.slice(0, outputLimit) });
+        throw error;
+      }
+      const sources = [...(regenerated.command ? [`\`${regenerated.command}\``] : []), ...(regenerated.lockfilePlan ? [`${describeInstall(regenerated.lockfilePlan)} in lockfile-only mode`] : [])];
+      const unregenerated = keptGenerated.size && !regenerated.command ? ` gitflare.json sets no generated.command, so ${[...keptGenerated].join(', ')} kept the integration-branch version without regeneration.` : '';
+      const outcome = regenerated.changed.length ? `Regenerated ${regenerated.changed.join(', ')}` : 'Regeneration left the files unchanged';
+      result.events = [...(result.events ?? []), { id: `${key}-generated`, timestamp: new Date().toISOString(), type: unregenerated ? 'warning' : 'info', message: `Combined candidate: agents conflicted only in generated files (${kept.join(', ')}). Kept the integration-branch version while merging. ${sources.length ? `${outcome} with ${sources.join(' and ')}.` : ''}${unregenerated}`.replace(/\s+$/, '') }];
     }
     const sha = await checked(sandbox, ['git', 'rev-parse', 'HEAD']);
     if (!validGitSha(sha)) throw new Error('Integration returned an invalid commit');

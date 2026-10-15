@@ -1,6 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import type { ArtifactsBinding } from '../src/worker/artifacts';
-import { COREPACK_ENV, INSTALL_EXCLUDES, INSTALL_TIMEOUT_MS, installCommand, NPM_REGISTRY, registryHosts, YARN_REGISTRY, type InstallPlan } from '../src/worker/package-manager';
+import { COREPACK_ENV, INSTALL_EXCLUDES, INSTALL_TIMEOUT_MS, installCommand, NPM_REGISTRY, registryHosts, YARN_REGISTRY, type InstallMode, type InstallPlan } from '../src/worker/package-manager';
 import { MAX_TEST_TIMEOUT_MS } from '../src/worker/budgets';
 import { DEFAULT_RUNNER, isRunnerSize, type RunnerSize } from '../src/worker/repository-policy';
 import { beginUrlImportJob, importJobDependencies, proxyImportSource, resumeUrlImportJob, type ImportSourceProps, type UrlImportEnv, type UrlImportJob } from '../src/worker/url-import';
@@ -195,18 +195,18 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     await container.interceptOutboundHttps('*', outbound);
   }
 
-  async install(plan: InstallPlan): Promise<CommandResult> {
+  async install(plan: InstallPlan, mode: InstallMode = 'install'): Promise<CommandResult> {
     const container = this.ctx.container;
     const repositories = this.#repositories;
     if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
-    const argv = installCommand(plan);
+    const argv = installCommand(plan, mode);
     const excluded = await this.#executeCommand(['/bin/sh', '-c', 'printf \'\\n%s\\n\' "$@" >> .git/info/exclude', 'exclude', ...INSTALL_EXCLUDES], '/workspace/repo', 15_000, 15_000);
     if (excluded.exitCode !== 0) throw new Error('Installed dependencies could not be excluded from candidate commits');
     const registry = this.ctx.exports.RegistryOutbound({ props: { hosts: registryHosts(plan) } });
     await container.interceptAllOutboundHttp(registry);
     await container.interceptOutboundHttps('*', registry);
     try {
-      // --ignore-scripts / --mode=skip-build: package lifecycle scripts must not run while the registry is reachable
+      // --ignore-scripts / --mode=skip-build / --mode=update-lockfile: package lifecycle scripts must not run while the registry is reachable
       return await this.#executeCommand(argv, '/workspace/repo', INSTALL_TIMEOUT_MS, INSTALL_TIMEOUT_MS, COMMAND_OUTPUT_CAP, false, { COREPACK_ENABLE_NETWORK: '1' });
     } finally { await this.#restrictToGit(repositories); }
   }
