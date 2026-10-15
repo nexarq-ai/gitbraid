@@ -3,16 +3,21 @@ interface PreviewEnv {
 }
 
 const cookieName = '__Host-gitflare_preview';
-const capabilityPattern = /^[a-f0-9]{64}$/;
+const capabilityPattern = /^(?:[a-z0-9-]{1,64}\.)?[a-f0-9]{64}$/;
+const isolationHeader = 'x-gitflare-preview-isolation';
+const sharedOriginPolicy = "sandbox allow-scripts allow-forms; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; worker-src 'none'";
+const isolatedOriginPolicy = "sandbox allow-scripts allow-forms allow-same-origin allow-modals allow-popups allow-downloads; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; worker-src 'self' blob:";
 
 function headersForPreview(headers: HeadersInit = {}): Headers {
   const output = new Headers(headers);
+  const isolated = output.get(isolationHeader) === 'origin';
+  output.delete(isolationHeader);
   output.delete('set-cookie');
   output.set('cache-control', 'no-store');
   output.set('referrer-policy', 'no-referrer');
   output.set('x-content-type-options', 'nosniff');
   output.set('permissions-policy', 'camera=(), microphone=(), geolocation=(), payment=()');
-  output.set('content-security-policy', "sandbox allow-scripts allow-forms; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; worker-src 'none'");
+  output.set('content-security-policy', isolated ? isolatedOriginPolicy : sharedOriginPolicy);
   return output;
 }
 
@@ -41,13 +46,17 @@ export default {
     }
     const capability = request.headers.get('cookie')?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
     if (!capability || !capabilityPattern.test(capability)) return previewNotice(401, 'Open a fresh preview', 'This tab does not have an active preview session.');
+    const upgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
+    if (upgrade && request.headers.get('origin') !== url.origin) return new Response('Cross-origin preview sockets are not allowed.', { status: 403, headers: headersForPreview() });
     const headers = new Headers(request.headers);
     headers.delete('cookie');
     headers.delete('authorization');
     headers.delete('x-gitflare-preview');
+    headers.delete(isolationHeader);
     headers.set('X-Gitflare-Preview', capability);
     try {
       const response = await env.GITFLARE.fetch(new Request(request, { headers, redirect: 'manual' }));
+      if (response.webSocket) return new Response(null, { status: 101, webSocket: response.webSocket, headers: headersForPreview(response.headers) });
       if (response.status === 410) return previewNotice(410, 'Preview link no longer available', 'This preview has expired, its revision changed, or its access was revoked.');
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers: headersForPreview(response.headers) });
     } catch {

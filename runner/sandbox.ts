@@ -15,6 +15,7 @@ interface RegistryProps { hosts?: string[] }
 const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
 // Vite-based dev and preview servers reject any Host other than localhost
 const PREVIEW_HOST = 'http://localhost:8080';
+const LOCAL_PREVIEW_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::8080)?(\/.*)?$/i;
 export const SANDBOX_MAX_LIFETIME_MS = 7_200_000;
 export const COMMAND_OUTPUT_CAP = 65_536;
 export const BUNDLE_OUTPUT_CAP = 16 * 1024 * 1024;
@@ -309,15 +310,26 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     }
   }
 
+  async fetch(request: Request): Promise<Response> {
+    return this.preview(request);
+  }
+
   async preview(request: Request): Promise<Response> {
     const container = this.ctx.container;
     if (!container?.running) return new Response('Preview has expired', { status: 410 });
     const url = new URL(request.url);
     const headers = new Headers(request.headers);
-    headers.delete('authorization');
-    headers.delete('cookie');
-    headers.delete('host');
-    return container.getTcpPort(8080).fetch(new Request(`${PREVIEW_HOST}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
+    for (const name of ['authorization', 'cookie', 'host', 'forwarded', 'x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port']) headers.delete(name);
+    headers.set('x-forwarded-host', url.host);
+    headers.set('x-forwarded-proto', url.protocol.slice(0, -1));
+    headers.set('forwarded', `host="${url.host}";proto=${url.protocol.slice(0, -1)}`);
+    const response = await container.getTcpPort(8080).fetch(new Request(`${PREVIEW_HOST}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
+    const location = response.headers.get('location');
+    const local = location ? LOCAL_PREVIEW_ORIGIN.exec(location) : null;
+    if (!local || response.webSocket) return response;
+    const rewritten = new Response(response.body, response);
+    rewritten.headers.set('location', `${url.origin}${local[1] ?? ''}`);
+    return rewritten;
   }
 
   async expireAt(at: number): Promise<void> {
