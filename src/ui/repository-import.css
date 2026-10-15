@@ -48,3 +48,6 @@
 .repository-import-unavailable h2 { font-size: 16px; }
 .repository-import-unavailable p { color: #626b79; line-height: 1.7; margin-top: 12px; font-size: 13px; }
 @media (max-width: 650px) { .repository-import-banner { align-items: start; flex-wrap: wrap; padding: 20px; } .repository-import-banner > div { flex-basis: calc(100% - 42px); } .repository-import-banner > button { margin-left: 42px; } .repository-import-steps { gap: 12px; justify-content: space-between; } .repository-import-steps li { font-size: 11px; flex-direction: column; text-align: center; } .repository-import-form { padding: 18px; } .repository-import-dropzone { padding: 30px 16px; } .repository-import-target span { margin-left: 0; } .repository-import-review dl { grid-template-columns: minmax(0, 1fr); gap: 5px; } .repository-import-review dd { margin-bottom: 10px; } .repository-import-archive { flex-wrap: wrap; } .repository-import-git { padding: 18px; } .repository-import-success > div { flex-wrap: wrap; } }
+.repository-url-retry { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.repository-url-retry > input { flex: 1 1 180px; min-width: 0; }
+.repository-import-banner .repository-import-steps { flex-wrap: wrap; gap: 10px 20px; margin: 14px 0 0; }

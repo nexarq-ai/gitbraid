@@ -15,7 +15,7 @@ export const ROLE_ACTIONS: Record<Role, Action[]> = {
 };
 interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean; cloudflareId?: string; revision?: number }
 interface Member { userId: string; workspaceId: string; role: Role; repositoryIds?: string[] }
-interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean }
+interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean; client?: string }
 type PublicSession = Omit<Session, 'hash'>;
 interface WorkspaceRecord { id: string; name: string; bootstrapDisabled?: boolean; agentPending?: boolean }
 interface Invitation { id: string; workspaceId: string; email: string; role: Role; hash: string; expiresAt: number; accepted?: boolean }
@@ -785,6 +785,18 @@ export class WorkspaceStore {
       return publicValue(session);
     });
   }
+  async clientSession(p: Principal, client: string, lifetimeMs: number, hash: string) {
+    const context = await this.prepare(p);
+    return this.change(change => {
+      this.validate(p, context); if (p.credentialId || p.bootstrap) fail('ACCOUNT_REQUIRED');
+      const authenticatedAt = this.session(p.sessionId, context)?.authenticatedAt; const now = Date.now();
+      if (authenticatedAt === undefined || authenticatedAt > now || now - authenticatedAt >= MAX_DERIVED_SESSION_AGE_MS) fail('RECENT_AUTH_REQUIRED', 'Sign in again before connecting an AI client.');
+      change.audit.push({ actorId: p.userId, action: 'access:client-connect' });
+      const session: Session = { id: `${this.workspaceId}.${crypto.randomUUID()}`, userId: p.userId, workspaceId: this.workspaceId, hash, expiresAt: now + lifetimeMs, client: client.slice(0, 100) || 'AI client' };
+      this.data.session.set(session.id, session);
+      return publicValue(session);
+    });
+  }
   async revokeSession(id: string, userId: string): Promise<boolean> {
     await this.load(); const session = this.data.session.get(id); if (!session || session.userId !== userId) return false;
     return this.change(() => { const current = this.data.session.get(id); if (!current || current.userId !== userId) return false; current.revoked = true; return true; });
@@ -1022,7 +1034,7 @@ function validActions(value: unknown): Action[] { if (!Array.isArray(value) || !
 type Remote<T> = { [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never };
 export interface SecurityPeer { identityCall(op: string, args: unknown[]): Promise<unknown>; shardCall(workspaceId: string, op: string, args: unknown[]): Promise<unknown> }
 const IDENTITY_OPS = new Set(['rateLimit', 'users', 'account', 'accountByEmail', 'hints', 'addHint', 'removeHint', 'mfaEnabled', 'installationWorkspace', 'selfHostedAllowed', 'lookup', 'index', 'loginAttempt', 'loginFinish', 'applyLink', 'beginMfa', 'challenge', 'verifyChallenge', 'finishOutbox', 'revokeAccount', 'startSetup', 'createUser', 'deleteUser', 'verifyEmail', 'resendVerification', 'requestReset', 'confirmReset', 'cloudflareSigninState', 'cloudflareLookup', 'cloudflareLinkRequest', 'machine', 'createMachine', 'claimMachine', 'legacyWorkspace', 'legacyImported', 'migrationStatus']);
-const SHARD_OPS = new Set(['ensureImported', 'authenticateToken', 'sessionPrincipal', 'sessionState', 'isMember', 'validatePrincipal', 'enrollmentAllowed', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshotPart', 'membership', 'bootstrapAllowed', 'createSession', 'revokeSession', 'revokeUserSessions', 'audit', 'auditMember', 'initWorkspace', 'peekInvite', 'acceptInvite', 'addMember', 'claimAgent', 'action', 'connectionStore', 'projectStore', 'clearApprovals', 'recordApproval', 'assertLand']);
+const SHARD_OPS = new Set(['ensureImported', 'authenticateToken', 'sessionPrincipal', 'sessionState', 'isMember', 'validatePrincipal', 'enrollmentAllowed', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshotPart', 'membership', 'bootstrapAllowed', 'createSession', 'clientSession', 'revokeSession', 'revokeUserSessions', 'audit', 'auditMember', 'initWorkspace', 'peekInvite', 'acceptInvite', 'addMember', 'claimAgent', 'action', 'connectionStore', 'projectStore', 'clearApprovals', 'recordApproval', 'assertLand']);
 function remote<T>(call: (op: string, args: unknown[]) => Promise<unknown>, inDurableObject: boolean): Remote<T> {
   return new Proxy({}, {
     get: (_target, op) => typeof op !== 'string' || op === 'then' ? undefined : async (...args: unknown[]) => {
@@ -1330,12 +1342,17 @@ export class SecurityService {
     return { ok: true, workspaceId };
   }
   clearApprovals(p: Principal, missionId: string) { return this.shard(p.workspaceId).clearApprovals(p, missionId); }
+  async clientSession(p: Principal, client: string, lifetimeMs: number) {
+    const value = mintToken(p.workspaceId);
+    const session = await this.shard(p.workspaceId).clientSession(p, client, lifetimeMs, await hashToken(value));
+    return { token: value, session };
+  }
   async logout(p: Principal) { if (p.sessionId) await this.action(p, 'session-revoke', { id: p.sessionId }); }
   recordApproval(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, checks: { name: string; status: string; candidateSha?: string }[], creatorId?: string, rule?: ReviewRule) { return this.shard(p.workspaceId).recordApproval(p, missionId, candidateSha, baseSha, epoch, checks, creatorId, rule); }
   assertLand(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, repositoryId?: string, rule?: ReviewRule) { return this.shard(p.workspaceId).assertLand(p, missionId, candidateSha, baseSha, epoch, repositoryId, rule); }
 }
 
-const PUBLIC_METHODS = new Set(['connectionStore', 'projectStore', 'rateLimit', 'signup', 'login', 'legacySession', 'bootstrap', 'authenticate', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshot', 'action', 'authConfig', 'startSetup', 'enrollMfa', 'verifyMfa', 'createInstallationUser', 'registerInvitedUser', 'verifyEmail', 'resendVerification', 'requestPasswordReset', 'confirmPasswordReset', 'cloudflareSigninState', 'cloudflareSignin', 'registerMachine', 'claimMachine', 'acceptInvite', 'clearApprovals', 'logout', 'recordApproval', 'assertLand']);
+const PUBLIC_METHODS = new Set(['connectionStore', 'projectStore', 'rateLimit', 'signup', 'login', 'legacySession', 'bootstrap', 'authenticate', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshot', 'action', 'authConfig', 'startSetup', 'enrollMfa', 'verifyMfa', 'createInstallationUser', 'registerInvitedUser', 'verifyEmail', 'resendVerification', 'requestPasswordReset', 'confirmPasswordReset', 'cloudflareSigninState', 'cloudflareSignin', 'registerMachine', 'claimMachine', 'acceptInvite', 'clearApprovals', 'clientSession', 'logout', 'recordApproval', 'assertLand']);
 export type SecurityEnv = { GITFLARE_SECURITY: DurableObjectNamespace<GitflareSecurity> } & { [K in keyof SecurityOptions]?: unknown };
 // While a deployment still runs a global instance without the shard protocol, its original methods serve the call
 export function securityClient(env: SecurityEnv): SecurityService {
@@ -1396,6 +1413,7 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   action(p: Principal, action: string, body: Record<string, unknown>) { return this.service.action(p, action, body); }
   acceptInvite(p: Principal, value: string) { return this.service.acceptInvite(p, value); }
   clearApprovals(p: Principal, missionId: string) { return this.service.clearApprovals(p, missionId); }
+  clientSession(p: Principal, client: string, lifetimeMs: number) { return this.service.clientSession(p, client, lifetimeMs); }
   logout(p: Principal) { return this.service.logout(p); }
   recordApproval(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, checks: { name: string; status: string; candidateSha?: string }[], creatorId?: string, rule?: ReviewRule) { return this.service.recordApproval(p, missionId, sha, baseSha, epoch, checks, creatorId, rule); }
   assertLand(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, repositoryId?: string, rule?: ReviewRule) { return this.service.assertLand(p, missionId, sha, baseSha, epoch, repositoryId, rule); }

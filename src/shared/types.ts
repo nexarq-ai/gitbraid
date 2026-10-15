@@ -12,8 +12,27 @@ export interface Repository {
   headSha: string | null;
   provider: 'artifacts' | 'local';
   remote?: string;
+  urlImport?: RepositoryUrlImport;
   createdAt: string;
   updatedAt: string;
+}
+
+export type UrlImportPhase = 'queued' | 'preparing' | 'fetching' | 'verifying' | 'pushing' | 'complete';
+export interface RepositoryUrlImport {
+  source: string;
+  provider: 'github' | 'gitlab' | 'bitbucket' | 'codeberg' | 'https';
+  status: 'importing' | 'ready' | 'failed';
+  phase: UrlImportPhase;
+  attempt: number;
+  requestId: string;
+  authenticated: boolean;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  branches?: number;
+  tags?: number;
+  packBytes?: number;
+  error?: { code: string; message: string };
 }
 
 export interface ModelUsage {
