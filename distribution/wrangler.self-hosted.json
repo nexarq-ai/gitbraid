@@ -62,6 +62,22 @@
         "limit": 600,
         "period": 60
       }
+    },
+    {
+      "name": "GIT_RATE_LIMIT",
+      "namespace_id": "4104",
+      "simple": {
+        "limit": 600,
+        "period": 60
+      }
+    },
+    {
+      "name": "GIT_AUTH_FAILURE_RATE_LIMIT",
+      "namespace_id": "4105",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
     }
   ],
   "durable_objects": {

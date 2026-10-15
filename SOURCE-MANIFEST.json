@@ -20,8 +20,8 @@
     },
     {
       "path": "distribution/wrangler.self-hosted.json",
-      "size": 2566,
-      "sha256": "afd373d7e22aaba13f123dc7d29dfa4896cde7616980309af8aa222c2bc49db4"
+      "size": 2866,
+      "sha256": "a408e98aaad6f01a1bb0f013fe1b75319dc3bfcf902b5b2632d1c59e9c51d53a"
     },
     {
       "path": "docs/public/admin.md",
@@ -575,8 +575,8 @@
     },
     {
       "path": "src/worker/git-http.ts",
-      "size": 20186,
-      "sha256": "6defa90d5fcf4b3dbea6aecdfb49d8ad1556bea2f54f42c120a1f5d7d87ab2a6"
+      "size": 21041,
+      "sha256": "754b537e953e88b69464c02bf813590ea8456272789312690f313c62f790e78a"
     },
     {
       "path": "src/worker/hosted-onboarding.ts",
@@ -590,8 +590,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 76027,
-      "sha256": "c5f548382863a186b8cb7fc8daf15a6378f07d458787602eb66a54aa5d4408de"
+      "size": 76298,
+      "sha256": "a5efe3813dbeda83335a0cfe4c58272482bd72638d5db829cb592aa6cdc4731f"
     },
     {
       "path": "src/worker/issues.ts",
@@ -665,8 +665,8 @@
     },
     {
       "path": "src/worker/rate-limits.ts",
-      "size": 2102,
-      "sha256": "c9dc2f058598ded367e4a2a98360201ab30934b53b102d0675fba9414f94da32"
+      "size": 3611,
+      "sha256": "74d1e72318f1c65b4914d941e3bb264699c44df24971d8d03dde18967ea9313b"
     },
     {
       "path": "src/worker/releases.ts",
@@ -695,8 +695,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 130019,
-      "sha256": "9f727b4b93329f4a0b539eb2d5e68a40c838bba2548d5d3d5f3c386de791dc95"
+      "size": 130145,
+      "sha256": "36c9b2310538d12834a4bdff3480731f4d9ad1bdef6e1142ef064688eb83b5e5"
     },
     {
       "path": "src/worker/skill-edit.ts",
@@ -740,8 +740,8 @@
     },
     {
       "path": "wrangler.jsonc",
-      "size": 2566,
-      "sha256": "afd373d7e22aaba13f123dc7d29dfa4896cde7616980309af8aa222c2bc49db4"
+      "size": 2866,
+      "sha256": "a408e98aaad6f01a1bb0f013fe1b75319dc3bfcf902b5b2632d1c59e9c51d53a"
     },
     {
       "path": "wrangler.preview.jsonc",
