@@ -36,6 +36,7 @@ import { modelConnectionsSnapshot, modelIdentifier, resolveModelConnection, vali
 import { aiKeyProvider, aiKeysSnapshot, assertModelAccess, assertWorkspaceAi, createModelAccess, encryptAiGateway, encryptAiKey, ownGatewayInput, providerKey, reserveOperatorUsage, storedOwnGateway, storedProviderKey, verificationModel, verifyProviderKey, type AiCredentials } from './ai-keys';
 import { IMPORT_REQUEST_MAX_BYTES, RepositoryImportFailure, buildImportPack, importFingerprint, inspectRepositoryImport, parseImportArchive, pushRepositoryImport, validateImportInput } from './repository-import';
 import { handleGitRequest, listBranches, type GitHttpDependencies } from './git-http';
+import { collectMissionSummaries } from './workspace-summaries';
 import { branchApi } from './branches';
 import { branchName, effectiveRules, landingRule, protectionSnapshot } from './branch-protection';
 import { handleUrlImport } from './url-import';
@@ -239,7 +240,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   }
   const principal = await authorize(request, env);
   const access = security(env);
-  if (request.method === 'GET' && (['/api/docs', '/api/mcp', '/api/workspace'].includes(url.pathname) || url.pathname.startsWith('/api/docs/'))) await access.authorizeMetadata(principal);
+  if (request.method === 'GET' && (['/api/docs', '/api/mcp'].includes(url.pathname) || url.pathname.startsWith('/api/docs/'))) await access.authorizeMetadata(principal);
   if (url.pathname === '/api/access' && request.method === 'GET') return Response.json(await access.snapshot(principal));
   if (url.pathname.startsWith('/api/access/') && request.method === 'POST') {
     assertMutationOrigin(request); const body = await readJson(request); const action = url.pathname.slice('/api/access/'.length);
@@ -343,14 +344,29 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     return Response.json({ ok: true }, { headers: { 'Set-Cookie': 'gitflare_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0' } });
   }
   if (request.method === 'GET' && url.pathname === '/api/workspace') {
+    const started = Date.now();
     if (local) await seedLocal(env);
-    const repositories = await catalog.listRepositories();
-    const readable = await access.checkMany(principal, 'read', repositories.map((repository) => ({ resourceType: 'repository', resourceId: repository.id })));
-    const visible = repositories.filter((_, index) => readable[index]);
-    const listed = (await Promise.all(visible.map((repository) => env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).listMissionSummaries()))).flat();
-    const allowed = await access.checkMany(principal, 'read', listed.map((mission) => ({ resourceType: 'repository', resourceId: mission.repositoryId, missionId: mission.id })));
-    const missions = listed.filter((_, index) => allowed[index]);
-    const workspace: Workspace = { name: principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : (await access.workspace(principal)).name, mode: local ? 'local' : 'connected', repositories: visible.map(repository => ({ ...repository, displayName: repositoryLabel(repository) })), missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local), ai: await aiSettings(env, catalog) };
+    const [, repositories, name, ai, cached] = await Promise.all([
+      access.authorizeMetadata(principal),
+      catalog.listRepositories(),
+      principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : access.workspace(principal).then(workspace => workspace.name),
+      aiSettings(env, catalog),
+      Promise.resolve().then(() => catalog.listSummaryCache()).catch(() => []),
+    ]);
+    const catalogMs = Date.now() - started;
+    const { summaries, stale } = await collectMissionSummaries(repositories.map(repository => repository.id), {
+      live: id => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`).listMissionSummaries(),
+      cached,
+      save: entries => catalog.saveSummaryCache(entries),
+      defer: work => { const settled = work.catch(error => console.warn(JSON.stringify({ event: 'workspace_summary_cache_failed', name: error instanceof Error ? error.name : typeof error }))); ctx?.waitUntil(settled); },
+    });
+    const summariesMs = Date.now() - started - catalogMs;
+    const allowed = await access.checkMany(principal, 'read', [...repositories.map(repository => ({ resourceType: 'repository', resourceId: repository.id })), ...summaries.map(mission => ({ resourceType: 'repository', resourceId: mission.repositoryId, missionId: mission.id }))]);
+    const visible = repositories.filter((_, index) => allowed[index]);
+    const visibleIds = new Set(visible.map(repository => repository.id));
+    const missions = summaries.filter((mission, index) => allowed[repositories.length + index] && visibleIds.has(mission.repositoryId));
+    const workspace: Workspace = { name, mode: local ? 'local' : 'connected', repositories: visible.map(repository => ({ ...repository, displayName: repositoryLabel(repository) })), missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local), ai };
+    console.log(JSON.stringify({ event: 'workspace_timing', repositories: repositories.length, missions: summaries.length, staleRepositories: stale, catalogMs, summariesMs, accessMs: Date.now() - started - catalogMs - summariesMs, totalMs: Date.now() - started }));
     return Response.json(workspace);
   }
   const cloudflareProject = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/cloudflare(?:\/(usage|action))?$/.exec(url.pathname);

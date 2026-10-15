@@ -139,6 +139,11 @@
       "sha256": "b8674ae92674df9998b49e5eb66a4448aebbaffe5c4d87ed63acd74dfedbc0d0"
     },
     {
+      "path": "src/shared/repository-names.ts",
+      "size": 222,
+      "sha256": "9abeeae22c67be248bb6531c60eee5ae2c9cf654574769d9aa7adceca636431c"
+    },
+    {
       "path": "src/shared/types.ts",
       "size": 11748,
       "sha256": "f5407f9ea41c11dbc1c0f14f85e779acf3eb5b48c74cf7892c823c9718943d9f"
@@ -165,8 +170,8 @@
     },
     {
       "path": "src/ui/api.ts",
-      "size": 1637,
-      "sha256": "2ed9f3a8758e618c49e9915e0db51b8f0d7f656abafdd09fb73613b1e6dfb530"
+      "size": 2086,
+      "sha256": "7df42ecaeebb1e89d969fed105c2231b0d6c1970967c8a46e48ef6f03505bb6f"
     },
     {
       "path": "src/ui/App.tsx",
@@ -525,8 +530,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 70502,
-      "sha256": "e796e9f43ff6d6989f05e3be0f01eaf765c9d40dfc8320712f78a9e46477d543"
+      "size": 70933,
+      "sha256": "8186e2d2b7e55fe7a6ceaa68c768f5b6daa4356ddaffc1f1016f6c9be7950136"
     },
     {
       "path": "src/worker/deployments.ts",
@@ -590,8 +595,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 76378,
-      "sha256": "86651e365c6d09674647483fdce4d4de38abfc80c64035709b46fb86eca84b8d"
+      "size": 77456,
+      "sha256": "fd6bf19d30f81d1d8a968e223981a4b76d26091202e02c4ba6aacf0874edc1f2"
     },
     {
       "path": "src/worker/issues.ts",
@@ -727,6 +732,11 @@
       "path": "src/worker/workflow.ts",
       "size": 6136,
       "sha256": "5f2faa34858f5aac747141ac0a06e8f7f3c199ef661a64af3b7f73b947a70162"
+    },
+    {
+      "path": "src/worker/workspace-summaries.ts",
+      "size": 1965,
+      "sha256": "3dc0aad19ee00a76c19876df1ad4ce5ff94f96ac4d6d01803832cb8c98bd1264"
     },
     {
       "path": "tsconfig.json",

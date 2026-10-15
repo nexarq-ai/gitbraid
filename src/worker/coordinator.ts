@@ -21,6 +21,7 @@ import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type De
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
 
 interface Receipt<T> { fingerprint: string; result: T }
+export interface MissionSummaryCache { repositoryId: string; summaries: MissionSummary[]; cachedAt: string }
 export interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
 const INTEGRATION_PREPARATION_MS = 600_000;
 
@@ -92,6 +93,14 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   saveRepository(repository: Repository): void {
     this.store.put(`repository:${repository.id}`, repository);
+  }
+
+  listSummaryCache(): MissionSummaryCache[] {
+    return this.store.list<MissionSummaryCache>('summary-cache:');
+  }
+
+  saveSummaryCache(entries: MissionSummaryCache[]): void {
+    this.ctx.storage.transactionSync(() => { for (const entry of entries) this.store.put(`summary-cache:${entry.repositoryId}`, entry); });
   }
 
   listIssues(query: IssueQuery): IssueList { return listIssues(this.store, query); }
