@@ -62,14 +62,28 @@ async function call<T>(config: WorkerPreviewsConfig, fetcher: Fetcher, path: str
 
 const notFound = (error: unknown) => error instanceof WorkerPreviewError && error.code === 'PREVIEW_NOT_FOUND';
 
-export function previewDeploymentForm(bundle: WorkerBundle, metadata: Record<string, unknown>): FormData {
+export interface PreviewAssets { jwt: string; config: Record<string, unknown> }
+type AssetRules = Partial<Record<'_headers' | '_redirects', string>>;
+
+const ASSET_CONFIG_KEYS = ['html_handling', 'not_found_handling', 'base_path', 'run_worker_first'];
+
+// Wrangler sends _headers and _redirects as deployment modules for previews, not inside assets.config
+export function previewAssetsMetadata(assets: PreviewAssets): { metadata: { jwt: string; config: Record<string, unknown> }; rules: AssetRules } {
+  const config = Object.fromEntries(ASSET_CONFIG_KEYS.filter((key) => assets.config[key] !== undefined).map((key) => [key, assets.config[key]]));
+  const rules: AssetRules = {};
+  for (const name of ['_headers', '_redirects'] as const) if (typeof assets.config[name] === 'string') rules[name] = assets.config[name] as string;
+  return { metadata: { jwt: assets.jwt, config }, rules };
+}
+
+export function previewDeploymentForm(bundle: WorkerBundle, metadata: Record<string, unknown>, rules: AssetRules = {}): FormData {
   const form = new FormData();
   form.set('metadata', JSON.stringify({ main_module: bundle.mainModule, ...metadata }));
   for (const module of bundle.modules) form.append('files', new File([module.content], module.name, { type: module.contentType }));
+  for (const [name, content] of Object.entries(rules)) form.append('files', new File([content], name, { type: 'text/plain' }));
   return form;
 }
 
-export interface UpsertPreviewInput { alias: string; bundle: WorkerBundle; annotations?: Record<string, string> }
+export interface UpsertPreviewInput { alias: string; bundle: WorkerBundle; annotations?: Record<string, string>; uploadAssets?: () => Promise<PreviewAssets> }
 
 export async function upsertWorkerPreview(config: WorkerPreviewsConfig, input: UpsertPreviewInput, fetcher: Fetcher = (request) => fetch(request)): Promise<WorkerPreviewResult> {
   if (!validPreviewAlias(input.alias, config.workerName)) throw new WorkerPreviewError('PREVIEW_NAME_INVALID', 'The preview name is not a valid hostname label.');
@@ -87,15 +101,17 @@ export async function upsertWorkerPreview(config: WorkerPreviewsConfig, input: U
   const plan = hostedPreviewBindings(input.bundle.config);
   const migrations = previewMigrations(input.bundle.config, latest?.migration_tag);
   const exported = previewExports(input.bundle.config);
+  const assets = input.uploadAssets ? previewAssetsMetadata(await input.uploadAssets()) : null;
   const metadata = {
     compatibility_date: input.bundle.config.compatibilityDate,
     ...(input.bundle.config.compatibilityFlags.length ? { compatibility_flags: input.bundle.config.compatibilityFlags } : {}),
     ...(Object.keys(plan.env).length ? { env: plan.env } : {}),
     ...(migrations ? { migrations } : {}),
     ...(exported ? { exports: exported } : {}),
+    ...(assets ? { assets: assets.metadata } : {}),
     ...(input.annotations ? { annotations: input.annotations } : {}),
   };
-  const deployment = await call<PreviewDeployment>(config, fetcher, `/previews/${encodeURIComponent(preview.id)}/deployments`, { method: 'POST', body: previewDeploymentForm(input.bundle, metadata) });
+  const deployment = await call<PreviewDeployment>(config, fetcher, `/previews/${encodeURIComponent(preview.id)}/deployments`, { method: 'POST', body: previewDeploymentForm(input.bundle, metadata, assets?.rules) });
   if (!deployment?.id) throw new WorkerPreviewError('PREVIEWS_REJECTED', 'Cloudflare did not return a preview deployment.');
   const https = (urls?: string[]) => urls?.find((url) => { try { return new URL(url).protocol === 'https:'; } catch { return false; } }) ?? null;
   return { previewName: input.alias, previewId: preview.id, previewUrl: https(preview.urls), deploymentId: deployment.id, deploymentUrl: https(deployment.urls), notes: plan.notes };

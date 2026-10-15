@@ -305,7 +305,7 @@ export async function buildWorkerBundle(sandbox: BundleSandbox, config: Resolved
   return parseWorkerBundle(output.stdout, config);
 }
 
-export type PreviewBinding = { type: 'plain_text'; text: string } | { type: 'json'; json: unknown } | { type: 'durable_object_namespace'; class_name: string };
+export type PreviewBinding = { type: 'plain_text'; text: string } | { type: 'json'; json: unknown } | { type: 'durable_object_namespace'; class_name: string } | { type: 'assets' };
 export interface PreviewBindingPlan { env: Record<string, PreviewBinding>; notes: string[] }
 
 export function declaredDurableObjectClasses(config: ResolvedWorkerConfig): Set<string> {
@@ -334,6 +334,8 @@ export function hostedPreviewBindings(config: ResolvedWorkerConfig): PreviewBind
     else env[binding.name] = { type: 'durable_object_namespace', class_name: binding.class_name };
   }
   for (const binding of source.bindings) notes.push(`Binding ${binding.name} (${binding.type}) is not available in hosted previews.`);
+  const assetsBinding = config.assets && record(config.deploy?.assets) ? config.deploy.assets.binding : undefined;
+  if (typeof assetsBinding === 'string' && bindingName.test(assetsBinding)) env[assetsBinding] = { type: 'assets' };
   if (config.containers.length) notes.push('Containers are not available in hosted previews.');
   return { env, notes };
 }

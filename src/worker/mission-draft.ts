@@ -1,5 +1,5 @@
 import type { AgentTask, ModelConnection, Repository } from '../shared/types';
-import { DRAFT_GOAL_MAX, DRAFT_GOAL_MIN } from '../shared/mission-draft';
+import { DRAFT_GOAL_MAX, DRAFT_GOAL_MIN, MAX_MISSION_AGENTS } from '../shared/mission-draft';
 import type { ArtifactsBinding } from './artifacts';
 import { ApiError, requireString } from './domain';
 import { inferenceMessage, type InputItem, type ModelEnv } from './model-adapter';
@@ -15,7 +15,7 @@ export function draftRequest(body: Record<string, unknown>): DraftRequest {
   const goal = requireString(body.goal, 'Goal', DRAFT_GOAL_MAX, DRAFT_GOAL_MIN);
   const mode = body.mode === 'race' ? 'race' : 'combine';
   const agents = body.agents === undefined ? 1 : Number(body.agents);
-  if (!Number.isInteger(agents) || agents < 1 || agents > 8) throw new ApiError(400, 'INVALID_AGENTS', 'Draft between one and eight agent assignments.');
+  if (!Number.isInteger(agents) || agents < 1 || agents > MAX_MISSION_AGENTS) throw new ApiError(400, 'INVALID_AGENTS', `Draft between one and ${MAX_MISSION_AGENTS} agent assignments.`);
   const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 120) : undefined;
   return { goal, mode, agents, ...(title ? { title } : {}) };
 }

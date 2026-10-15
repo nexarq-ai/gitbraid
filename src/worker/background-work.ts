@@ -9,6 +9,7 @@ import { buildLandedWorker, integrateCandidate, IntegrationFailure, prepareCandi
 import { deleteWorkerPreview, previewAlias, upsertWorkerPreview, WorkerPreviewError, workerPreviewsConfig } from './worker-previews';
 import { WorkerBuildFailure } from './worker-bundle';
 import { deployWorkflowId, landedDeployment, policyDeployTargets, runDeployment, type DeploymentRecord, type DeployParams } from './deployments';
+import { cloudflareDeployClient } from './cloudflare-deploy';
 import { cloudflareWorkerDeployer } from './cloudflare';
 import { POLICY_FILE } from './repository-policy';
 import type { ProjectSnapshot } from './cloudflare-projects';
@@ -179,12 +180,25 @@ export async function preparePreview(env: AppEnv, params: PreviewParams, step: S
       if (!mission || !repository || mission.epoch !== epoch || mission.candidateSha !== candidateSha) throw new PreviewFailure('The candidate changed before its preview started.');
       if (!env.SANDBOX) throw new PreviewFailure('The preview runner is unavailable.');
       const previews = workerPreviewsConfig(env);
-      const prepared = await prepareCandidatePreview(env, { repository, mission, previewAttemptId: claimId, workerPreviews: !!previews, assertAuthority: () => access.check(principal, 'read', 'repository', repositoryId, missionId) });
+      const alias = previews ? previewAlias(missionId, previews.workerName) : '';
+      const assetsCall = previews ? cloudflareDeployClient({ accessToken: previews.token, accountId: previews.accountId, scopes: [], source: 'workspace' }).call : null;
+      const prepared = await prepareCandidatePreview(env, {
+        repository, mission, previewAttemptId: claimId, workerPreviews: !!previews,
+        assertAuthority: () => access.check(principal, 'read', 'repository', repositoryId, missionId),
+        publishWorker: async (built) => {
+          if (!previews || !assetsCall) throw new PreviewFailure('Worker previews are not configured for this installation.');
+          const { uploadAssets } = built;
+          return upsertWorkerPreview(previews, {
+            alias,
+            bundle: built.bundle,
+            annotations: { 'workers/commit_sha': candidateSha, 'workers/message': mission.title.slice(0, 100), 'workers/pull_request_title': mission.title.slice(0, 100) },
+            ...(uploadAssets ? { uploadAssets: () => uploadAssets(assetsCall, previews.accountId, previews.workerName) } : {}),
+          });
+        },
+      });
       if (prepared.kind === 'worker') {
-        if (!previews) throw new PreviewFailure('Worker previews are not configured for this installation.');
-        const alias = previewAlias(missionId, previews.workerName);
-        await access.check(principal, 'read', 'repository', repositoryId, missionId);
-        const result = await upsertWorkerPreview(previews, { alias, bundle: prepared.bundle, annotations: { 'workers/commit_sha': candidateSha, 'workers/message': mission.title.slice(0, 100), 'workers/pull_request_title': mission.title.slice(0, 100) } });
+        const result = prepared.published;
+        if (!result) throw new PreviewFailure('The Worker preview was not published.');
         const expiresAt = await coordinator.workerPreviewReady(missionId, epoch, candidateSha, claimId, { previewName: alias, previewUrl: result.previewUrl, deploymentUrl: result.deploymentUrl, notes: result.notes.slice(0, 50) });
         await catalog.holdPreviewSlot(missionId, expiresAt);
         return { worker: true };

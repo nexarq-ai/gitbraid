@@ -3,6 +3,7 @@ import type { AgentTask, ModelConnection } from './types';
 export const DRAFT_GOAL_MIN = 10;
 export const DRAFT_GOAL_MAX = 4000;
 export const MISSION_PROMPT_MAX = 8000;
+export const MAX_MISSION_AGENTS = 10;
 
 export interface MissionDraftResult { title: string; acceptanceCriteria: string[]; tasks: AgentTask[] }
 export interface DraftRequestState { repositoryId: string; goal: string }

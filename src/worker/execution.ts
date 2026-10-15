@@ -7,12 +7,13 @@ import { validateRepositorySkillChange } from './skill-edit';
 import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { inferenceMessage, ModelResponseError, type InputItem, type ModelEnv, type ModelMessage } from './model-adapter';
 export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
-import { classifyPreview, previewPlan } from './preview-plan';
-import { buildWorkerBundle, DEPLOY_BUILD_TIMEOUT_MS, deployBuildScript, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type WorkerBundle } from './worker-bundle';
+import { classifyPreview, previewPlan, workerPreviewBuildCommand } from './preview-plan';
+import { buildWorkerBundle, DEPLOY_BUILD_TIMEOUT_MS, deployBuildScript, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type BundleSandbox, type ResolvedWorkerConfig, type WorkerBundle } from './worker-bundle';
 import { collectAndUploadAssets, type AssetsOptions } from './worker-assets';
 import { migrationDatabases, readMigrationFiles } from './d1-migrations';
 import type { BuiltTarget } from './deployments';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
+import { MAX_MISSION_AGENTS } from '../shared/mission-draft';
 import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, INSTALL_ATTEMPTS, isTransientInstallFailure, runnerFor, type InstallPlan } from './package-manager';
 import type { LearnedLimits } from './check-settings';
 import { DEFAULT_EDITABLE, escalatedLimits, isFixedSource, startingTimeoutMs, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
@@ -67,10 +68,10 @@ export function executionReadiness(env: ExecutionEnv, mode: 'agent' | 'skill-edi
 }
 
 export const MIN_AGENTS = 1;
-export const MAX_AGENTS = 8;
+export const MAX_AGENTS = MAX_MISSION_AGENTS;
 
 export async function runConcurrent<T>(jobs: (() => Promise<T>)[]): Promise<PromiseSettledResult<T>[]> {
-  if (jobs.length < 1 || jobs.length > 8) throw new Error('A proposal requires one to eight agent tasks');
+  if (jobs.length < MIN_AGENTS || jobs.length > MAX_AGENTS) throw new Error(`A proposal requires one to ${MAX_AGENTS} agent tasks`);
   const outcomes: PromiseSettledResult<T>[] = new Array(jobs.length);
   let next = 0;
   async function worker() {
@@ -565,7 +566,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   const branchChange = mission.branchChange;
   if (branchChange && (mission.runs.length !== 1 || !validGitSha(branchChange.headSha) || branchChange.closedAt)) throw new Error('A pull request requires one trusted merger, an exact branch head and an open state');
   const trusted = !!skillChange || !!revertChange || !!branchChange;
-  if (!trusted && (mission.runs.length < 1 || mission.runs.length > 8)) throw new Error('A proposal requires one to eight agent tasks');
+  if (!trusted && (mission.runs.length < MIN_AGENTS || mission.runs.length > MAX_AGENTS)) throw new Error(`A proposal requires one to ${MAX_AGENTS} agent tasks`);
   if (!await isActive()) throw new Error('Mission cancelled');
   using skillSource = await ARTIFACTS.get(repository.name);
   if (skillChange && (await skillSource.log({ ref: repository.defaultBranch, limit: 1 }))[0]?.hash !== baseSha) throw new Error('Repository changed after the skill proposal was created');
@@ -875,9 +876,21 @@ export class PreviewFailure extends Error {
   }
 }
 
-export type PreparedPreview = { kind: 'container'; sandboxName: string; candidateSha: string } | { kind: 'worker'; bundle: WorkerBundle; candidateSha: string };
+export interface BuiltPreview { bundle: WorkerBundle; uploadAssets?: BuiltTarget['uploadAssets'] }
+export type PreparedPreview<T = undefined> = { kind: 'container'; sandboxName: string; candidateSha: string } | { kind: 'worker'; bundle: WorkerBundle; candidateSha: string; published?: T };
 
-export async function prepareCandidatePreview(env: ExecutionEnv, { mission, previewAttemptId, assertAuthority = unrestricted, workerPreviews = false }: IntegrationInput & { previewAttemptId: string; workerPreviews?: boolean }): Promise<PreparedPreview> {
+function workerAssetsOptions(config: ResolvedWorkerConfig): AssetsOptions | null {
+  if (!config.assets) return null;
+  const assets = config.deploy?.assets;
+  if (!assets || typeof assets !== 'object' || typeof (assets as Record<string, unknown>).directory !== 'string') throw new WorkerBuildFailure('WORKER_ASSETS_DIRECTORY_INVALID', 'The assets directory must be inside the repository.');
+  return assets as AssetsOptions;
+}
+
+function uploadsAssets(sandbox: BundleSandbox, options: AssetsOptions | null): Pick<BuiltPreview, 'uploadAssets'> {
+  return options ? { uploadAssets: (call, accountId, workerName) => collectAndUploadAssets(sandbox, { call, accountId, workerName, options }) } : {};
+}
+
+export async function prepareCandidatePreview<T = undefined>(env: ExecutionEnv, { mission, previewAttemptId, assertAuthority = unrestricted, workerPreviews = false, publishWorker }: IntegrationInput & { previewAttemptId: string; workerPreviews?: boolean; publishWorker?: (built: BuiltPreview) => Promise<T> }): Promise<PreparedPreview<T>> {
   if (mission.authorization && assertAuthority === unrestricted) throw new Error('Preview authority guard is required');
   if (!/^[a-f0-9-]{36}$/.test(previewAttemptId)) throw new Error('Invalid preview attempt ID');
   if (!env.ARTIFACTS || !env.SANDBOX || !mission.candidateSha || !mission.integrationForkName) throw new Error('A real integration candidate is required for preview');
@@ -895,20 +908,40 @@ export async function prepareCandidatePreview(env: ExecutionEnv, { mission, prev
     const files = (await checked(sandbox, ['git', 'ls-files'])).split('\n').filter(Boolean);
     let installed = false;
     const configPath = workerConfigPath(files);
-    if (configPath && classifyPreview(files, { main: configPath, assets: false }, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
+    if (configPath && classifyPreview(files, { main: configPath }, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
+      let built: BuiltPreview | null = null;
       try {
-        const { plan } = await workingTreeInstall(sandbox, files);
+        const { plan, packageJson } = await workingTreeInstall(sandbox, files);
         if (plan) await installDependencies(sandbox, plan, assertAuthority, async () => true);
         installed = true;
-        const config = await readWorkerConfig(sandbox, configPath);
-        if (config && classifyPreview(files, config, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
+        let config = await readWorkerConfig(sandbox, configPath);
+        const assetsDirectory = config?.deploy?.assets && typeof config.deploy.assets === 'object' ? (config.deploy.assets as Record<string, unknown>).directory : undefined;
+        const buildCommand = workerPreviewBuildCommand(files, packageJson, typeof assetsDirectory === 'string' ? assetsDirectory : null, plan);
+        if (buildCommand) {
+          if (!sandbox.check) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot run build commands.');
           await assertAuthority();
-          const bundle = await buildWorkerBundle(sandbox, config);
-          await sandbox.destroy();
-          return { kind: 'worker', bundle, candidateSha: mission.candidateSha };
+          const result = await sandbox.check(deployBuildScript(buildCommand), DEPLOY_BUILD_TIMEOUT_MS);
+          if (result.exitCode !== 0) throw new WorkerBuildFailure('PREVIEW_BUILD_FAILED', `${buildCommand} failed (exit ${result.exitCode}${result.timedOut ? ', timed out' : ''}). ${(result.stderr || result.stdout).replace(/\s+/g, ' ').trim().slice(-500)}`);
+          config = await readWorkerConfig(sandbox, configPath, true);
+        }
+        if (config && classifyPreview(files, config, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
+          const assets = workerAssetsOptions(config);
+          await assertAuthority();
+          built = { bundle: await buildWorkerBundle(sandbox, config), ...uploadsAssets(sandbox, assets) };
         }
       } catch (error) {
         throw new PreviewFailure(`Worker preview could not be built. ${error instanceof Error ? error.message : 'The Worker build failed.'}`);
+      }
+      if (built) {
+        let published: T | undefined;
+        try {
+          await assertAuthority();
+          if (publishWorker) published = await publishWorker(built);
+        } catch (error) {
+          throw new PreviewFailure(`Worker preview could not be published. ${error instanceof Error ? error.message : 'Cloudflare rejected the preview.'}`);
+        }
+        await sandbox.destroy();
+        return { kind: 'worker', bundle: built.bundle, candidateSha: mission.candidateSha, ...(publishWorker ? { published } : {}) };
       }
     }
     const { packageJson, lockHead } = await workingTreeInstall(sandbox, files);
@@ -959,13 +992,7 @@ export async function buildLandedWorker<T = BuiltTarget>(env: ExecutionEnv, { re
     await assertAuthority();
     const bundle = await buildWorkerBundle(sandbox, config);
     const migrations = target?.d1Migrations ? await readMigrationFiles(sandbox, migrationDatabases(config.deploy?.d1_databases)) : [];
-    const assets = config.deploy?.assets && typeof config.deploy.assets === 'object' ? config.deploy.assets as Record<string, unknown> : null;
-    if (config.assets && (!assets || typeof assets.directory !== 'string')) throw new WorkerBuildFailure('WORKER_ASSETS_DIRECTORY_INVALID', 'The assets directory must be inside the repository.');
-    return await publish({
-      bundle,
-      migrations,
-      ...(config.assets && assets ? { uploadAssets: (call, accountId, workerName) => collectAndUploadAssets(sandbox, { call, accountId, workerName, options: assets as unknown as AssetsOptions }) } : {}),
-    });
+    return await publish({ bundle, migrations, ...uploadsAssets(sandbox, workerAssetsOptions(config)) });
   } finally {
     try { await sandbox.destroy(); }
     catch { console.error('runner.deploy.cleanup.failed', repository.id); }
