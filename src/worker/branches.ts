@@ -84,7 +84,7 @@ export interface BranchContext { artifacts?: ArtifactsBinding; repository: Repos
 export async function branchApi(request: Request, context: BranchContext, operation: 'create' | 'delete'): Promise<Response> {
   const { repository, coordinator, principal, access, fetcher } = context;
   await access.authorize(principal, 'contribute', 'repository', repository.id);
-  if (!context.artifacts || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to use branches.');
+  if (!context.artifacts || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to use streams.');
   const artifacts = context.artifacts;
   assertMutationOrigin(request);
   const key = requireIdempotencyKey(request), body = await readJson(request, 4096);

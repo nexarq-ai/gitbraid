@@ -2951,3 +2951,10 @@ a svg {
   font-size: 13px;
 }
 .is-hidden { visibility: hidden; }
+.git-term {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #60676f;
+  white-space: nowrap;
+}

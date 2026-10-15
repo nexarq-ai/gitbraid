@@ -232,7 +232,7 @@ export default function RepositoryWork({
                 <AgentAssignment run={run} mission={mission} />
                 <div className="repository-work-meta">
                   <span>
-                    Branch <code>{run.branch || "Not allocated"}</code>
+                    Stream <code>{run.branch || "Not allocated"}</code>
                   </span>
                   <span>
                     Fork <code>{run.forkName || "Not allocated"}</code>

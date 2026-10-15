@@ -28,10 +28,10 @@ export default function AiSettingsPanel({ settings, canManage, onChanged }: { se
           <h2>AI features {enabled ? "on" : "off"}</h2>
           <p>
             {settings?.locked
-              ? "This installation runs without AI (AI_FEATURES=disabled). Repositories, reviews, landing, reverts and releases work as usual."
+              ? "This installation runs without AI (AI_FEATURES=disabled). Repositories, reviews, landing, restores and checkpoints work as usual."
               : enabled
                 ? "Agents, mission drafting, AI model settings and AI client connections are available."
-                : "Agents, mission drafting, AI model settings and AI client connections are hidden and refused. Repositories, reviews, landing, reverts and releases keep working."}
+                : "Agents, mission drafting, AI model settings and AI client connections are hidden and refused. Repositories, reviews, landing, restores and checkpoints keep working."}
           </p>
           {error && <p className="form-error" role="alert">{error}</p>}
         </div>

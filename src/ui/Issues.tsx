@@ -172,7 +172,7 @@ function IssueView({ repository, number, viewer, base, missions }: { repository:
     const name = issueBranchName(issue.number, issue.title);
     setBusy("branch"); setError("");
     try { await createBranch(repository.id, name, undefined, branchKey.current); setCreatedBranch(name); }
-    catch (failure) { if (failure instanceof RequestError && failure.code === "BRANCH_EXISTS") setCreatedBranch(name); else setError(failure instanceof Error ? failure.message : "The branch could not be created."); }
+    catch (failure) { if (failure instanceof RequestError && failure.code === "BRANCH_EXISTS") setCreatedBranch(name); else setError(failure instanceof Error ? failure.message : "The stream could not be created."); }
     finally { setBusy(""); }
   }
   if (!issue) return error ? <><a className="header-back" href={`/${base}`}><ArrowLeftIcon size={13} />All issues</a><div className="error-notice" role="alert">{error}</div></> : <RouteProgress />;
@@ -197,7 +197,7 @@ function IssueView({ repository, number, viewer, base, missions }: { repository:
           <div><h2>{issue.title} <span>#{issue.number}</span></h2><p><StateBadge state={issue.state} reason={issue.closedReason} /> {name(issue.authorId)} opened this issue {relativeTime(issue.createdAt)} · {issue.commentCount} {issue.commentCount === 1 ? "comment" : "comments"}</p></div>
           <div className="issue-header-actions">
             {canContribute && issue.state === "open" && <Button className="ai-only" variant="primary" size="base" icon={SparkleIcon} onClick={() => navigate(`repository/${repository.id}/proposals/new?issue=${issue.number}`)}>Fix with AI</Button>}
-            {canContribute && issue.state === "open" && <Button variant="secondary" size="base" icon={GitBranchIcon} loading={busy === "branch"} disabled={!!busy} onClick={() => void branch()}>Create branch</Button>}
+            {canContribute && issue.state === "open" && <Button variant="secondary" size="base" icon={GitBranchIcon} loading={busy === "branch"} disabled={!!busy} onClick={() => void branch()}>Create stream</Button>}
             {canEdit && <Button variant="secondary" size="base" onClick={() => setEditing({ title: issue.title, body: issue.body })}>Edit</Button>}
           </div>
         </div>

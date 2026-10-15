@@ -16,7 +16,7 @@ export default function GitAccess({ repository, onNotify }: { repository: Reposi
   const commands = [`git clone ${quoteGitArgument(gitUrl)}`, "git push origin my-branch"];
   return (
     <section className="panel git-access">
-      <div className="panel-header"><h2>Clone and push</h2><a className="text-link" href={`/repository/${repository.id}/settings/branches`}><ShieldCheckIcon size={13} />Branches &amp; protection</a></div>
+      <div className="panel-header"><h2>Clone and push</h2><a className="text-link" href={`/repository/${repository.id}/settings/branches`}><ShieldCheckIcon size={13} />Streams &amp; protection</a></div>
       <div className="panel-body">
         {commands.map(command => (
           <div className="clipboard-row" key={command}>
@@ -24,7 +24,7 @@ export default function GitAccess({ repository, onNotify }: { repository: Reposi
             <Button variant="ghost" size="base" shape="square" aria-label={`Copy ${command}`} icon={CopyIcon} onClick={() => void navigator.clipboard.writeText(command).then(() => onNotify("Command copied.")).catch(() => onNotify("Copy is unavailable in this browser."))} />
           </div>
         ))}
-        <p className="git-access-note"><InfoIcon size={14} /><span>Git ignores the username. Use a personal session token from <a href="/settings">Settings → Account</a> as the password. Pushes to protected branches are rejected, so push a branch and <a href={`/repository/${repository.id}/pulls/new`}>open a pull request</a>. Tags are managed by Releases.</span></p>
+        <p className="git-access-note"><InfoIcon size={14} /><span>Git ignores the username. Use a personal session token from <a href="/settings">Settings → Account</a> as the password. Pushes to protected branches are rejected, so push a branch and <a href={`/repository/${repository.id}/pulls/new`}>open a proposal</a>. Tags are managed by Checkpoints.</span></p>
       </div>
     </section>
   );

@@ -147,3 +147,7 @@
   color: #31363c;
   font-weight: 500;
 }
+.repository-work-heading > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}

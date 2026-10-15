@@ -388,7 +388,7 @@ export async function applyBranchMerge(sandbox: SandboxRunner, remote: string, c
   const branch = branchName(change.branch);
   await checked(sandbox, ['git', 'fetch', '--no-tags', '--', remote, `refs/heads/${branch}`]);
   const fetched = await checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
-  if (fetched !== change.headSha) throw new Error(`Branch ${branch} moved to ${fetched.slice(0, 12)} after this pull request recorded ${change.headSha.slice(0, 12)}. Use Update from branch to check the new head.`);
+  if (fetched !== change.headSha) throw new Error(`Branch ${branch} moved to ${fetched.slice(0, 12)} after this proposal recorded ${change.headSha.slice(0, 12)}. Use Update from stream to check the new head.`);
   const target = await checked(sandbox, ['git', 'rev-parse', 'HEAD']);
   if ((await sandbox.command(['git', 'merge-base', '--is-ancestor', change.headSha, target], '/workspace/repo')).exitCode === 0) throw new Error(`Branch ${branch} has no commits that are not already on ${change.targetBranch}`);
   if ((await sandbox.command(['git', 'merge-base', '--is-ancestor', target, change.headSha], '/workspace/repo')).exitCode === 0) {
@@ -547,8 +547,8 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       } else if (branchChange && canonical) {
         const merged = await applyBranchMerge(sandbox, canonical.remote, branchChange);
         if (merged.mode === 'conflict') {
-          result.checks.push({ id: `${key}-merge`, name: `Merge ${branchChange.branch} into ${branchChange.targetBranch}`, runId: run.id, status: 'failed', output: `Merge conflicts in: ${merged.conflicts.join(', ') || 'unknown files'}\nUpdate ${branchChange.branch} from ${branchChange.targetBranch}, resolve these files, push, then use Update from branch.\n${merged.output}`.slice(0, outputLimit) });
-          throw new Error(`Merging ${branchChange.branch} conflicts in ${merged.conflicts.length} file${merged.conflicts.length === 1 ? '' : 's'}: ${merged.conflicts.slice(0, 10).join(', ')}`);
+          result.checks.push({ id: `${key}-merge`, name: `Merge ${branchChange.branch} into ${branchChange.targetBranch}`, runId: run.id, status: 'failed', output: `Collision (Git merge conflict) in: ${merged.conflicts.join(', ') || 'unknown files'}\nUpdate ${branchChange.branch} from ${branchChange.targetBranch}, resolve these files, push, then use Update from stream.\n${merged.output}`.slice(0, outputLimit) });
+          throw new Error(`Landing ${branchChange.branch} collides in ${merged.conflicts.length} file${merged.conflicts.length === 1 ? '' : 's'}: ${merged.conflicts.slice(0, 10).join(', ')}`);
         }
         agentSummary = `${merged.mode === 'fast-forward' ? 'Fast-forwarded' : 'Merged'} ${branchChange.branch} at ${branchChange.headSha.slice(0, 12)} onto ${branchChange.targetBranch} using the trusted merger. No model was called.`;
       } else if (revertChange) {
@@ -663,8 +663,8 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       const merged = await sandbox.command(['git', '-c', 'core.hooksPath=/dev/null', 'merge', '--no-ff', '--no-edit', fetched], '/workspace/repo');
       if (merged.exitCode !== 0) {
         const conflicted = await sandbox.command(['git', 'diff', '--name-only', '--diff-filter=U'], '/workspace/repo');
-        result.checks.push({ id: 'integration-merge', name: 'Combine agent changes', status: 'failed', output: `Merging ${run.name} conflicted in: ${conflicted.stdout.trim().split('\n').filter(Boolean).join(', ') || 'unknown files'}\n${merged.stdout}\n${merged.stderr}`.slice(0, outputLimit) });
-        throw new Error(`Agent changes have a Git merge conflict when adding ${run.name}`);
+        result.checks.push({ id: 'integration-merge', name: 'Combine agent changes', status: 'failed', output: `Collision (Git merge conflict) adding ${run.name} in: ${conflicted.stdout.trim().split('\n').filter(Boolean).join(', ') || 'unknown files'}\n${merged.stdout}\n${merged.stderr}`.slice(0, outputLimit) });
+        throw new Error(`Agent changes collide (Git merge conflict) when adding ${run.name}`);
       }
     }
     const sha = await checked(sandbox, ['git', 'rev-parse', 'HEAD']);

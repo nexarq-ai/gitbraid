@@ -429,7 +429,7 @@ export default function DiffView({ changes, candidateSha, comments, canComment, 
         )}
         {truncated && (
           <p className="diff-note warning">
-            This diff was cut off at {Math.round(STORED_PATCH_LIMIT / 1000)} KB when the candidate was recorded. Later lines are not stored with this mission; inspect the candidate commit for the full file.
+            This diff was cut off at {Math.round(STORED_PATCH_LIMIT / 1000)} KB when the candidate was recorded. Later lines are not stored with this mission; inspect the candidate revision for the full file.
           </p>
         )}
       </>
