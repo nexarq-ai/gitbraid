@@ -134,6 +134,11 @@
       "sha256": "bdaeca4d80fcc562d6bfe16b6d285c74e54460e3398d5bf7b862ae710fb8b5cd"
     },
     {
+      "path": "src/shared/mission-draft.ts",
+      "size": 2674,
+      "sha256": "1fd9ab209d621b2d5cc836f3c05ee5fb69b1509b65c3b3c17055eee926c5bff2"
+    },
+    {
       "path": "src/shared/pull-requests.ts",
       "size": 449,
       "sha256": "b8674ae92674df9998b49e5eb66a4448aebbaffe5c4d87ed63acd74dfedbc0d0"
