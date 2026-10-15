@@ -11,7 +11,8 @@ import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflow
 import { PREVIEW_STEP_MS } from './budgets';
 import { handleMcp, mcpToolNames } from './mcp';
 import { startWithDurableDispatch } from './coordinator';
-import { securityClient, type Principal, type Action } from './security';
+import { hashToken, securityClient, type Principal, type Action } from './security';
+import { consume, rateLimitedResponse, rateSubject } from './rate-limits';
 import { listDocs, readDoc } from './docs';
 import { documentationImage, documentationMarkdown } from './docs-markdown';
 import { handleOnboarding } from './onboarding';
@@ -737,14 +738,18 @@ const application = {
     let response: Response;
     try {
       if (path === '/mcp') {
-        await authorize(request, env, true);
+        const subject = rateSubject(await authorize(request, env, true));
         response = await handleMcp(request, async (internal) => {
           const headers = new Headers(internal.headers);
           headers.set('Authorization', request.headers.get('Authorization') ?? '');
           const workspace = request.headers.get('X-Gitflare-Workspace'); if (workspace) headers.set('X-Gitflare-Workspace', workspace);
           return api(new Request(internal, { headers }), env);
-        });
-      } else response = await api(request, env, ctx);
+        }, kind => consume(env, kind === 'read' ? 'MCP_READ_RATE_LIMIT' : 'MCP_WRITE_RATE_LIMIT', subject));
+      } else {
+        const bearer = request.headers.get('Authorization')?.match(/^Bearer (.+)$/)?.[1];
+        const limited = bearer ? await consume(env, 'API_RATE_LIMIT', `token:${await hashToken(bearer)}`) : null;
+        response = limited ? rateLimitedResponse(limited, 'API requests') : await api(request, env, ctx);
+      }
     } catch (error) {
       const failure = publicError(error);
       if (failure.code === 'INTERNAL_ERROR') console.error(JSON.stringify({ event: 'api_unexpected_error', method: request.method, route: path.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/g, ':id'), name: error instanceof Error ? error.name : typeof error, message: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 200), stack: error instanceof Error ? error.stack?.split('\n').slice(1, 6).join(' | ') : undefined }));
