@@ -355,8 +355,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 56971,
-      "sha256": "6e401f6a6ff85987b104c052986636d0bfa3835570a731c50b31b1f4e457e3db"
+      "size": 57076,
+      "sha256": "2222500fc60ce821c770021b3b9cc49d14d7793439684234874f257ec594fa79"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -540,8 +540,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 85945,
-      "sha256": "dc3ec21e3cfe574d36cc20443a6665816ca99090da727eda83ce2c6518822c1f"
+      "size": 86111,
+      "sha256": "60e9bf965e17a687a56d54969d06a3c7cdc5d2df48392bb9cd632c951e7a8d98"
     },
     {
       "path": "src/worker/d1-migrations.ts",

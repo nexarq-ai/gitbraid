@@ -735,7 +735,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const reusable = (run: Mission['runs'][number]) => run.status === 'completed' && !!run.commitSha && !!run.forkName && !runIds?.includes(run.id) && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha);
       const reused = mission.runs.filter(reusable);
       const others = mission.runs.filter((run) => !reusable(run));
-      if (!others.length) throw new ApiError(409, 'NO_FAILED_AGENTS', 'Every agent has a verified candidate. Use Retry mission to rerun them all, or choose the agents to rerun.');
+      if (!others.length && (mode === 'drop' || mission.mode === 'race')) throw new ApiError(409, 'NO_FAILED_AGENTS', 'Every agent has a verified candidate. Use Retry mission to rerun them all, or choose the agents to rerun.');
       if (mode === 'drop' && !reused.length) throw new ApiError(409, 'NO_COMPLETED_AGENTS', 'No agent has a verified candidate to continue with. Retry the failed agents instead.');
       const repository = this.getRepository(mission.repositoryId);
       const previousEpoch = mission.epoch;
@@ -771,7 +771,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const reuseNote = reused.length ? ` Reusing ${reused.length} verified candidate${reused.length === 1 ? '' : 's'} from attempt ${previousEpoch} (${names(reused)}) after confirming each commit is still in its fork.` : '';
       this.queueDispatch(mission);
       return this.saveMission(mission, mode === 'retry'
-        ? `Attempt ${mission.epoch} queued to retry ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}).${reuseNote}${moved}`
+        ? others.length ? `Attempt ${mission.epoch} queued to retry ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}).${reuseNote}${moved}` : `Attempt ${mission.epoch} queued to combine again without rerunning any agent.${reuseNote}${moved}`
         : `Attempt ${mission.epoch} queued without ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}), now marked skipped.${reuseNote} Acceptance criteria are unchanged.${moved}`, mode === 'drop' ? 'warning' : 'info');
     }));
     if (started.status === 'queued') this.queueDispatch(started);

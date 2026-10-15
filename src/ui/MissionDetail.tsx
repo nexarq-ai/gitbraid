@@ -431,7 +431,7 @@ export default function MissionDetail({
   const verifiedChecks = mission.raceChecks ?? mission.checks;
   const verifiedRuns = mission.runs.filter((run) => run.status === "completed" && !!run.commitSha && !!run.forkName && verifiedChecks.some((check) => check.runId === run.id && check.status === "passed" && check.candidateSha === run.commitSha));
   const unfinishedRuns = mission.runs.filter((run) => !verifiedRuns.includes(run));
-  const canRetryAgents = mission.epoch > 0 && ["failed", "cancelled"].includes(mission.status) && !mission.skillChange && !mission.revertChange && !mission.branchChange && unfinishedRuns.length > 0;
+  const canRetryAgents = mission.epoch > 0 && ["failed", "cancelled"].includes(mission.status) && !mission.skillChange && !mission.revertChange && !mission.branchChange && (unfinishedRuns.length > 0 || mission.mode !== "race");
   const landing = mission.status === "integrating" && !mission.error;
   const overlap = mission.changes.filter((change) => change.runIds.length > 1);
   const unresolvedRequests = (mission.reviews ?? []).filter(
@@ -569,10 +569,10 @@ export default function MissionDetail({
               disabled={!!busy || !permissions.includes("execute")}
               onClick={() => void act("retry-agents")}
             >
-              Retry failed agents ({unfinishedRuns.length})
+              {unfinishedRuns.length ? `Retry failed agents (${unfinishedRuns.length})` : "Combine again"}
             </Button>
           )}
-          {canRetryAgents && verifiedRuns.length > 0 && (
+          {canRetryAgents && verifiedRuns.length > 0 && unfinishedRuns.length > 0 && (
             <Button
               variant="secondary"
               size="base"
