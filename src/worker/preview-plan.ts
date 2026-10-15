@@ -52,7 +52,7 @@ export function previewPlan(files: string[], packageJson: string | null, configu
 }
 
 export type PreviewKind = 'worker' | 'container';
-export interface WorkerProjectShape { main?: string; assets: boolean }
+export interface WorkerProjectShape { main?: string }
 
 export function hasWorkerConfig(files: string[]): boolean {
   return ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml'].some((name) => files.includes(name));
@@ -60,5 +60,20 @@ export function hasWorkerConfig(files: string[]): boolean {
 
 export function classifyPreview(files: string[], config: WorkerProjectShape | null, options: { workerPreviews: boolean; configuredCommand?: string }): PreviewKind {
   if (!options.workerPreviews || (options.configuredCommand && options.configuredCommand !== LEGACY_PREVIEW)) return 'container';
-  return hasWorkerConfig(files) && !!config?.main && !config.assets ? 'worker' : 'container';
+  return hasWorkerConfig(files) && !!config?.main ? 'worker' : 'container';
+}
+
+function dependsOn(packageJson: string | null, name: string): boolean {
+  if (packageJson === null) return false;
+  try {
+    const manifest = JSON.parse(packageJson) as Record<string, unknown>;
+    return ['dependencies', 'devDependencies'].some((field) => { const value = manifest[field]; return !!value && typeof value === 'object' && name in value; });
+  } catch { return false; }
+}
+
+export function workerPreviewBuildCommand(files: string[], packageJson: string | null, assetsDirectory: string | null | undefined, install: InstallPlan | null): string | null {
+  if (!scripts(packageJson).build) return null;
+  const directory = assetsDirectory?.replace(/\/+$/, '');
+  const untrackedAssets = !!directory && directory !== '.' && !files.some((file) => file.startsWith(`${directory}/`));
+  return dependsOn(packageJson, '@cloudflare/vite-plugin') || untrackedAssets ? runScript(runnerFor(install), 'build') : null;
 }
