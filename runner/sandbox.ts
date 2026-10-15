@@ -1,9 +1,10 @@
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import type { ArtifactsBinding } from '../src/worker/artifacts';
+import { beginUrlImportJob, importJobDependencies, proxyImportSource, resumeUrlImportJob, type ImportSourceProps, type UrlImportEnv, type UrlImportJob } from '../src/worker/url-import';
 
 export interface GitPermission { name: string; remote: string; write: boolean }
 export interface CommandResult { exitCode: number; stdout: string; stderr: string }
-interface RunnerEnv { ARTIFACTS: ArtifactsBinding; RUNNER_IMAGE?: string }
+interface RunnerEnv extends Omit<UrlImportEnv, 'ARTIFACTS'> { ARTIFACTS: ArtifactsBinding; RUNNER_IMAGE?: string }
 interface OutboundProps { repositories: GitPermission[] }
 
 const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
@@ -29,6 +30,12 @@ export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
     headers.delete('cookie');
     headers.set('authorization', `Bearer ${token.plaintext}`);
     return fetch(new Request(request, { headers, redirect: 'manual' }));
+  }
+}
+
+export class ImportOutbound extends WorkerEntrypoint<RunnerEnv, ImportSourceProps> {
+  async fetch(request: Request): Promise<Response> {
+    return proxyImportSource(request, this.ctx.props);
   }
 }
 
@@ -78,6 +85,7 @@ export class RegistryOutbound extends WorkerEntrypoint {
 
 export class AgentSandbox extends DurableObject<RunnerEnv> {
   #repositories: GitPermission[] | undefined;
+  readonly #importCredentials = new Map<string, string>();
 
   constructor(ctx: DurableObjectState, env: RunnerEnv) {
     super(ctx, env);
@@ -143,6 +151,27 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
       // --ignore-scripts: package lifecycle scripts must not run while the registry is reachable
       return await this.#executeCommand(['npm', mode, '--ignore-scripts', '--no-audit', '--no-fund'], '/workspace/repo', 300_000, 300_000);
     } finally { await this.#restrictToGit(repositories); }
+  }
+
+  async transfer(argv: string[], timeoutMs: number, source?: ImportSourceProps): Promise<CommandResult> {
+    const container = this.ctx.container;
+    const repositories = this.#repositories;
+    if (!container?.running || !repositories) throw new Error('Sandbox is not prepared');
+    if (source) {
+      const outbound = this.ctx.exports.ImportOutbound({ props: source });
+      await container.interceptAllOutboundHttp(outbound);
+      await container.interceptOutboundHttps('*', outbound);
+    }
+    try { return await this.#executeCommand(argv, '/workspace', timeoutMs, 600_000); }
+    finally { if (source) await this.#restrictToGit(repositories); }
+  }
+
+  async beginUrlImport(job: UrlImportJob, authorization?: string): Promise<{ started: boolean }> {
+    return beginUrlImportJob(this.ctx.storage, this.#importCredentials, job, authorization);
+  }
+
+  async alarm(): Promise<void> {
+    await resumeUrlImportJob(this.ctx.storage, this.#importCredentials, this, importJobDependencies(this.env));
   }
 
   async #bootstrapCommand(stage: string, script: string, timeoutMs = 120_000): Promise<void> {

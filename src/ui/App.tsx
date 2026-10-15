@@ -1300,7 +1300,7 @@ function RepositoryDetail({
           ].map((item) => <button key={item.value} className={"ai" in item && item.ai ? "ai-only" : undefined} aria-current={tab === item.value || `${tab}/${subroute}` === item.value || (tab === "proposals" && item.value === "pulls") ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>
       {tab === "issues" ? <Issues key={repository.id} repository={repository} issueNumber={issueNumber} missions={missions} /> : tab === "releases" ? <Releases key={repository.id} repository={repository} releaseId={releaseId} canLand={canLand} onNotify={onNotify} /> : tab === "pulls" || tab === "proposals" ? subroute === "new" ? <PullRequestCreate key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onCreated={onRefresh} onAskAgents={() => onMission(repository.id)} /> : <PullRequests key={repository.id} repositoryId={repository.id} missions={missions} canContribute={canContribute} /> : tab === "settings" && subroute === "branches" ? <BranchProtection key={repository.id} repository={repository} canManage={canManage} onNotify={onNotify} /> : ["agents", "checks"].includes(tab) ? <RepositoryWork key={`${repository.id}-${tab}`} tab={tab} missions={missions} canContribute={canContribute} onCreate={() => onMission(repository.id)} onOpen={onOpenMission} /> : tab === "skills" ? <RepositorySkills key={repository.id} repository={repository} canContribute={canContribute} canExecute={canExecute} onOpenMission={onOpenMission} /> : tab === "cloudflare" ? <CloudflareConnection canManage={canManage} repository={repository} repositoryId={repository.id} /> : tab === "code" ? (
-        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} /><RepositoryBrowser key={repository.id} repository={repository} />{repository.provider === "artifacts" && <GitAccess key={`git-${repository.id}`} repository={repository} onNotify={onNotify} />}</>
+        <><RepositoryImportOnboarding key={repository.id} repository={repository} canManage={canManage} onImport={onImport} onRefresh={onRefresh} /><RepositoryBrowser key={repository.id} repository={repository} />{repository.provider === "artifacts" && <GitAccess key={`git-${repository.id}`} repository={repository} onNotify={onNotify} />}</>
       ) : tab === "overview" ? (
         <>
           <section className="panel">
@@ -1456,7 +1456,11 @@ function CreationDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [initializeReadme, setInitializeReadme] = useState(true);
-  const [importCode, setImportCode] = useState(false);
+  const [start, setStart] = useState<"new" | "zip" | "url">("new");
+  const importCode = start === "zip";
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceToken, setSourceToken] = useState("");
+  const [sourceUsername, setSourceUsername] = useState("");
   const [gitignore, setGitignore] = useState("none");
   const [license, setLicense] = useState("none");
   const [copyrightHolder, setCopyrightHolder] = useState("");
@@ -1468,7 +1472,7 @@ function CreationDialog({
   useEffect(() => {
     setName("");
     setDescription("");
-    setImportCode(false); setInitializeReadme(true); setGitignore("none"); setLicense("none"); setCopyrightHolder("");
+    setStart("new"); setSourceUrl(""); setSourceToken(""); setSourceUsername(""); setInitializeReadme(true); setGitignore("none"); setLicense("none"); setCopyrightHolder("");
     setToken("");
     setError("");
     setBusy(false);
@@ -1480,7 +1484,8 @@ function CreationDialog({
     if (busy) return;
     setBusy(true);
     setError("");
-    const body = modal === "session" ? { token } : { name: name.trim(), description: description.trim(), ...(modal === "repository" ? { initializeReadme: importCode ? false : initializeReadme, gitignore: importCode ? "none" : gitignore, license: importCode ? "none" : license, copyrightHolder: importCode ? undefined : copyrightHolder.trim() || undefined } : {}) };
+    const fromUrl = modal === "repository" && start === "url";
+    const body = modal === "session" ? { token } : fromUrl ? { name: name.trim(), description: description.trim(), url: sourceUrl.trim(), ...(sourceToken ? { token: sourceToken } : {}), ...(sourceToken && sourceUsername.trim() ? { username: sourceUsername.trim() } : {}) } : { name: name.trim(), description: description.trim(), ...(modal === "repository" ? { initializeReadme: importCode ? false : initializeReadme, gitignore: importCode ? "none" : gitignore, license: importCode ? "none" : license, copyrightHolder: importCode ? undefined : copyrightHolder.trim() || undefined } : {}) };
     const signature = JSON.stringify({ modal, body });
     if (mutation.current?.signature !== signature)
       mutation.current = { signature, key: crypto.randomUUID() };
@@ -1493,10 +1498,11 @@ function CreationDialog({
         const result = await request<Repository>(
           modal === "connect"
             ? "/api/repositories/connect"
-            : "/api/repositories",
+            : fromUrl ? "/api/repositories/import-url" : "/api/repositories",
           body,
           mutation.current.key,
         );
+        setSourceToken("");
         await onCreated(result, modal === "repository" && importCode);
       }
       mutation.current = null;
@@ -1635,9 +1641,10 @@ function CreationDialog({
                     onChange={(event) => setDescription(event.target.value)}
                   />
                 </div>
-                {modal === "repository" && <div className="form-field"><label htmlFor="repository-start">Start this repository</label><select id="repository-start" value={importCode ? "import" : "new"} onChange={event => setImportCode(event.target.value === "import")}><option value="new">Start a new project</option><option value="import">Import existing code</option></select><small>{importCode ? "Create an empty repository, then choose your project ZIP on the import page." : "Choose initial setup files for your repository."}</small></div>}
-                {modal === "repository" && !importCode && <div className="form-field"><label className="access-checkbox"><input type="checkbox" checked={initializeReadme} onChange={event => setInitializeReadme(event.target.checked)}/>Initialize with a README</label><label htmlFor="repository-gitignore">.gitignore template</label><select id="repository-gitignore" value={gitignore} onChange={event => setGitignore(event.target.value)}>{["none", "Node", "Python"].map(value => <option key={value} value={value}>{value === "none" ? "None" : value}</option>)}</select><label htmlFor="repository-license">License</label><select id="repository-license" value={license} onChange={event => setLicense(event.target.value)}>{["none", "MIT", "Apache-2.0"].map(value => <option key={value} value={value}>{value === "none" ? "No license" : value}</option>)}</select>{license === "MIT" && <><label htmlFor="repository-copyright">Copyright holder</label><Input id="repository-copyright" value={copyrightHolder} onChange={event => setCopyrightHolder(event.target.value)} required maxLength={200}/></>}</div>}
-                {modal === "repository" &&
+                {modal === "repository" && <div className="form-field"><label htmlFor="repository-start">Start this repository</label><select id="repository-start" value={start} onChange={event => setStart(event.target.value as "new" | "zip" | "url")}><option value="new">Start a new project</option><option value="zip">Import existing code from a ZIP</option><option value="url">Import from a Git URL with history</option></select><small>{start === "zip" ? "Create an empty repository, then choose your project ZIP on the import page." : start === "url" ? "Copy every branch and tag with full history from GitHub, GitLab, Bitbucket or another HTTPS Git host." : "Choose initial setup files for your repository."}</small></div>}
+                {modal === "repository" && start === "url" && <div className="form-field"><label htmlFor="repository-source-url">Repository URL</label><Input id="repository-source-url" type="url" required placeholder="https://github.com/owner/repository" value={sourceUrl} maxLength={2048} onChange={event => { const value = event.target.value; const derived = (url: string) => (url.trim().replace(/\/+$/, "").split("/").pop() ?? "").replace(/\.git$/i, "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64); if (!name || name === derived(sourceUrl)) setName(derived(value)); setSourceUrl(value); }} /><label htmlFor="repository-source-token">Access token <span style={{ color: "#929dab", fontWeight: 400 }}>(private repositories only)</span></label><Input id="repository-source-token" type="password" autoComplete="off" value={sourceToken} maxLength={1024} onChange={event => setSourceToken(event.target.value)} />{sourceToken && <><label htmlFor="repository-source-username">Token username <span style={{ color: "#929dab", fontWeight: 400 }}>(optional)</span></label><Input id="repository-source-username" autoComplete="off" value={sourceUsername} maxLength={100} onChange={event => setSourceUsername(event.target.value)} /></>}<small>The token is used once to read the source for this import and is never stored. Use a read-only token. Limit: 256 MiB of Git objects, 500 branches and 2,000 tags.</small></div>}
+                {modal === "repository" && start === "new" && <div className="form-field"><label className="access-checkbox"><input type="checkbox" checked={initializeReadme} onChange={event => setInitializeReadme(event.target.checked)}/>Initialize with a README</label><label htmlFor="repository-gitignore">.gitignore template</label><select id="repository-gitignore" value={gitignore} onChange={event => setGitignore(event.target.value)}>{["none", "Node", "Python"].map(value => <option key={value} value={value}>{value === "none" ? "None" : value}</option>)}</select><label htmlFor="repository-license">License</label><select id="repository-license" value={license} onChange={event => setLicense(event.target.value)}>{["none", "MIT", "Apache-2.0"].map(value => <option key={value} value={value}>{value === "none" ? "No license" : value}</option>)}</select>{license === "MIT" && <><label htmlFor="repository-copyright">Copyright holder</label><Input id="repository-copyright" value={copyrightHolder} onChange={event => setCopyrightHolder(event.target.value)} required maxLength={200}/></>}</div>}
+                {modal === "repository" && start !== "url" &&
                   workspace.mode === "local" &&
                   !workspace.integrations.find(
                     (item) => item.id === "artifacts",
@@ -1676,7 +1683,7 @@ function CreationDialog({
                 {modal === "session"
                   ? "Sign in"
                   : modal === "repository"
-                    ? "Create repository"
+                    ? start === "url" ? "Import repository" : "Create repository"
                     : modal === "connect"
                       ? "Connect repository"
                       : "Create repository"}

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from 'react';
 import { Button } from '@cloudflare/kumo/components/button';
 import { Input } from '@cloudflare/kumo/components/input';
-import { ArrowClockwiseIcon, ArrowLeftIcon, CheckCircleIcon, FileZipIcon, GitBranchIcon, UploadSimpleIcon } from '@phosphor-icons/react';
-import type { Repository } from '../shared/types';
+import { ArrowClockwiseIcon, ArrowLeftIcon, CheckCircleIcon, FileZipIcon, GitBranchIcon, UploadSimpleIcon, WarningCircleIcon } from '@phosphor-icons/react';
+import type { Repository, RepositoryUrlImport, UrlImportPhase } from '../shared/types';
 import { request, RequestError } from './api';
 import './repository-import.css';
 
@@ -31,7 +31,57 @@ function useImportStatus(repository: Repository, canManage: boolean) {
   return { status, error, loading, retry: () => setRefresh(value => value + 1) };
 }
 
-export function RepositoryImportOnboarding({ repository, canManage, onImport }: { repository: Repository; canManage: boolean; onImport: () => void }) {
+export function RepositoryImportOnboarding({ repository, canManage, onImport, onRefresh }: { repository: Repository; canManage: boolean; onImport: () => void; onRefresh?: () => void }) {
+  if (repository.urlImport) return <UrlImportProgress key={repository.id} repository={repository} imported={repository.urlImport} canManage={canManage} onRefresh={onRefresh} />;
+  return <ZipImportOnboarding repository={repository} canManage={canManage} onImport={onImport} />;
+}
+
+const urlImportPhases: [UrlImportPhase, string][] = [['queued', 'Queued'], ['preparing', 'Starting sandbox'], ['fetching', 'Fetching history'], ['verifying', 'Checking limits'], ['pushing', 'Writing branches and tags']];
+
+function UrlImportProgress({ repository, imported, canManage, onRefresh }: { repository: Repository; imported: RepositoryUrlImport; canManage: boolean; onRefresh?: () => void }) {
+  const [state, setState] = useState(imported);
+  const [token, setToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const retryKey = useRef<string | null>(null);
+  const refresh = useRef(onRefresh);
+  refresh.current = onRefresh;
+  useEffect(() => { setState(imported); }, [imported]);
+  useEffect(() => {
+    if (state.status !== 'importing') return;
+    let active = true;
+    const timer = setInterval(() => {
+      void request<{ urlImport: RepositoryUrlImport | null }>(`/api/repositories/${encodeURIComponent(repository.id)}/import-url`).then(value => {
+        if (!active || !value.urlImport) return;
+        setState(value.urlImport);
+        if (value.urlImport.status !== 'importing') refresh.current?.();
+      }).catch(() => {});
+    }, 4000);
+    return () => { active = false; clearInterval(timer); };
+  }, [repository.id, state.status]);
+  async function retry(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true); setError('');
+    retryKey.current ??= crypto.randomUUID();
+    try {
+      const result = await request<Repository>(`/api/repositories/${encodeURIComponent(repository.id)}/import-url/retry`, { ...(token ? { token } : {}), ...(token && username ? { username } : {}) }, retryKey.current);
+      retryKey.current = null; setToken('');
+      if (result.urlImport) setState(result.urlImport);
+      onRefresh?.();
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'The import could not be retried.'); }
+    finally { setBusy(false); }
+  }
+  if (state.status === 'ready') return null;
+  if (state.status === 'importing') {
+    const current = urlImportPhases.findIndex(([phase]) => phase === state.phase);
+    return <section className="repository-import-banner" aria-label="Import in progress" aria-live="polite"><ArrowClockwiseIcon size={24} aria-hidden="true" /><div><h2>Importing from {state.source}</h2><p>Gitflare is copying every branch and tag with full history. This page updates automatically.</p><ol className="repository-import-steps">{urlImportPhases.map(([phase, label], index) => <li key={phase} aria-current={index === current ? 'step' : undefined}><span>{index < current ? <CheckCircleIcon size={14} /> : index + 1}</span>{label}</li>)}</ol></div></section>;
+  }
+  return <section className="repository-import-banner" aria-label="Import failed"><WarningCircleIcon size={24} aria-hidden="true" /><div><h2>Import from {state.source} failed</h2><p role="alert">{state.error?.message ?? 'The import did not finish.'}</p>{canManage && <form className="repository-url-retry" onSubmit={event => void retry(event)}><Input type="password" aria-label="Access token" placeholder={state.authenticated ? 'Access token (required again)' : 'Access token (optional)'} autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required={state.authenticated} /><Input aria-label="Token username" placeholder="Username (optional)" autoComplete="off" value={username} onChange={event => setUsername(event.target.value)} /><Button type="submit" variant="primary" size="base" loading={busy}>Retry import</Button></form>}{error && <p className="form-error" role="alert">{error}</p>}<p>Tokens are used once for the import and are never stored.</p></div></section>;
+}
+
+function ZipImportOnboarding({ repository, canManage, onImport }: { repository: Repository; canManage: boolean; onImport: () => void }) {
   const { status, error, loading, retry } = useImportStatus(repository, canManage);
   if (!canManage || repository.provider !== 'artifacts') return null;
   if (error) return <div className="repository-import-banner"><div><strong>Add your existing code</strong><p>{error}</p></div><Button type="button" variant="secondary" size="base" onClick={retry}>Retry</Button></div>;

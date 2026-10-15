@@ -10,6 +10,7 @@ import type { DocMetadata, ProductDoc } from './docs';
 import { ISSUE_BODY_MAX, ISSUE_COMMENT_MAX, ISSUE_REQUEST_MAX_BYTES } from './issues';
 import { mutableSkillPath, SKILL_CONTENT_MAX_BYTES, SKILL_REQUEST_MAX_BYTES } from './skill-edit';
 import { pullRequestState } from '../shared/pull-requests';
+import { URL_IMPORT_LIMITS } from './url-import';
 
 export type McpApi = (request: Request) => Promise<Response>;
 export const mcpToolNames = [
@@ -18,7 +19,7 @@ export const mcpToolNames = [
   'gitflare_model_connections', 'gitflare_manage_model_connection',
   'gitflare_proposal_base', 'gitflare_repository_import_status', 'gitflare_import_repository_archive',
   'gitflare_list_releases', 'gitflare_read_release', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_release_notes',
-  'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_list_missions',
+  'gitflare_create_repository', 'gitflare_connect_repository', 'gitflare_import_repository_url', 'gitflare_list_missions',
   'gitflare_inspect_mission', 'gitflare_draft_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
   'gitflare_review_mission', 'gitflare_revert_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
@@ -226,6 +227,20 @@ export function createGitflareMcpServer(api: McpApi, origin: string): McpServer 
     title: 'Connect an existing repository', description: 'Connect an existing repository within the configured Artifacts namespace. Its identity and remote are verified by Gitflare. This does not import arbitrary external repositories.',
     inputSchema: z.object(repositoryInput).strict(), annotations: mutation,
   }, ({ idempotency_key, ...input }) => guarded(async () => ({ repository: await call<Repository>('/api/repositories/connect', input, idempotency_key) })));
+  server.registerTool('gitflare_import_repository_url', {
+    title: 'Import a repository from a Git URL', description: `Manage permission required. start creates a repository and imports full history with every branch and tag from a public HTTPS Git remote (GitHub, GitLab, Bitbucket, Codeberg or another smart-HTTP host). For a private source pass token, plus username when the host needs one; the token is used only for this import job and is never stored or returned. Import runs in the background: read action status until urlImport.status is ready or failed, and use action retry with a new key after a failure. Limits: ${URL_IMPORT_LIMITS.packBytes / 1024 / 1024} MiB of Git objects, ${URL_IMPORT_LIMITS.branches} branches, ${URL_IMPORT_LIMITS.tags} tags, ${URL_IMPORT_LIMITS.fetchMs / 60_000} minutes to fetch. Redirects, SSH, IP addresses and Git LFS objects are not supported.`,
+    inputSchema: z.object({ action: z.enum(['start', 'status', 'retry']).default('start'), url: z.string().min(1).max(2048).optional(), name: z.string().min(1).max(64).optional(), description: z.string().max(500).optional(), token: z.string().min(1).max(1024).optional(), username: z.string().min(1).max(100).optional(), repository_id: identifier.optional(), idempotency_key: requestKey.optional() }).strict(), annotations: { ...mutation, idempotentHint: false },
+  }, ({ action, repository_id, idempotency_key, url, name, description, token, username }) => guarded(async () => {
+    const credential = { ...(token ? { token } : {}), ...(username ? { username } : {}) };
+    if (action === 'status' || action === 'retry') {
+      if (!repository_id) throw new ApiError(400, 'INVALID_INPUT', 'Provide repository_id.');
+      if (action === 'status') return call<Record<string, unknown>>(`/api/repositories/${repository_id}/import-url`);
+      if (!idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Provide idempotency_key.');
+      return { repository: await call<Repository>(`/api/repositories/${repository_id}/import-url/retry`, credential, idempotency_key) };
+    }
+    if (!url || !idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Provide url and idempotency_key.');
+    return { repository: await call<Repository>('/api/repositories/import-url', { url, ...(name ? { name } : {}), ...(description ? { description } : {}), ...credential }, idempotency_key) };
+  }));
   server.registerTool('gitflare_list_missions', {
     title: 'List repository missions', description: 'Find missions and their status, candidate/base SHAs, and timestamps. Filter by repository ID or status, then use inspect_mission for actual run, diff, and check evidence.',
     inputSchema: z.object({ repository_id: identifier.optional(), status: z.enum(['draft', 'queued', 'running', 'checking', 'needs_review', 'approved', 'integrating', 'integrated', 'failed', 'cancelled']).optional(), offset, limit: pageLimit }).strict(), annotations: readOnly,

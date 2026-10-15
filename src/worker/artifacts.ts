@@ -48,9 +48,9 @@ export async function getArtifactsHead(env: { ARTIFACTS?: ArtifactsBinding }, re
   return repositoryHead(env.ARTIFACTS, repository.name, repository.defaultBranch);
 }
 
-export async function createArtifactsRepository(env: { ARTIFACTS?: ArtifactsBinding }, input: { name: string; description?: string }): Promise<{ remote: string; headSha: null }> {
+export async function createArtifactsRepository(env: { ARTIFACTS?: ArtifactsBinding }, input: { name: string; description?: string; defaultBranch?: string }): Promise<{ remote: string; headSha: null }> {
   if (!env.ARTIFACTS) throw new Error('Artifacts is not configured');
-  const created = await env.ARTIFACTS.create(input.name, { description: input.description, setDefaultBranch: 'main' });
+  const created = await env.ARTIFACTS.create(input.name, { description: input.description, setDefaultBranch: input.defaultBranch ?? 'main' });
   using repository = await env.ARTIFACTS.get(created.name);
   await repository.revokeToken(created.token);
   return { remote: created.remote, headSha: null };

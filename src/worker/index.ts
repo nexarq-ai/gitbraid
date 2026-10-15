@@ -29,11 +29,12 @@ import { IMPORT_REQUEST_MAX_BYTES, RepositoryImportFailure, buildImportPack, imp
 import { handleGitRequest, listBranches, type GitHttpDependencies } from './git-http';
 import { branchApi } from './branches';
 import { branchName, effectiveRules, landingRule, protectionSnapshot } from './branch-protection';
+import { handleUrlImport } from './url-import';
 
 export { GitflareSecurity } from './security';
 export { GitflareCoordinator } from './coordinator';
 export { MissionWorkflow } from './workflow';
-export { AgentSandbox, BootstrapOutbound, GitOutbound, RegistryOutbound } from '../../runner/sandbox';
+export { AgentSandbox, BootstrapOutbound, GitOutbound, ImportOutbound, RegistryOutbound } from '../../runner/sandbox';
 
 const encoder = new TextEncoder();
 
@@ -311,6 +312,8 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   }
   const issues = await handleIssues(request, url, principal, access, catalog, (id) => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`));
   if (issues) return issues;
+  const urlImport = await handleUrlImport(request, url, { env, principal, access, catalog, repositoryRecords: (id) => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`) });
+  if (urlImport) return urlImport;
   const releaseRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/releases(?:\/([a-zA-Z0-9-]+)(?:\/(publish|update|delete))?)?$/.exec(url.pathname);
   if (releaseRoute) {
     const repository = await catalog.getRepository(releaseRoute[1]);
