@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { BranchChangeResult, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
+import { repositoryLabel } from '../shared/repository-names';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
@@ -473,8 +474,9 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   createRepository(key: string, repository: Repository): Repository {
     return this.mutate(key, JSON.stringify(['repository', repository.name, repository.description]), () => {
-      if (this.listRepositories().some((item) => item.name.toLowerCase() === repository.name.toLowerCase())) {
-        throw new ApiError(409, 'REPOSITORY_EXISTS', 'A repository with this name already exists.');
+      const label = repositoryLabel(repository).toLowerCase();
+      if (this.listRepositories().some((item) => item.name.toLowerCase() === repository.name.toLowerCase() || repositoryLabel(item).toLowerCase() === label)) {
+        throw new ApiError(409, 'REPOSITORY_EXISTS', `A repository named ${repositoryLabel(repository)} already exists in this workspace.`);
       }
       this.saveRepository(repository);
       return repository;

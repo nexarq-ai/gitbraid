@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import cloudflareIcon from "./assets/cloudflare-icon.svg";
 import {
   lazy,
@@ -782,7 +783,7 @@ function Workspace() {
                                                   )
                                                 }
                                               >
-                                                {repo.name}
+                                                {repositoryLabel(repo)}
                                               </button>
                                               <small>
                                                 {repo.description.length > 70
@@ -811,7 +812,7 @@ function Workspace() {
                                             variant="ghost"
                                             size="base"
                                             shape="square"
-                                            aria-label={`Open ${repo.name}`}
+                                            aria-label={`Open ${repositoryLabel(repo)}`}
                                             icon={ArrowUpRightIcon}
                                             onClick={() =>
                                               navigate(`repository/${repo.id}`)
@@ -968,7 +969,7 @@ function Workspace() {
                     <div className="repo-grid">
                       {workspace.repositories
                         .filter((repo) =>
-                          `${repo.name} ${repo.description}`
+                          `${repositoryLabel(repo)} ${repo.description}`
                             .toLowerCase()
                             .includes(search.toLowerCase()),
                         )
@@ -976,7 +977,7 @@ function Workspace() {
                           <article className="repo-card" key={repo.id}>
                             <div className="repo-card-head">
                               <FolderSimpleIcon size={20} />
-                              <h2>{repo.name}</h2>
+                              <h2>{repositoryLabel(repo)}</h2>
                               <Status
                                 status={
                                   repo.provider === "artifacts"
@@ -1018,7 +1019,7 @@ function Workspace() {
                         ))}
                     </div>
                     {!workspace.repositories.some((repo) =>
-                      `${repo.name} ${repo.description}`
+                      `${repositoryLabel(repo)} ${repo.description}`
                         .toLowerCase()
                         .includes(search.toLowerCase()),
                     ) && (
@@ -1281,7 +1282,7 @@ function RepositoryDetail({
         <div>
           <h1 style={{ display: "flex", alignItems: "center", gap: 11 }}>
             <FolderSimpleIcon size={25} color="#7d8b9e" />
-            {repository.name}
+            {repositoryLabel(repository)}
           </h1>
           <p>
             {repository.description ||

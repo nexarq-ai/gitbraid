@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer';
 import type { Repository, RepositoryUrlImport, UrlImportPhase } from '../shared/types';
 import type { CommandResult, GitPermission } from '../../runner/sandbox';
 import { createArtifactsRepository, repositoryHead, type ArtifactsBinding } from './artifacts';
-import { ApiError, assertMutationOrigin, readJson, repositoryName, requireIdempotencyKey, requireString } from './domain';
+import { ApiError, assertMutationOrigin, readJson, repositoryName, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
 import type { Action, Principal } from './security';
 
 export const URL_IMPORT_LIMITS = {
@@ -404,10 +404,10 @@ export async function handleUrlImport(request: Request, url: URL, context: UrlIm
   if (principal.workspaceId === 'legacy' && /^w-[a-f0-9]{32}-/.test(input.name)) throw new ApiError(403, 'RESERVED_NAMESPACE', 'This repository prefix is reserved for isolated workspaces.');
   await access.rateLimit(`url-import:${principal.userId}`, 20, 3_600_000);
   const refs = await discoverSource(input.source, input.authorization, context.fetcher);
-  const name = principal.workspaceId === 'legacy' ? input.name : repositoryName(`w-${principal.workspaceId.replace(/-/g, '')}-${input.name.slice(0, 29)}`);
+  const name = await storageRepositoryName(principal.workspaceId, input.name);
   const now = new Date().toISOString();
   let repository = await catalog.createRepository(key, {
-    id: crypto.randomUUID(), workspaceId: principal.workspaceId, name, description: input.description, defaultBranch: refs.defaultBranch, headSha: null, provider: 'artifacts', createdAt: now, updatedAt: now,
+    id: crypto.randomUUID(), workspaceId: principal.workspaceId, name, ...(name === input.name ? {} : { displayName: input.name }), description: input.description, defaultBranch: refs.defaultBranch, headSha: null, provider: 'artifacts', createdAt: now, updatedAt: now,
     urlImport: { source: input.source.url, provider: input.source.provider, status: 'importing', phase: 'queued', attempt: 1, requestId: key, authenticated: !!input.authorization, startedAt: now, updatedAt: now },
   });
   repository = await catalog.getRepository(repository.id) ?? repository;

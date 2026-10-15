@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
@@ -513,7 +514,7 @@ export default function MissionDetail({
             <span>{mission.branchChange ? "Proposal" : mission.mode === "race" ? "AI race" : "AI mission"}</span>
             <span>
               <GitBranchIcon size={13} />
-              {repository?.name ?? "Repository"}
+              {repository ? repositoryLabel(repository) : "Repository"}
             </span>
             <span>
               <ClockIcon size={13} />
@@ -1362,7 +1363,7 @@ export default function MissionDetail({
           <Dialog.Description className="dialog-description">
             {confirming === "approve"
               ? <>Approve revision <code>{mission.candidateSha?.slice(0, 12)}</code> after {mission.checks.length} passing check{mission.checks.length === 1 ? "" : "s"}. Approval does not change the repository; landing is a separate step.</>
-              : <>Land revision <code>{mission.candidateSha?.slice(0, 12)}</code> on <strong>{repository?.defaultBranch ?? "the main stream"}</strong> of <strong>{repository?.name ?? "this repository"}</strong>. You can undo it later with Restore.</>}
+              : <>Land revision <code>{mission.candidateSha?.slice(0, 12)}</code> on <strong>{repository?.defaultBranch ?? "the main stream"}</strong> of <strong>{repository ? repositoryLabel(repository) : "this repository"}</strong>. You can undo it later with Restore.</>}
           </Dialog.Description>
           <div className="dialog-actions">
             <Button variant="secondary" size="base" type="button" onClick={() => setConfirming(null)}>Cancel</Button>

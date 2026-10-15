@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useEffect, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { CopyIcon, InfoIcon, ShieldCheckIcon } from "@phosphor-icons/react";
@@ -7,7 +8,7 @@ import { quoteGitArgument } from "./RepositoryImport";
 import "./pull-requests.css";
 
 export default function GitAccess({ repository, onNotify }: { repository: Repository; onNotify: (message: string) => void }) {
-  const [gitUrl, setGitUrl] = useState(`${location.origin}/git/${repository.name}.git`);
+  const [gitUrl, setGitUrl] = useState(`${location.origin}/git/${repositoryLabel(repository)}.git`);
   useEffect(() => {
     let active = true;
     request<BranchList>(`/api/repositories/${encodeURIComponent(repository.id)}/branches`).then(list => { if (active && list.gitUrl) setGitUrl(list.gitUrl); }).catch(() => {});

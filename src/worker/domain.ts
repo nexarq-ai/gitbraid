@@ -1,4 +1,5 @@
-import type { CreateMissionInput } from '../shared/types';
+import { repositoryLabel } from '../shared/repository-names';
+import type { CreateMissionInput, Repository } from '../shared/types';
 import { validateAttachments } from './mission-context';
 import { modelIdentifier } from './model-config';
 
@@ -33,6 +34,25 @@ export function repositoryName(value: unknown): string {
     throw new ApiError(400, 'INVALID_REPOSITORY_NAME', 'Use letters, numbers, dots, hyphens, or underscores. Do not include the .git suffix.');
   }
   return name;
+}
+
+const ISOLATED_SUFFIX_MAX = 29;
+const ISOLATED_STEM = 20;
+
+function isolatedPrefix(workspaceId: string): string { return `w-${workspaceId.replace(/-/g, '')}-`; }
+
+export async function storageRepositoryName(workspaceId: string, name: string): Promise<string> {
+  if (workspaceId === 'legacy') return name;
+  if (name.length <= ISOLATED_SUFFIX_MAX) return repositoryName(isolatedPrefix(workspaceId) + name);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(name.toLowerCase())));
+  const tag = Array.from(digest.subarray(0, 4), byte => byte.toString(16).padStart(2, '0')).join('');
+  return repositoryName(`${isolatedPrefix(workspaceId)}${name.slice(0, ISOLATED_STEM)}-${tag}`);
+}
+
+export function findRepositoryByName<T extends Pick<Repository, 'name' | 'displayName'>>(repositories: T[], workspaceId: string, name: string): T | undefined {
+  return repositories.find(item => item.name === name)
+    ?? repositories.find(item => repositoryLabel(item) === name)
+    ?? (workspaceId === 'legacy' ? undefined : repositories.find(item => !item.displayName && item.name === `${isolatedPrefix(workspaceId)}${name.slice(0, ISOLATED_SUFFIX_MAX)}`));
 }
 
 export function repositoryPath(value: string, allowRoot = true): string {
