@@ -26,6 +26,11 @@ import { request } from "./api";
 import { EmptyState, ErrorNotice, relativeTime, Status } from "./components";
 import AgentAssignment from "./AgentAssignment";
 import AttemptHistory from "./AttemptHistory";
+import DiffView, {
+  lineAnchor,
+  type LineAnchor,
+  type LineCommentKind,
+} from "./DiffView";
 import { PullRequestPanel } from "./PullRequests";
 import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
@@ -246,6 +251,34 @@ export default function MissionDetail({
     }
   }
 
+  async function commentOnLine(
+    anchor: LineAnchor,
+    text: string,
+    kind: LineCommentKind,
+  ) {
+    if (!mission) return;
+    const body = {
+      action: kind,
+      body: text,
+      epoch: mission.epoch,
+      candidateSha: mission.candidateSha,
+      baseSha: mission.baseSha,
+      ...anchor,
+    };
+    const signature = JSON.stringify({ id, action: "review", body });
+    if (mutation.current?.signature !== signature)
+      mutation.current = { signature, key: crypto.randomUUID() };
+    const result = await request<Mission>(
+      `/api/missions/${encodeURIComponent(id)}/review`,
+      body,
+      mutation.current.key,
+    );
+    revision.current++;
+    setMission(result);
+    mutation.current = null;
+    onUpdate();
+  }
+
   async function preparePreview() {
     if (!mission?.candidateSha || busy) return;
     setBusy("preview");
@@ -309,6 +342,13 @@ export default function MissionDetail({
     (review) =>
       review.kind === "request_changes" &&
       !review.resolvedAt &&
+      review.epoch === mission.epoch &&
+      review.candidateSha === mission.candidateSha &&
+      review.baseSha === mission.baseSha,
+  );
+  const currentLineComments = (mission.reviews ?? []).filter(
+    (review) =>
+      review.path &&
       review.epoch === mission.epoch &&
       review.candidateSha === mission.candidateSha &&
       review.baseSha === mission.baseSha,
@@ -935,26 +975,19 @@ export default function MissionDetail({
             · {overlap.length} overlapping paths
           </p>
           {mission.changes.length ? (
-            mission.changes.map((change) => (
-              <section className="panel" key={change.path}>
-                <div className="panel-header">
-                  <h2 style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <FileCodeIcon size={16} />
-                    <code style={{ fontSize: 13 }}>{change.path}</code>
-                  </h2>
-                  <span style={{ fontSize: 13 }}>
-                    <span style={{ color: "#258255" }}>
-                      +{change.additions}
-                    </span>{" "}
-                    <span style={{ color: "#bd6049" }}>
-                      −{change.deletions}
-                    </span>
-                  </span>
-                </div>
-                <div
-                  className="repository-work-meta"
-                  style={{ padding: "0 20px" }}
-                >
+            <DiffView
+              changes={mission.changes}
+              candidateSha={mission.candidateSha}
+              comments={currentLineComments}
+              canComment={
+                canDiscuss &&
+                (permissions.includes("contribute") ||
+                  permissions.includes("review"))
+              }
+              canRequestChanges={canDiscuss && permissions.includes("review")}
+              onComment={commentOnLine}
+              fileMeta={(change) => (
+                <div className="repository-work-meta">
                   {change.runIds.map((runId) => (
                     <button
                       key={runId}
@@ -971,20 +1004,8 @@ export default function MissionDetail({
                     <strong>Overlapping agent changes</strong>
                   )}
                 </div>
-                <pre className="code-output diff-output">
-                  {change.patch
-                    ? change.patch.split("\n").map((line, index) => (
-                        <span
-                          key={index}
-                          className={`diff-line ${line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : line.startsWith("@@") ? "chunk" : ""}`}
-                        >
-                          {line}
-                        </span>
-                      ))
-                    : "No patch was returned for this file."}
-                </pre>
-              </section>
-            ))
+              )}
+            />
           ) : (
             <div className="panel">
               <EmptyState
@@ -1099,8 +1120,31 @@ export default function MissionDetail({
                     Reviewer {item.authorId} · Attempt {item.epoch} · Candidate{" "}
                     {item.candidateSha.slice(0, 12)} · Base{" "}
                     {item.baseSha.slice(0, 12)}
-                    {!current ? " · Previous revision" : ""}
+                    {!current && !item.path ? " · Previous revision" : ""}
                   </p>
+                  {item.path && item.line && item.side && (
+                    <p className="proposal-review-anchor">
+                      {current ? (
+                        <a
+                          href={`/mission/${encodeURIComponent(mission.id)}/changes#${encodeURI(lineAnchor({ path: item.path, line: item.line, side: item.side }))}`}
+                        >
+                          <code>
+                            {item.path}:{item.line}
+                          </code>
+                        </a>
+                      ) : (
+                        <code>
+                          {item.path}:{item.line}
+                        </code>
+                      )}{" "}
+                      {item.side === "old" ? "original" : "changed"} line
+                      {!current && (
+                        <span className="proposal-review-outdated">
+                          Outdated
+                        </span>
+                      )}
+                    </p>
+                  )}
                   <p style={{ whiteSpace: "pre-wrap" }}>{item.body}</p>
                   {item.kind === "request_changes" &&
                     !item.resolvedAt &&

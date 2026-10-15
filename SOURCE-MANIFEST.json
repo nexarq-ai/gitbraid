@@ -119,6 +119,11 @@
       "sha256": "346991bbe7a38e57015831f812ac1b44b490fcef609d311183620bd584506bac"
     },
     {
+      "path": "src/shared/diff.ts",
+      "size": 6735,
+      "sha256": "1b875dc6d42046e4fc1d3ddd38a75e53325858e523a858b66f5ccc7628d07eb0"
+    },
+    {
       "path": "src/shared/pull-requests.ts",
       "size": 416,
       "sha256": "a6d7b8ece7f4999e73b4cc9abdc0cbeace2af009511c3df3fd57fc61b10ca77f"
@@ -249,6 +254,21 @@
       "sha256": "094005e2ad91edc53bbac045cb7e877867b08da2788365ade26c45f9c89d265e"
     },
     {
+      "path": "src/ui/diff-highlight.ts",
+      "size": 3546,
+      "sha256": "5ffed8039cc7e743faafb9d64dd70289e040eccf31de1e7b790123916718c5d8"
+    },
+    {
+      "path": "src/ui/diff-view.css",
+      "size": 10053,
+      "sha256": "b7964d2067da5dc874f54404b3e6872fd99346f0b611bd924b0edaf26b3683bc"
+    },
+    {
+      "path": "src/ui/DiffView.tsx",
+      "size": 21155,
+      "sha256": "85df3bcfd7dda9b8111fa5fe689270cafddfd280542ac43935bd671b0a1ceb55"
+    },
+    {
       "path": "src/ui/doc-diagrams.ts",
       "size": 2801,
       "sha256": "4e6d23ec3d7e2b391c0209f5bd913361ba75aa5ca1181ecc38ed5dae0107ba81"
@@ -295,8 +315,8 @@
     },
     {
       "path": "src/ui/MissionDetail.tsx",
-      "size": 48368,
-      "sha256": "8cc6c91fdee905f37983331de125dcf330bfa5ee63843ea7ee1da0da9ab270b2"
+      "size": 49503,
+      "sha256": "cfe7311c5ea541f9bcd51be6d2f94a27473e660bb5ea98f7e0357421e5c20794"
     },
     {
       "path": "src/ui/model-connections.css",
@@ -405,8 +425,8 @@
     },
     {
       "path": "src/ui/styles.css",
-      "size": 62397,
-      "sha256": "4c941847a7aa9d5187be5373ae86916f77fa67e1ac05c1bd44334ba7bfc4a0ed"
+      "size": 62061,
+      "sha256": "088e0754665bde89c98e9335a9cc5025e2bd82cfe12f77c474783f3d45cb14fe"
     },
     {
       "path": "src/ui/WorkspaceLoader.tsx",
