@@ -7,7 +7,8 @@ import { validateRepositorySkillChange } from './skill-edit';
 import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { inferenceMessage, ModelResponseError, type InputItem, type ModelEnv, type ModelMessage } from './model-adapter';
 export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
-import { previewPlan } from './preview-plan';
+import { classifyPreview, previewPlan } from './preview-plan';
+import { buildWorkerBundle, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type WorkerBundle } from './worker-bundle';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
 import { DEFAULT_EDITABLE, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
 
@@ -19,6 +20,7 @@ export interface SandboxRunner {
   check?(script: string, timeoutMs: number): Promise<CommandResult>;
   startPreview?(command?: string | string[], readinessMs?: number): Promise<void>;
   preview?(request: Request): Promise<Response>;
+  collect?(script: string, timeoutMs: number, capBytes: number): Promise<CommandResult>;
 }
 export interface ExecutionEnv {
   ARTIFACTS?: ArtifactsBinding;
@@ -761,7 +763,9 @@ export class PreviewFailure extends Error {
   }
 }
 
-export async function prepareCandidatePreview(env: ExecutionEnv, { mission, previewAttemptId, assertAuthority = unrestricted }: IntegrationInput & { previewAttemptId: string }): Promise<{ sandboxName: string; candidateSha: string }> {
+export type PreparedPreview = { kind: 'container'; sandboxName: string; candidateSha: string } | { kind: 'worker'; bundle: WorkerBundle; candidateSha: string };
+
+export async function prepareCandidatePreview(env: ExecutionEnv, { mission, previewAttemptId, assertAuthority = unrestricted, workerPreviews = false }: IntegrationInput & { previewAttemptId: string; workerPreviews?: boolean }): Promise<PreparedPreview> {
   if (mission.authorization && assertAuthority === unrestricted) throw new Error('Preview authority guard is required');
   if (!/^[a-f0-9-]{36}$/.test(previewAttemptId)) throw new Error('Invalid preview attempt ID');
   if (!env.ARTIFACTS || !env.SANDBOX || !mission.candidateSha || !mission.integrationForkName) throw new Error('A real integration candidate is required for preview');
@@ -777,19 +781,64 @@ export async function prepareCandidatePreview(env: ExecutionEnv, { mission, prev
     await clone(sandbox, fork, mission.candidateSha);
     const policy = mission.baseSha ? await loadPolicy(sandbox, mission.baseSha, '') : undefined;
     const files = (await checked(sandbox, ['git', 'ls-files'])).split('\n').filter(Boolean);
+    let installed = false;
+    const configPath = workerConfigPath(files);
+    if (configPath && classifyPreview(files, { main: configPath, assets: false }, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
+      try {
+        await installDependencies(sandbox, assertAuthority, async () => true, files.includes('package-lock.json') ? 'ci' : 'install');
+        installed = true;
+        const config = await readWorkerConfig(sandbox, configPath);
+        if (config && classifyPreview(files, config, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
+          await assertAuthority();
+          const bundle = await buildWorkerBundle(sandbox, config);
+          await sandbox.destroy();
+          return { kind: 'worker', bundle, candidateSha: mission.candidateSha };
+        }
+      } catch (error) {
+        throw new PreviewFailure(`Worker preview could not be built. ${error instanceof Error ? error.message : 'The Worker build failed.'}`);
+      }
+    }
     const manifest = files.includes('package.json') ? await sandbox.command(['cat', 'package.json'], '/workspace/repo') : undefined;
     const plan = previewPlan(files, manifest?.exitCode === 0 ? manifest.stdout : null, { command: policy?.previewCommand, install: policy?.install });
     try {
-      if (plan.install) await installDependencies(sandbox, assertAuthority, async () => true, plan.install);
+      if (plan.install && !installed) await installDependencies(sandbox, assertAuthority, async () => true, plan.install);
       await assertAuthority();
       await sandbox.startPreview(plan.argv, plan.readinessMs);
     } catch (error) {
       throw new PreviewFailure(`Preview could not start using ${plan.description}. ${error instanceof Error ? error.message : 'The preview process failed.'}`);
     }
-    return { sandboxName, candidateSha: mission.candidateSha };
+    return { kind: 'container', sandboxName, candidateSha: mission.candidateSha };
   } catch (error) {
     await sandbox.destroy();
     if (error instanceof PreviewFailure) throw error;
     throw new PreviewFailure(`Preview could not prepare the candidate. ${error instanceof Error ? error.message : 'The preview runner failed.'}`);
+  }
+}
+
+export interface LandedWorkerInput { repository: Repository; commitSha: string; attemptId: string; assertAuthority: AuthorityGuard }
+
+export async function buildLandedWorker(env: ExecutionEnv, { repository, commitSha, attemptId, assertAuthority }: LandedWorkerInput): Promise<WorkerBundle> {
+  if (!/^[a-f0-9-]{36}$/.test(attemptId)) throw new Error('Invalid deployment attempt ID');
+  if (!validGitSha(commitSha)) throw new WorkerBuildFailure('DEPLOY_COMMIT_INVALID', 'Deployments need an exact landed commit.');
+  if (!env.ARTIFACTS || !env.SANDBOX) throw new WorkerBuildFailure('DEPLOY_RUNNER_UNAVAILABLE', 'Artifacts and the sandbox runner are required to build a deployment.');
+  await assertAuthority();
+  using canonical = await env.ARTIFACTS.get(repository.name);
+  const info = await canonical.info();
+  const sandbox = env.SANDBOX.getByName(`deploy-${repository.id}-${attemptId}`);
+  try {
+    await sandbox.prepare([{ ...info, write: false }]);
+    await clone(sandbox, info, commitSha);
+    const files = (await checked(sandbox, ['git', 'ls-files'])).split('\n').filter(Boolean);
+    const configPath = workerConfigPath(files);
+    if (!configPath) throw new WorkerBuildFailure('WORKER_CONFIG_REQUIRED', 'The landed commit has no wrangler.jsonc, wrangler.json or wrangler.toml.');
+    await installDependencies(sandbox, assertAuthority, async () => true, files.includes('package-lock.json') ? 'ci' : 'install');
+    const config = await readWorkerConfig(sandbox, configPath);
+    if (!config) throw new WorkerBuildFailure('WORKER_MAIN_REQUIRED', 'The Wrangler configuration has no main entry, or wrangler is not a dependency of the repository.');
+    if (config.assets) throw new WorkerBuildFailure('WORKER_ASSETS_UNSUPPORTED', 'Deploying Workers with static assets is not supported yet. Deploy them with Workers Builds or wrangler deploy.');
+    await assertAuthority();
+    return await buildWorkerBundle(sandbox, config);
+  } finally {
+    try { await sandbox.destroy(); }
+    catch { console.error('runner.deploy.cleanup.failed', repository.id); }
   }
 }

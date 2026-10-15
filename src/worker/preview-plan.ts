@@ -44,3 +44,15 @@ export function previewPlan(files: string[], packageJson: string | null, configu
   const root = ['dist', 'build', 'public', 'site', 'docs'].find((dir) => files.includes(`${dir}/index.html`)) ?? '.';
   return { argv: ['node', '-e', STATIC_SERVER, root], install: null, readinessMs: 15_000, description: root === '.' ? 'the repository files as a static site' : `${root}/ as a static site` };
 }
+
+export type PreviewKind = 'worker' | 'container';
+export interface WorkerProjectShape { main?: string; assets: boolean }
+
+export function hasWorkerConfig(files: string[]): boolean {
+  return ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml'].some((name) => files.includes(name));
+}
+
+export function classifyPreview(files: string[], config: WorkerProjectShape | null, options: { workerPreviews: boolean; configuredCommand?: string }): PreviewKind {
+  if (!options.workerPreviews || (options.configuredCommand && options.configuredCommand !== LEGACY_PREVIEW)) return 'container';
+  return hasWorkerConfig(files) && !!config?.main && !config.assets ? 'worker' : 'container';
+}

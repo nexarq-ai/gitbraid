@@ -27,7 +27,7 @@ export const mcpToolNames = [
   'gitflare_inspect_mission', 'gitflare_draft_mission', 'gitflare_create_mission', 'gitflare_start_mission', 'gitflare_cancel_mission',
   'gitflare_review_mission', 'gitflare_revert_mission', 'gitflare_select_candidate', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval',
   'gitflare_preview_mission', 'gitflare_mission_history', 'gitflare_workspace_status',
-  'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_ai_settings', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project',
+  'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_ai_settings', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_deployments', 'gitflare_deploy',
   'gitflare_list_issues', 'gitflare_read_issue', 'gitflare_create_issue', 'gitflare_comment_issue', 'gitflare_update_issue',
   'gitflare_list_branches', 'gitflare_create_branch', 'gitflare_delete_branch', 'gitflare_create_pull_request', 'gitflare_update_pull_request', 'gitflare_branch_protection',
 ] as const;
@@ -47,7 +47,7 @@ const destructive = { ...mutation, destructiveHint: true };
 const external = { ...mutation, openWorldHint: true };
 const commit = z.string().regex(/^[a-f0-9]{40}$/).describe('Exact 40-character commit SHA observed in current evidence.');
 const evidenceInput = { view: z.enum(['summary', 'context', 'runs', 'changes', 'checks', 'events', 'reviews']).default('summary').describe('Evidence to return.'), offset, limit: z.number().int().min(1).max(20).default(5).describe('Items per page.'), detail_offset: offset.describe('Start character within each long text field.'), detail_limit: z.number().int().min(1).max(8000).default(3000).describe('Characters per long text field.') };
-const LAND_TOOLS = new Set(['gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_import_repository_archive', 'gitflare_import_repository_url']);
+const LAND_TOOLS = new Set(['gitflare_deploy', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_import_repository_archive', 'gitflare_import_repository_url']);
 const ADMIN_TOOLS = new Set(['gitflare_manage_access', 'gitflare_manage_model_connection', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_ai_settings', 'gitflare_branch_protection', 'gitflare_manage_ai_key', 'gitflare_manage_ai_gateway']);
 
 export function requiredAccess(name: string, annotations: { readOnlyHint?: boolean } | undefined, input: Record<string, unknown>): AccessLevel {
@@ -167,6 +167,25 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
   }, ({repositoryId, action, ...fields}) => guarded(async () => {
     const path = `/api/repositories/${repositoryId}/cloudflare`;
     return call<Record<string, unknown>>(action === 'get' ? path : action === 'usage' ? `${path}/usage` : `${path}/action`, ['get','usage'].includes(action) ? undefined : { action, ...Object.fromEntries(Object.entries(fields).filter(([,value]) => value !== undefined)) });
+  }));
+  server.registerTool('gitflare_deployments', {
+    title: 'Read repository deployments', description: 'Read a repository’s deploy-on-land settings, the Workers linked to it, and its deployment history (commit SHA, Worker version, rollout percentage, status, actor, time, errors). canDeploy reports whether you may deploy. Read-only.',
+    inputSchema: z.object({ repository_id: repositoryId, deployment_id: z.string().max(80).optional().describe('Return only this deployment.') }).strict(), annotations: readOnly,
+  }, (input) => guarded(async () => {
+    const state = await call<{ deployments: { id: string }[] } & Record<string, unknown>>(`/api/repositories/${input.repository_id}/deployments`);
+    if (!input.deployment_id) return state;
+    const deployment = state.deployments.find((item) => item.id === input.deployment_id);
+    if (!deployment) throw new ApiError(404, 'DEPLOYMENT_NOT_FOUND', 'This deployment could not be found.');
+    return { deployment };
+  }));
+  server.registerTool('gitflare_deploy', {
+    title: 'Deploy a landed commit to Cloudflare', description: 'Deploy landed code to the repository’s own Cloudflare Worker through the workspace Cloudflare connection (needs Workers Scripts Write). settings picks the linked Worker, environment, rollout (immediate or gradual 10% then 100%) and automatic or confirmed deploy on land; deploy builds the default-branch head or confirms a pending deployment; rollback restores the previous version. Owner or Deployer. Needs land access.',
+    inputSchema: z.object({ repository_id: repositoryId, action: z.enum(['settings', 'deploy', 'rollback']), commit_sha: commit.optional().describe('For deploy: the current default-branch head.'), deployment_id: z.string().max(80).optional().describe('For deploy: a deployment awaiting confirmation.'), enabled: z.boolean().optional().describe('For settings: deploy on land.'), worker_name: z.string().max(63).optional().describe('For settings: a Worker linked to this repository.'), environment: z.enum(['production', 'staging']).optional(), rollout: z.enum(['immediate', 'gradual']).optional(), confirmation: z.enum(['manual', 'auto']).optional(), idempotency_key: requestKey }).strict(), annotations: { ...destructive, openWorldHint: true, idempotentHint: false },
+  }, (input) => guarded(async () => {
+    const body = input.action === 'settings'
+      ? { action: 'settings', enabled: input.enabled, workerName: input.worker_name, environment: input.environment, rollout: input.rollout, confirmation: input.confirmation }
+      : input.action === 'deploy' ? { action: 'deploy', ...(input.deployment_id ? { deploymentId: input.deployment_id } : { commitSha: input.commit_sha }) } : { action: 'rollback' };
+    return call<Record<string, unknown>>(`/api/repositories/${input.repository_id}/deployments`, body, input.idempotency_key);
   }));
   server.registerTool('gitflare_access_status', {
     title: 'Read workspace access', description: 'Read your identity, role, memberships, teams, invitations, task credentials, sessions, protection rules and the audit events your role may see. Read-only.',
@@ -376,7 +395,7 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${action}`, { candidateSha: input.candidate_sha, baseSha: input.base_sha }, input.idempotency_key))));
   }
   server.registerTool('gitflare_preview_mission', {
-    title: 'Open a checked candidate preview', description: 'Preview the current passing candidate on the isolated preview origin. Runs in the background: start returns starting, then ready with the candidate SHA and a short-lived capability URL (treat it as a secret); status reads progress or the failure. Limited previews per workspace. Uses sandbox compute. Needs write access.',
+    title: 'Open a checked candidate preview', description: 'Preview the current passing candidate. Runs in the background: start returns starting, then ready; status reads progress or the failure. Worker projects become a public Cloudflare Worker Preview (anyone with the link can open it; only vars and isolated Durable Objects are bound; notes list dropped bindings). Others run in a container behind a short-lived secret URL. Limited per workspace. Needs write access.',
     inputSchema: z.object({ mission_id: missionId, action: z.enum(['start', 'status']).default('start'), idempotency_key: requestKey.optional() }).strict(), annotations: { ...mutation, idempotentHint: false },
   }, (input) => guarded(async () => {
     if (input.action === 'status') return call<Record<string, unknown>>(`/api/missions/${input.mission_id}/preview`);

@@ -2,6 +2,7 @@ import { ApiError, assertMutationOrigin, readJson, requireString } from './domai
 import type { AppEnv } from './env';
 import { securityClient, type Action, type Principal } from './security';
 import { decryptAuth, encryptAuth, randomCapability } from './mfa';
+import { versionUploadForm, type WorkerDeployer, type WorkerVersionDeployment } from './deployments';
 
 export interface CloudflareConnection { version: string; encrypted: string; issuer: Principal }
 export interface CloudflareOAuthState { id: string; browserHash: string; principal: Principal; expiresAt: number; encrypted: string }
@@ -27,8 +28,9 @@ export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string
 export const D1_USAGE_QUERY = 'query GitflareD1Usage($accountTag: string!, $databaseId: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {databaseId: $databaseId, date_geq: $start, date_leq: $end}, orderBy: [date_DESC]) { dimensions {date databaseId} sum {readQueries writeQueries rowsRead rowsWritten} } } } }';
 function service(env: AppEnv): Store { return securityClient(env) as unknown as Store; }
 function configured(env: AppEnv): boolean { return Boolean(env.CLOUDFLARE_CLIENT_ID && env.CLOUDFLARE_CLIENT_SECRET && env.AUTH_ENCRYPTION_KEY); }
-// The OAuth client rejects openid unless registered, and its id_token carries only `sub`
-function requestedScopes(env: AppEnv, identity = false): string[] { return [...new Set(['offline_access',...`${env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes} ${identity?env.CLOUDFLARE_IDENTITY_SCOPES??defaultIdentityScopes:''}`.split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
+// The OAuth client rejects any unregistered scope (openid included), so deploy scopes stay opt-in; its id_token carries only `sub`
+export function requestedScopes(env: AppEnv, identity = false): string[] { return [...new Set(['offline_access',...`${env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes} ${env.CLOUDFLARE_DEPLOY_SCOPES??''} ${identity?env.CLOUDFLARE_IDENTITY_SCOPES??defaultIdentityScopes:''}`.split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
+export const CLOUDFLARE_DEPLOY_SCOPE = 'workers-scripts.write';
 export function cloudflareSigninConfigured(env: AppEnv): boolean { return configured(env); }
 export function requestCookie(request: Request, name: string): string | undefined { return request.headers.get('Cookie')?.split(';').map(v=>v.trim()).find(v=>v.startsWith(`${name}=`))?.slice(name.length+1); }
 function requireConfiguration(env: AppEnv) { if (!configured(env)) throw new ApiError(503, 'CLOUDFLARE_NOT_CONFIGURED', 'Configure this installation’s Cloudflare OAuth client before connecting an account.'); }
@@ -132,6 +134,36 @@ export async function cloudflareAnalyticsRequest(env:AppEnv,p:Principal,body:{qu
   checkAccount(vault,authorization?.expectedAccountId);
   const response=await jsonRequest(`${apiOrigin}/graphql`,{method:'POST',headers:{Authorization:`Bearer ${vault.accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({query:body.query,variables:{...body.variables,accountTag:vault.account.id}})}) as {data?:unknown;errors?:unknown[]};
   if(response.errors?.length) throw new ApiError(502,'CLOUDFLARE_ANALYTICS_REJECTED','Cloudflare could not return usage for this project. Check analytics permissions.'); return response.data;
+}
+export function assertDeployScope(scopes: string[]): void {
+  if (!scopes.includes(CLOUDFLARE_DEPLOY_SCOPE)) throw new ApiError(403,'CLOUDFLARE_SCOPE_MISSING',`The Cloudflare connection was not granted ${CLOUDFLARE_DEPLOY_SCOPE} (Workers Scripts Write). An Owner must reconnect Cloudflare after the installation requests that scope.`);
+}
+export async function cloudflareWorkerDeployer(env:AppEnv,p:Principal,workerName:string,expectedAccountId:string,fetcher:(request:Request)=>Promise<Response>=request=>fetch(request)):Promise<WorkerDeployer> {
+  if(!/^[a-zA-Z0-9_-]{1,63}$/.test(workerName)) throw new ApiError(400,'INVALID_WORKER_NAME','Invalid Worker name.');
+  const {vault}=await load(env,p,{action:'deploy',resourceType:'environment',resourceId:workerName,expectedAccountId});
+  if(!vault.account) throw new ApiError(409,'ACCOUNT_SELECTION_REQUIRED','Select the Cloudflare account for this workspace first.');
+  checkAccount(vault,expectedAccountId);
+  assertDeployScope(vault.scopes);
+  const base=`${apiOrigin}/accounts/${vault.account.id}/workers/scripts/${workerName}`;
+  const call=async<T>(path:string,init:{method?:string;json?:unknown;form?:FormData}={}):Promise<T>=>{
+    const headers=new Headers({Authorization:`Bearer ${vault.accessToken}`});
+    if(init.json!==undefined) headers.set('Content-Type','application/json');
+    let response:Response;
+    try{response=await fetcher(new Request(`${base}${path}`,{method:init.method??'GET',headers,body:init.form??(init.json===undefined?undefined:JSON.stringify(init.json)),redirect:'manual',signal:AbortSignal.timeout(60000)}));}
+    catch{throw new ApiError(502,'CLOUDFLARE_UNAVAILABLE','Cloudflare could not be reached. Try again.');}
+    const envelope=await response.json().catch(()=>({})) as {success?:boolean;result?:T;errors?:{code?:number;message?:string}[]};
+    if(!response.ok||envelope.success===false){
+      const detail=(envelope.errors??[]).map(error=>error.message).filter(Boolean).join('; ').slice(0,300);
+      throw new ApiError(response.status===403||response.status===401?403:502,response.status===404?'WORKER_NOT_FOUND':'CLOUDFLARE_DEPLOY_REJECTED',response.status===404?`Worker ${workerName} was not found in the connected account.`:`Cloudflare rejected the deployment${detail?`: ${detail}`:'.'}`);
+    }
+    return envelope.result as T;
+  };
+  return {
+    accountId:vault.account.id,
+    async uploadVersion(bundle,annotations){const result=await call<{id?:string}>('/versions',{method:'POST',form:versionUploadForm(bundle,annotations)});if(typeof result?.id!=='string')throw new ApiError(502,'CLOUDFLARE_INVALID_RESPONSE','Cloudflare did not return a Worker version.');return {id:result.id};},
+    async latestDeployment(){const result=await call<{deployments?:WorkerVersionDeployment[]}>('/deployments');return result?.deployments?.[0]??null;},
+    async deploy(versions,message){const result=await call<{id?:string}>('/deployments',{method:'POST',json:{strategy:'percentage',versions,annotations:{'workers/message':message.slice(0,1000),'workers/triggered_by':'gitflare'}}});return {id:String(result?.id??'')};},
+  };
 }
 export async function cloudflareAuthorizationUrl(env:AppEnv,redirectUri:string,state:string,verifier:string,identity=false):Promise<string> {
   const challenge=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');

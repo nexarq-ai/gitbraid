@@ -7,7 +7,9 @@ import { createArtifactsRepository, repositoryHead } from './artifacts';
 import { ApiError, assertMutationOrigin, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString } from './domain';
 import type { AppEnv } from './env';
 import { executionReadiness } from './execution';
-import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflowId } from './background-work';
+import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflowId, retireWorkerPreview } from './background-work';
+import { backgroundPrincipal, deploymentsApi, deployWorkflowId, type DeployParams } from './deployments';
+import type { ProjectSnapshot } from './cloudflare-projects';
 import { PREVIEW_STEP_MS } from './budgets';
 import { handleMcp, mcpToolNames } from './mcp';
 import { startWithDurableDispatch } from './coordinator';
@@ -362,6 +364,29 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     });
     return Response.json(await dispatchCloudflareProject(principal, { ...repository, workspaceId: principal.workspaceId }, operation, body, dependencies));
   }
+  const deploymentsRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/deployments$/.exec(url.pathname);
+  if (deploymentsRoute) {
+    const repository = await catalog.getRepository(deploymentsRoute[1]);
+    if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+    const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
+    return deploymentsApi(request, {
+      repository, principal,
+      ledger: { state: () => coordinator.deployState(), saveSettings: (settings) => coordinator.saveDeploySettings(settings), create: (key, fingerprint, record) => coordinator.createDeployment(key, fingerprint, record), confirm: (id, actorId) => coordinator.confirmDeployment(id, actorId) },
+      authorizeRead: () => access.authorize(principal, 'read', 'repository', repository.id),
+      authorizeDeploy: (workerName) => access.authorize(principal, 'deploy', 'environment', workerName),
+      canDeploy: async (workerName) => (await access.checkMany(principal, 'deploy', [{ resourceType: 'environment', resourceId: workerName }]))[0] === true,
+      mappedWorkers: async () => {
+        const { mapping } = await access.projectStore(principal, repository.id, 'get') as ProjectSnapshot;
+        return mapping ? { accountId: mapping.accountId, workers: (mapping.resources ?? []).filter((resource) => resource.type === 'worker').map(({ id, name, environment }) => ({ id, name, environment })) } : null;
+      },
+      headSha: () => env.ARTIFACTS ? repositoryHead(env.ARTIFACTS, repository.name, repository.defaultBranch) : Promise.resolve(null),
+      dispatch: async (record) => {
+        if (!env.MISSION_WORKFLOW || !env.SANDBOX || !env.ARTIFACTS) return 'missing';
+        return dispatchBackground(env.MISSION_WORKFLOW, deployWorkflowId(record.id), { kind: 'deploy', repositoryId: repository.id, deploymentId: record.id, principal: backgroundPrincipal(principal) } satisfies DeployParams);
+      },
+      failDispatch: async (record) => { await coordinator.updateDeployment(record.id, ['queued'], { status: 'failed', errorCode: 'DEPLOYMENT_NOT_STARTED', error: 'The deployment could not be scheduled.' }); },
+    });
+  }
   const issues = await handleIssues(request, url, principal, access, catalog, (id) => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`));
   if (issues) return issues;
   const urlImport = await handleUrlImport(request, url, { env, principal, access, catalog, repositoryRecords: (id) => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`) });
@@ -596,10 +621,10 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       if (reviewInput.action === 'request_changes' && currentReviewRequests(reviewed).length) await access.clearApprovals(principal, mission.id);
       return Response.json(reviewed);
     }
-    if (match[2] === 'cancel') return Response.json(await coordinator.cancelMission(key, mission.id));
+    if (match[2] === 'cancel') { const cancelled = await coordinator.cancelMission(key, mission.id); await retireWorkerPreview(env, repository.id, mission.id, principal.workspaceId); return Response.json(cancelled); }
     if (match[2] === 'pull') {
       if (!mission.branchChange) throw new ApiError(409, 'NOT_A_PULL_REQUEST', 'This mission is not a pull request.');
-      if (pullAction === 'close') { const closed = await coordinator.pullRequestAction(key, mission.id, 'close', principal.userId); await access.clearApprovals(principal, mission.id); return Response.json(closed); }
+      if (pullAction === 'close') { const closed = await coordinator.pullRequestAction(key, mission.id, 'close', principal.userId); await access.clearApprovals(principal, mission.id); await retireWorkerPreview(env, repository.id, mission.id, principal.workspaceId); return Response.json(closed); }
       await access.authorize(principal, 'contribute', 'repository', repository.id, mission.id);
       if (!env.MISSION_WORKFLOW || !executionReadiness(env, 'skill-edit').ready || !env.ARTIFACTS) throw new ApiError(503, 'EXECUTION_NOT_CONFIGURED', 'Connect the required services before running pull request checks.');
       await currentRepository(env, repository);
@@ -627,6 +652,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       try { claim = await coordinator.claimPreview(key, mission.id, mission.epoch, mission.candidateSha); }
       catch (error) { if (reserved) await catalog.releasePreviewSlot(mission.id); throw error; }
       if (claim.previous) await env.SANDBOX.getByName(claim.previous).destroy().catch(() => {});
+      if (claim.worker) return Response.json({ status: 'ready', kind: 'worker', candidateSha: mission.candidateSha, expiresAt: new Date(claim.expiresAt ?? Date.now()).toISOString(), previewUrl: claim.worker.previewUrl ?? claim.worker.deploymentUrl, deploymentUrl: claim.worker.deploymentUrl, previewName: claim.worker.previewName, notes: claim.worker.notes, access: 'public' });
       const sandboxName = claim.sandboxName;
       if (!sandboxName) {
         if (claim.claimed && await dispatchBackground(env.MISSION_WORKFLOW, previewWorkflowId(claim.claimId), { kind: 'preview', repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, claimId: claim.claimId, principal }) === 'missing') {

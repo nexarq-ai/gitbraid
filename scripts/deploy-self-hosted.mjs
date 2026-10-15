@@ -22,11 +22,29 @@ export function deploymentConfiguration(input, accountId, subdomain, overrideNam
   config.vars.PREVIEW_ORIGIN = `https://${name}-preview.${subdomain}.workers.dev`;
   config.vars.GITBRAID_INSTALLATION = 'gitbraid';
   config.vars.GITBRAID_PRIMARY_WORKER = name;
+  config.vars.PREVIEWS_ACCOUNT_ID = accountId;
+  config.vars.PREVIEWS_WORKER_NAME = previewsWorkerName(name);
   for (const workflow of config.workflows ?? []) workflow.name = `${name}-missions`;
   for (const container of config.containers ?? []) container.name = `${name}-runner`;
   for (const binding of config.artifacts ?? []) if (binding.namespace === 'gitbraid') binding.namespace = name;
   const preview = { '$schema': 'node_modules/wrangler/config-schema.json', name: `${name}-preview`, account_id: accountId, main: 'src/preview/index.ts', compatibility_date: config.compatibility_date, workers_dev: true, services: [{ binding: 'GITFLARE', service: name, entrypoint: 'PreviewRelay' }], vars: { GITBRAID_INSTALLATION: 'gitbraid', GITBRAID_PRIMARY_WORKER: name }, observability: { enabled: false } };
   return { config, preview };
+}
+
+export function previewsWorkerName(name) {
+  return `${name}-previews`.length <= 40 ? `${name}-previews` : `${name.slice(0, 37)}-pv`;
+}
+
+export async function ensurePreviewsWorker(api, workerName) {
+  if (await api('GET', `/workers/workers/${workerName}`, undefined, true)) return false;
+  await api('POST', '/workers/workers', { name: workerName, subdomain: { enabled: true, previews_enabled: true } });
+  return true;
+}
+
+export async function ensurePreviewsToken(api, worker, token) {
+  if (!token) return false;
+  await api('PUT', `/workers/scripts/${worker}/secrets`, { name: 'PREVIEWS_API_TOKEN', type: 'secret_text', text: token });
+  return true;
 }
 
 export async function preflightDeployment(api, name, gatewayId, namespace) {
@@ -104,9 +122,12 @@ export async function deploySelfHosted() {
   await run([resolve(root, 'node_modules/vite/bin/vite.js'), 'build'], { env: authEnv });
   await run([wrangler, 'deploy'], { env: authEnv });
   await ensureEncryptionKey(api, config.name, plan.encryptionKeyExists);
+  await ensurePreviewsWorker(api, config.vars.PREVIEWS_WORKER_NAME);
+  const previewsToken = await ensurePreviewsToken(api, config.name, process.env.GITBRAID_PREVIEWS_API_TOKEN);
   for (const secret of ['ADMIN_EMAIL', 'ADMIN_PASSWORD']) if (process.env[secret]) await api('PUT', `/workers/scripts/${config.name}/secrets`, { name: secret, type: 'secret_text', text: process.env[secret] });
   const previewEnv = { ...authEnv, WRANGLER_CI_OVERRIDE_NAME: preview.name };
   await run([wrangler, 'deploy', '--config', 'wrangler.preview.jsonc', '--name', preview.name], { env: previewEnv });
+  if (!previewsToken) console.log(`Worker Previews stay off until you create an API token limited to Workers Scripts Write on this account and run: npx wrangler secret put PREVIEWS_API_TOKEN --name ${config.name}`);
   console.log(`Deployed ${config.name} and ${preview.name} in the selected account. Sign in with the administrator credentials configured during deployment, then enroll MFA. Configure your provider BYOK inside Cloudflare AI Gateway before executing agents.`);
 }
 

@@ -15,6 +15,7 @@ import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readI
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 import { capacityError, catalogName, liveSlots, MISSION_SLOT_GRACE_MS, slotKey, WORKSPACE_MISSION_LIMIT, WORKSPACE_PREVIEW_LIMIT, type CapacitySlot } from './capacity';
 import { missionStepTimeoutMs } from './budgets';
+import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type DeploySettings, type DeployState } from './deployments';
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
 
 interface Receipt<T> { fingerprint: string; result: T }
@@ -26,12 +27,15 @@ function eligibleRaceRuns(mission: Mission): Mission['runs'] {
   return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
 }
 export interface PreviewCapability { workspaceId?: string; principal?: import('./security').Principal; repositoryId: string; missionId: string; epoch: number; candidateSha: string; sandboxName: string; expiresAt: number }
-interface PreviewState { claimId: string; epoch: number; candidateSha: string; phase: 'preparing' | 'ready'; expiresAt: number; sandboxName?: string }
+export interface WorkerPreviewInfo { previewName: string; previewUrl: string | null; deploymentUrl: string | null; notes: string[] }
+interface PreviewState { claimId: string; epoch: number; candidateSha: string; phase: 'preparing' | 'ready'; expiresAt: number; sandboxName?: string; worker?: WorkerPreviewInfo }
+interface WorkerPreviewRecord { previewName: string; claimId: string; expiresAt: number }
 export const PREVIEW_LEASE_MS = 120_000;
 export const PREVIEW_HEARTBEAT_MS = 30_000;
 export const PREVIEW_READY_MS = 900_000;
+export const WORKER_PREVIEW_TTL_MS = 86_400_000;
 interface PreviewFailureRecord { claimId: string; epoch: number; candidateSha: string; message: string; failedAt: string }
-export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; expiresAt?: string; error?: string }
+export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; expiresAt?: string; error?: string; kind?: 'worker' | 'container'; worker?: WorkerPreviewInfo }
 interface DispatchIntent { workflowId: string; missionId: string; repositoryId: string; epoch: number; attempts: number; nextAttemptAt: number }
 export const DISPATCH_FAST_ATTEMPTS = 8;
 
@@ -354,7 +358,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return capability;
   }
 
-  claimPreview(key: string, id: string, epoch: number, candidateSha: string): { sandboxName?: string; claimId: string; claimed: boolean; expiresAt?: number; previous?: string } {
+  claimPreview(key: string, id: string, epoch: number, candidateSha: string): { sandboxName?: string; worker?: WorkerPreviewInfo; claimId: string; claimed: boolean; expiresAt?: number; previous?: string } {
     return this.ctx.storage.transactionSync(() => {
       const mission = this.requiredMission(id);
       if (mission.epoch !== epoch || mission.candidateSha !== candidateSha || !['needs_review', 'approved', 'integrating', 'integrated'].includes(mission.status)) throw new ApiError(409, 'STALE_PREVIEW', 'Only the current verified candidate can be previewed.');
@@ -362,7 +366,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const receipt = this.store.get<Receipt<boolean>>(`request:${key}`);
       if (receipt) assertReplayFingerprint(receipt.fingerprint, fingerprint);
       const current = this.store.get<PreviewState>(`preview-state:${id}`);
-      if (current?.claimId && current.epoch === epoch && current.candidateSha === candidateSha && current.expiresAt > Date.now()) return current.sandboxName ? { sandboxName: current.sandboxName, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt } : { claimId: current.claimId, claimed: false };
+      if (current?.claimId && current.epoch === epoch && current.candidateSha === candidateSha && current.expiresAt > Date.now()) {
+        if (current.worker) return { worker: current.worker, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt };
+        return current.sandboxName ? { sandboxName: current.sandboxName, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt } : { claimId: current.claimId, claimed: false };
+      }
       const claimId = crypto.randomUUID();
       this.store.put(`preview-state:${id}`, { claimId, epoch, candidateSha, phase: 'preparing', expiresAt: Date.now() + PREVIEW_LEASE_MS } satisfies PreviewState);
       this.store.delete(`preview-failure:${id}`);
@@ -392,6 +399,29 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return expiresAt;
   }
 
+  workerPreviewReady(id: string, epoch: number, candidateSha: string, claimId: string, worker: WorkerPreviewInfo): number {
+    return this.ctx.storage.transactionSync(() => {
+      const state = this.previewClaim(id, epoch, candidateSha, claimId);
+      const expiresAt = Date.now() + WORKER_PREVIEW_TTL_MS;
+      this.store.put(`preview-state:${id}`, { ...state, phase: 'ready', worker, expiresAt } satisfies PreviewState);
+      this.store.put(`worker-preview:${id}`, { previewName: worker.previewName, claimId, expiresAt } satisfies WorkerPreviewRecord);
+      return expiresAt;
+    });
+  }
+
+  workerPreview(id: string): WorkerPreviewRecord | undefined { return this.store.get<WorkerPreviewRecord>(`worker-preview:${id}`); }
+
+  retireWorkerPreview(id: string, claimId?: string): WorkerPreviewRecord | null {
+    return this.ctx.storage.transactionSync(() => {
+      const record = this.store.get<WorkerPreviewRecord>(`worker-preview:${id}`);
+      if (!record || (claimId && record.claimId !== claimId)) return null;
+      this.store.delete(`worker-preview:${id}`);
+      const state = this.store.get<PreviewState>(`preview-state:${id}`);
+      if (state?.worker) this.store.delete(`preview-state:${id}`);
+      return record;
+    });
+  }
+
   previewFailed(id: string, claimId: string, message?: string): boolean {
     return this.ctx.storage.transactionSync(() => {
       const state = this.store.get<PreviewState>(`preview-state:${id}`);
@@ -406,7 +436,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     const mission = this.requiredMission(id);
     const current = (entry?: { epoch: number; candidateSha: string }) => !!entry && entry.epoch === mission.epoch && entry.candidateSha === mission.candidateSha;
     const state = this.store.get<PreviewState>(`preview-state:${id}`);
-    if (current(state) && state!.expiresAt > Date.now()) return state!.phase === 'ready' ? { status: 'ready', candidateSha: mission.candidateSha, expiresAt: new Date(state!.expiresAt).toISOString() } : { status: 'starting', candidateSha: mission.candidateSha };
+    if (current(state) && state!.expiresAt > Date.now()) return state!.phase === 'ready' ? { status: 'ready', candidateSha: mission.candidateSha, expiresAt: new Date(state!.expiresAt).toISOString(), ...(state!.worker ? { kind: 'worker' as const, worker: state!.worker } : {}) } : { status: 'starting', candidateSha: mission.candidateSha };
     const failure = this.store.get<PreviewFailureRecord>(`preview-failure:${id}`);
     if (current(failure)) return { status: 'failed', candidateSha: mission.candidateSha, error: failure!.message };
     return { status: 'none', candidateSha: mission.candidateSha };
@@ -977,4 +1007,22 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   }
 
   releasePreviewSlot(missionId: string): void { this.store.delete(slotKey('preview', missionId)); }
+
+  deployState(): DeployState { return new DeploymentLedger(this.store).state(); }
+
+  saveDeploySettings(settings: DeploySettings): DeploySettings { return new DeploymentLedger(this.store).saveSettings(settings); }
+
+  getDeployment(id: string): DeploymentRecord | undefined { return new DeploymentLedger(this.store).get(id); }
+
+  createDeployment(key: string, fingerprint: string, record: DeploymentRecord): DeploymentRecord {
+    return this.ctx.storage.transactionSync(() => new DeploymentLedger(this.store).create(key, fingerprint, record));
+  }
+
+  confirmDeployment(id: string, actorId: string): DeploymentRecord {
+    return this.ctx.storage.transactionSync(() => new DeploymentLedger(this.store).confirm(id, actorId));
+  }
+
+  updateDeployment(id: string, expected: DeploymentStatus[], patch: Partial<DeploymentRecord>): DeploymentRecord | null {
+    return this.ctx.storage.transactionSync(() => new DeploymentLedger(this.store).update(id, expected, patch));
+  }
 }

@@ -11,6 +11,8 @@ const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
 // Vite-based dev and preview servers reject any Host other than localhost
 const PREVIEW_HOST = 'http://localhost:8080';
 export const SANDBOX_MAX_LIFETIME_MS = 7_200_000;
+export const COMMAND_OUTPUT_CAP = 65_536;
+export const BUNDLE_OUTPUT_CAP = 16 * 1024 * 1024;
 
 export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
   async fetch(request: Request): Promise<Response> {
@@ -187,7 +189,11 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, 300_000);
   }
 
-  async #executeCommand(argv: string[], cwd: string, timeoutMs: number, maximumMs: number): Promise<CommandResult> {
+  async collect(script: string, timeoutMs: number, capBytes: number): Promise<CommandResult> {
+    return this.#executeCommand(['/bin/bash', '-lc', script], '/workspace/repo', timeoutMs, 300_000, Math.min(Math.max(capBytes, COMMAND_OUTPUT_CAP), BUNDLE_OUTPUT_CAP), true);
+  }
+
+  async #executeCommand(argv: string[], cwd: string, timeoutMs: number, maximumMs: number, cap = COMMAND_OUTPUT_CAP, strict = false): Promise<CommandResult> {
     const container = this.ctx.container;
     if (!container?.running) throw new Error('Sandbox is not running');
     const seconds = Math.max(1, Math.min(maximumMs, Math.floor(timeoutMs))) / 1000;
@@ -198,7 +204,6 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
         void Promise.resolve().then(() => container.destroy()).catch(() => { console.error('runner.command.timeout.cleanup.failed'); });
       }, seconds * 1000 + 2500);
     });
-    const cap = 65_536;
     const collect = async (stream: ReadableStream | null): Promise<string> => {
       if (!stream) return '';
       const reader = stream.getReader();
@@ -209,6 +214,10 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
         if (next.done) break;
         if (bytes < cap) chunks.push(next.value.slice(0, cap - bytes));
         bytes += next.value.byteLength;
+        if (strict && bytes > cap) {
+          await reader.cancel();
+          throw new Error(`Command output exceeded ${cap} bytes`);
+        }
       }
       const merged = new Uint8Array(Math.min(bytes, cap));
       let offset = 0;

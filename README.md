@@ -32,7 +32,7 @@ Gitbraid is the open-source, single-workspace edition of Gitflare. It gives ever
 - **Create branch** makes `issue-<n>-<title>` for working by hand.
 
 **Works with your AI tools (MCP)**
-- A built-in MCP server exposes every action in the UI (52 tools) with the same permissions, so Claude, Codex and other MCP clients can create missions, review, approve and land.
+- A built-in MCP server exposes every action in the UI (58 tools) with the same permissions, so Claude, Codex and other MCP clients can create missions, review, approve and land.
 
 **Run without AI if you want**
 - Set `AI_FEATURES=disabled`, or turn AI off per workspace. AI tabs disappear and Gitbraid works as a plain Git host with pull requests, issues, releases and branch protection.

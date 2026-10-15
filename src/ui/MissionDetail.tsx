@@ -35,7 +35,7 @@ import { PullRequestPanel } from "./PullRequests";
 import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 
-type PreviewResult = { status?: "starting" | "ready"; previewUrl?: string; candidateSha: string; expiresAt?: string };
+type PreviewResult = { status?: "starting" | "ready"; kind?: "worker"; previewUrl?: string; deploymentUrl?: string | null; notes?: string[]; candidateSha: string; expiresAt?: string };
 
 type Props = {
   id: string;
@@ -84,6 +84,7 @@ export default function MissionDetail({
     previewUrl: string;
     candidateSha: string;
     expiresAt: string;
+    worker?: { deploymentUrl: string | null; notes: string[] };
   } | null>(null);
   const [previewStarting, setPreviewStarting] = useState(false);
   const mutation = useRef<{ signature: string; key: string } | null>(null);
@@ -347,7 +348,7 @@ export default function MissionDetail({
         "The preview does not match this candidate or has expired. Create a new preview.",
       );
     }
-    setPreview({ previewUrl: result.previewUrl, candidateSha: result.candidateSha, expiresAt: result.expiresAt! });
+    setPreview({ previewUrl: result.previewUrl, candidateSha: result.candidateSha, expiresAt: result.expiresAt!, ...(result.kind === "worker" ? { worker: { deploymentUrl: result.deploymentUrl ?? null, notes: result.notes ?? [] } } : {}) });
   }
 
   async function preparePreview() {
@@ -605,7 +606,9 @@ export default function MissionDetail({
             </strong>{" "}
             Available until{" "}
             {new Date(currentPreview.expiresAt).toLocaleTimeString()}.
-            <small className="candidate-preview-provider">Isolated Container · {new URL(currentPreview.previewUrl).hostname}</small>
+            <small className="candidate-preview-provider">{currentPreview.worker ? "Cloudflare Worker Preview" : "Isolated Container"} · {new URL(currentPreview.previewUrl).hostname}</small>
+            {currentPreview.worker && <small className="candidate-preview-provider">Public link: anyone with the link can open it. Search engines are asked not to index it.{currentPreview.worker.deploymentUrl && <> <a href={currentPreview.worker.deploymentUrl} target="_blank" rel="noreferrer" className="text-link">This exact deployment</a></>}</small>}
+            {currentPreview.worker?.notes.map((note) => <small key={note} className="candidate-preview-provider">{note}</small>)}
           </div>
           <a
             href={currentPreview.previewUrl}

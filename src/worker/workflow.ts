@@ -4,13 +4,14 @@ import type { Mission, ModelConnection, Repository } from '../shared/types';
 import { assertPinnedModel } from './model-config';
 import { executeMission, type ExecutionEnv, type ExecutionResult } from './execution';
 import type { AppEnv } from './env';
-import { landCandidate, preparePreview, type LandingParams, type PreviewParams } from './background-work';
+import { deployLandedWorker, landCandidate, preparePreview, retirePreview, type LandingParams, type PreviewParams, type PreviewRetireParams } from './background-work';
+import type { DeployParams } from './deployments';
 import { missionStepTimeoutMs } from './budgets';
 import { catalogName } from './capacity';
 import { createModelAccess, type AiAccessOptions, type AiCredentials } from './ai-keys';
 
 export interface MissionRunParams { kind?: 'mission'; repositoryId: string; missionId: string; epoch: number }
-export type MissionWorkflowParams = MissionRunParams | LandingParams | PreviewParams;
+export type MissionWorkflowParams = MissionRunParams | LandingParams | PreviewParams | PreviewRetireParams | DeployParams;
 interface Coordinator {
   getModelConnections(): Promise<ModelConnection[]>;
   getAiCredentials(): Promise<AiCredentials>;
@@ -30,6 +31,8 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
     const params = event.payload;
     if (params.kind === 'land') return landCandidate(this.env as unknown as AppEnv, params, step);
     if (params.kind === 'preview') return preparePreview(this.env as unknown as AppEnv, params, step);
+    if (params.kind === 'preview-retire') return retirePreview(this.env as unknown as AppEnv, params, step);
+    if (params.kind === 'deploy') return deployLandedWorker(this.env as unknown as AppEnv, params, step);
     const { repositoryId, missionId, epoch } = params;
     const coordinator = this.env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
     const planned = await coordinator.getMission(missionId);
