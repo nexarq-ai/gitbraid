@@ -4,6 +4,8 @@ Gitflare is a workspace for organizing code changes from people and AI agents. I
 
 ![Isolated task revisions flow into combined candidate checks, exact-revision approval, and a separate landing action](gitflare-diagram:flow)
 
+The app names a Git branch a stream, a pull request a proposal, a commit a revision, a merge conflict a collision, a release a checkpoint, and a revert a restore. Git commands, the API and MCP keep the Git terms.
+
 Approval and landing are different actions. Approval names both the candidate commit and its base commit. Landing rechecks that evidence and the canonical branch before integrating the already-tested commit. A merge does not deploy an application. Candidate preview uses a separate origin and an expiring capability.
 
 ## Two editions

@@ -45,13 +45,13 @@
     },
     {
       "path": "docs/public/overview.md",
-      "size": 6197,
-      "sha256": "2f1b9828b94800003657572a803608120d92066e6ca85d12fe1c9bd7edacccc1"
+      "size": 6411,
+      "sha256": "3883ec38964bd67e2a3a2afef56807c1bae13c5ef57f86f8ab920ae562e4329d"
     },
     {
       "path": "docs/public/repositories.md",
-      "size": 9785,
-      "sha256": "b4f97bb0b72f4cb39929f092e91d29fc21db9cc8d2d693636f129159069934b9"
+      "size": 9947,
+      "sha256": "9c83ca02433087f5395e3fdd7fa3ce9b4ccd48cb1e5473f9b3a5589dd741d196"
     },
     {
       "path": "index.html",
