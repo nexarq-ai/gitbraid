@@ -365,8 +365,8 @@
     },
     {
       "path": "src/ui/ProposalCreate.tsx",
-      "size": 27542,
-      "sha256": "b9b1a0f6e104ac38cfd5a6f03119b7b9049d1d02ea9369db32bbde7dc573a440"
+      "size": 28538,
+      "sha256": "c9945c58eed0981a189816361bae7a0a9323ec740fb81c81d218d328904910fe"
     },
     {
       "path": "src/ui/public-install.css",
@@ -600,8 +600,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 76045,
-      "sha256": "a2aedc4d201e6a792cb624218ca712c9f5b9f93733c0429e2584125590d7c3e8"
+      "size": 76396,
+      "sha256": "4743d8c9c5e903a7d26656581888a60f5f5e5155fee980271b13c1c2f181034f"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -615,8 +615,8 @@
     },
     {
       "path": "src/worker/mission-draft.ts",
-      "size": 7405,
-      "sha256": "3113eb36cad21a843aad5747bb3c10945eb8bdc8209b6fde5ac6ddafb0c3c20c"
+      "size": 7733,
+      "sha256": "fe7f415b7fba397b42324a0b004dc280176e72bfe52ac1a3b27f487fbd2e76d4"
     },
     {
       "path": "src/worker/mission-storage.ts",

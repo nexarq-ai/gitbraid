@@ -1,4 +1,5 @@
 import type { AgentTask, ModelConnection, Repository } from '../shared/types';
+import { DRAFT_GOAL_MAX, DRAFT_GOAL_MIN } from '../shared/mission-draft';
 import type { ArtifactsBinding } from './artifacts';
 import { ApiError, requireString } from './domain';
 import { inferenceMessage, type InputItem, type ModelEnv } from './model-adapter';
@@ -11,7 +12,7 @@ const MAX_FILES = 300;
 const SKIPPED_DIRECTORIES = new Set(['node_modules', '.git', 'dist', 'build', '.wrangler', 'coverage', 'vendor']);
 
 export function draftRequest(body: Record<string, unknown>): DraftRequest {
-  const goal = requireString(body.goal, 'Goal', 4000, 10);
+  const goal = requireString(body.goal, 'Goal', DRAFT_GOAL_MAX, DRAFT_GOAL_MIN);
   const mode = body.mode === 'race' ? 'race' : 'combine';
   const agents = body.agents === undefined ? 1 : Number(body.agents);
   if (!Number.isInteger(agents) || agents < 1 || agents > 8) throw new ApiError(400, 'INVALID_AGENTS', 'Draft between one and eight agent assignments.');
@@ -75,6 +76,15 @@ function clip(value: unknown, max: number): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : '';
 }
 
+function uniqueName(name: string, taken: Set<string>): string {
+  let candidate = name;
+  for (let counter = 2; taken.has(candidate.toLowerCase()); counter++) {
+    const suffix = ` ${counter}`;
+    candidate = `${name.slice(0, 60 - suffix.length).trimEnd()}${suffix}`;
+  }
+  return candidate;
+}
+
 export function parseDraft(output: string, request: DraftRequest): MissionDraft {
   const start = output.indexOf('{');
   const end = output.lastIndexOf('}');
@@ -89,8 +99,7 @@ export function parseDraft(output: string, request: DraftRequest): MissionDraft 
   const tasks: AgentTask[] = [];
   for (let index = 0; index < request.agents; index++) {
     const item = proposed[index] ?? {};
-    let name = clip(item.name, 60) || (request.mode === 'race' ? `Candidate ${String.fromCharCode(65 + index)}` : `Agent ${index + 1}`);
-    while (names.has(name.toLowerCase())) name = `${name.slice(0, 56)} ${index + 1}`;
+    const name = uniqueName(clip(item.name, 60) || (request.mode === 'race' ? `Candidate ${String.fromCharCode(65 + index)}` : `Agent ${index + 1}`), names);
     names.add(name.toLowerCase());
     const task = clip(item.task, 2500);
     tasks.push({ name, role: clip(item.role, 80) || (request.mode === 'race' ? 'Independent attempt' : 'Implementation'), task: task.length >= 10 ? task : `Complete ${request.agents === 1 || request.mode === 'race' ? 'the whole goal' : `part ${index + 1} of the goal`}: ${request.goal}`.slice(0, 2500) });
