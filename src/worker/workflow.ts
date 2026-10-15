@@ -1,5 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type { GitflareSecurity } from './security';
+import { securityClient, type GitflareSecurity } from './security';
 import type { Mission, ModelConnection, Repository } from '../shared/types';
 import { assertPinnedModel } from './model-config';
 import { executeMission, type ExecutionEnv, type ExecutionResult } from './execution';
@@ -41,7 +41,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
         if (!await coordinator.isMissionActive(missionId, epoch)) return;
         const authorization = mission.authorization;
         if (!authorization || (repository.workspaceId ?? 'legacy') !== authorization.workspaceId || authorization.principal.workspaceId !== authorization.workspaceId) throw new Error('Execution authorization is missing or belongs to another workspace');
-        const assertAuthority = () => this.env.GITFLARE_SECURITY.getByName('security').check(authorization.principal, 'execute', 'repository', repositoryId, missionId);
+        const assertAuthority = () => securityClient(this.env).check(authorization.principal, 'execute', 'repository', repositoryId, missionId);
         await assertAuthority();
         const catalog = this.env.GITFLARE_COORDINATOR.getByName(authorization.workspaceId === 'legacy' ? 'catalog:owner' : `catalog:${authorization.workspaceId}`);
         const modelConnections = await catalog.getModelConnections();

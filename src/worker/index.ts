@@ -11,7 +11,7 @@ import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflow
 import { PREVIEW_STEP_MS } from './budgets';
 import { handleMcp, mcpToolNames } from './mcp';
 import { startWithDurableDispatch } from './coordinator';
-import type { Principal, Action } from './security';
+import { securityClient, type Principal, type Action } from './security';
 import { listDocs, readDoc } from './docs';
 import { documentationImage, documentationMarkdown } from './docs-markdown';
 import { handleOnboarding } from './onboarding';
@@ -78,7 +78,7 @@ async function tokenMatches(token: string, expected: string): Promise<boolean> {
   return timingSafeEqual(new Uint8Array(actualHash), new Uint8Array(expectedHash));
 }
 
-function security(env: AppEnv) { if (!env.GITFLARE_SECURITY) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', 'The security service is not configured.'); return env.GITFLARE_SECURITY.getByName('security'); }
+function security(env: AppEnv) { if (!env.GITFLARE_SECURITY) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', 'The security service is not configured.'); return securityClient(env); }
 async function coordinatorRead<T>(operation: 'getModelConnections' | 'repositoryBootstrapSha', read: () => Promise<T>): Promise<T> {
   try { return await read(); }
   catch (error) {

@@ -1,4 +1,4 @@
-import type { Principal } from './security';
+import { securityClient, type Principal } from './security';
 import type { AppEnv } from './env';
 import { repositoryHead } from './artifacts';
 import { landingRule } from './branch-protection';
@@ -40,7 +40,7 @@ function staleExecution(error: unknown): boolean { return error instanceof Error
 export async function landCandidate(env: AppEnv, params: LandingParams, step: StepRunner): Promise<void> {
   const { repositoryId, missionId, epoch, candidateSha, baseSha, claimId, principal } = params;
   const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
-  const access = env.GITFLARE_SECURITY.getByName('security');
+  const access = securityClient(env);
   const outcome = await step.do('push approved candidate', { retries: { limit: 0, delay: '1 second' }, timeout: LANDING_STEP_MS }, async (): Promise<LandingOutcome> => {
     const [claim, mission, repository] = await Promise.all([coordinator.integrationClaim(), coordinator.getMission(missionId), coordinator.getRepository(repositoryId)]);
     if (claim?.claimId !== claimId || !mission || !repository || mission.status !== 'integrating') return { kind: 'stale' };
@@ -81,7 +81,7 @@ export async function preparePreview(env: AppEnv, params: PreviewParams, step: S
   const { repositoryId, missionId, epoch, candidateSha, claimId, principal } = params;
   const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
   const catalog = env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId));
-  const access = env.GITFLARE_SECURITY.getByName('security');
+  const access = securityClient(env);
   await step.do('prepare candidate preview', { retries: { limit: 0, delay: '1 second' }, timeout: PREVIEW_STEP_MS }, async () => {
     let finished = false;
     let timer: ReturnType<typeof setTimeout> | undefined;

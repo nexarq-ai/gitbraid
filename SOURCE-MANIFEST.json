@@ -455,8 +455,8 @@
     },
     {
       "path": "src/worker/background-work.ts",
-      "size": 7433,
-      "sha256": "e9adda5794db529463399649c8ade1b909f0ba4780b2a2c86d99a025ff140cd9"
+      "size": 7401,
+      "sha256": "0551f5a3ef5ef3f9fb113056434b58ee6f41262158e8e260226a4607940c4b43"
     },
     {
       "path": "src/worker/branch-protection.ts",
@@ -485,13 +485,13 @@
     },
     {
       "path": "src/worker/cloudflare.ts",
-      "size": 25421,
-      "sha256": "c57fe99b0b99131b923c56fed3c1d6d4e15243d860ac06a41ab22f7d05d754d8"
+      "size": 25418,
+      "sha256": "36ad39a383d8afc9c05b4c220b1db836d3b33582af3d31d3d9bc07d3751a5f17"
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 64258,
-      "sha256": "13f1e2c67aeb4c518f1e38a3b9316d96a8447f04a69a916c1620edd80a832322"
+      "size": 64279,
+      "sha256": "5814b4c173ef87222ccd9020a55794d1ab4062c9b5c7ea5637802f9aac1d1ca2"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -550,8 +550,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 69454,
-      "sha256": "d32b1a3f94d8b261c8d61d7ed82f8b3ee5741e4b9071843cc8c56b3f4b092372"
+      "size": 69451,
+      "sha256": "345105041d10396fcf12d39003cca27eddf1840506a4d8cbfab97ad0076758c6"
     },
     {
       "path": "src/worker/issues.ts",
@@ -595,8 +595,8 @@
     },
     {
       "path": "src/worker/onboarding.ts",
-      "size": 5522,
-      "sha256": "d6cb7fe92e5b910aa1ffd22111f0eb7d4ee18e45122eafbabd5de7eca217686c"
+      "size": 5519,
+      "sha256": "9cabad81ea71ef9d06ae51a9c56df1f2dd6e5f2100ec73c59db7ab56802e087b"
     },
     {
       "path": "src/worker/preview-plan.ts",
@@ -635,8 +635,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 72609,
-      "sha256": "97c154231bb66e40993562e8d539146fcf21a9338ce7f21643d6464797375bb6"
+      "size": 126953,
+      "sha256": "148c6207fd2a52056537213830e8a8dbcafb5409a359f21dd798fc613c89c59a"
     },
     {
       "path": "src/worker/skill-edit.ts",
@@ -650,8 +650,8 @@
     },
     {
       "path": "src/worker/workflow.ts",
-      "size": 4950,
-      "sha256": "a586609b35a2a26691a27a7c2cbf51322a2db98644a3ca588a68587b0e9abda1"
+      "size": 4942,
+      "sha256": "3e21dd3cf936a156950da08635972df2e78138ab94d6ed16004aaaa1f2abd1a0"
     },
     {
       "path": "tsconfig.json",

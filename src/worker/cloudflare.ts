@@ -1,6 +1,6 @@
 import { ApiError, assertMutationOrigin, readJson, requireString } from './domain';
 import type { AppEnv } from './env';
-import type { Action, Principal } from './security';
+import { securityClient, type Action, type Principal } from './security';
 import { decryptAuth, encryptAuth, randomCapability } from './mfa';
 
 export interface CloudflareConnection { version: string; encrypted: string; issuer: Principal }
@@ -25,7 +25,7 @@ const defaultScopes = 'account-settings.read workers-scripts.metadata_read d1.re
 const defaultIdentityScopes = 'user-details.read';
 export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string!, $scriptName: string!, $start: Time!, $end: Time!) { viewer { accounts(filter: {accountTag: $accountTag}) { workersInvocationsAdaptive(limit: 100, filter: {scriptName: $scriptName, datetime_geq: $start, datetime_leq: $end}) { dimensions {scriptName} sum {requests errors} quantiles {cpuTimeP50 cpuTimeP99} } } } }';
 export const D1_USAGE_QUERY = 'query GitflareD1Usage($accountTag: string!, $databaseId: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {databaseId: $databaseId, date_geq: $start, date_leq: $end}, orderBy: [date_DESC]) { dimensions {date databaseId} sum {readQueries writeQueries rowsRead rowsWritten} } } } }';
-function service(env: AppEnv): Store { return env.GITFLARE_SECURITY.getByName('security') as unknown as Store; }
+function service(env: AppEnv): Store { return securityClient(env) as unknown as Store; }
 function configured(env: AppEnv): boolean { return Boolean(env.CLOUDFLARE_CLIENT_ID && env.CLOUDFLARE_CLIENT_SECRET && env.AUTH_ENCRYPTION_KEY); }
 // The OAuth client rejects openid unless registered, and its id_token carries only `sub`
 function requestedScopes(env: AppEnv, identity = false): string[] { return [...new Set(['offline_access',...`${env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes} ${identity?env.CLOUDFLARE_IDENTITY_SCOPES??defaultIdentityScopes:''}`.split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }

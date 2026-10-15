@@ -4,6 +4,7 @@ import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } fr
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
+import { securityClient } from './security';
 import { needsPacking, packMission, summarizeMission, unpackMission, type BlobStore } from './mission-storage';
 import { assertLineInCandidate, assertReviewClear, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
@@ -512,7 +513,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const existing = this.getSkillEditRequest(key, repositoryId, change);
       if (existing) return existing;
       if (!this.env.GITFLARE_SECURITY) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', 'The security service is not configured.');
-      const access = this.env.GITFLARE_SECURITY.getByName('security');
+      const access = securityClient(this.env);
       await access.authorize(authorization.principal, 'contribute', 'repository', repositoryId);
       await access.authorize(authorization.principal, 'execute', 'repository', repositoryId);
       return this.mutate(key, JSON.stringify(['skill-edit', repositoryId, change]), () => {

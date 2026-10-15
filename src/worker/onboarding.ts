@@ -3,6 +3,7 @@ import { deliverPasswordReset, deliverVerification, emailConfigured, type Invita
 import type { AppEnv } from './env';
 import { cloudflareSigninConfigured } from './cloudflare';
 import { handleHostedOnboarding, type AuthenticateRequest } from './hosted-onboarding';
+import { securityClient } from './security';
 
 function authenticatedResponse(result: { token: string; user: unknown; workspaceId: string; recoveryCodes?: string[] }): Response {
   const { token, ...body } = result;
@@ -20,7 +21,7 @@ async function handleAccountEmail(request: Request, env: AppEnv, authenticate: A
   const url = new URL(request.url); const path = url.pathname;
   if (request.method !== 'POST' || !['/api/auth/verify-email', '/api/auth/resend-verification', '/api/auth/password-reset/request', '/api/auth/password-reset/confirm'].includes(path)) return null;
   assertMutationOrigin(request);
-  const service = env.GITFLARE_SECURITY.getByName('security');
+  const service = securityClient(env);
   await service.rateLimit(`account-email:${request.headers.get('CF-Connecting-IP') ?? 'local'}`, 10, 900000);
   const body = await readJson(request);
   if (path === '/api/auth/verify-email') return Response.json(await service.verifyEmail(body), noStore);
@@ -43,7 +44,7 @@ async function handleAccountEmail(request: Request, env: AppEnv, authenticate: A
   return Response.json(RESET_REQUESTED, noStore);
 }
 export async function handleOnboarding(request: Request, env: AppEnv, authenticate: AuthenticateRequest, ctx?: ExecutionContext): Promise<Response | null> {
-  const path = new URL(request.url).pathname; const service = env.GITFLARE_SECURITY.getByName('security');
+  const path = new URL(request.url).pathname; const service = securityClient(env);
   if (path === '/api/auth/config' && request.method === 'GET') return Response.json({ ...await service.authConfig(), passwordReset: emailConfigured(env), emailVerification: env.EDITION !== 'self-hosted' && emailConfigured(env), cloudflareSignin: env.EDITION !== 'self-hosted' && cloudflareSigninConfigured(env) }, noStore);
   const account = await handleAccountEmail(request, env, authenticate, ctx);
   if (account) return account;
