@@ -10,6 +10,8 @@ export interface CloudflareAuthorization { action: Action; resourceType: string;
 export interface CloudflareApiOptions { method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'; body?: unknown; authorization?: CloudflareAuthorization; expectedAccountId?: string }
 interface Store { connectionStore(p: Principal | null, operation: CloudflareStoreOperation, body: Record<string, unknown>): Promise<unknown>; check(p: Principal, action: Action, resourceType?: string, resourceId?: string): Promise<void>; rateLimit(key: string, max?: number, windowMs?: number): Promise<void> }
 interface Account { id: string; name: string }
+export type CloudflareVault = Vault;
+export interface CloudflareIdentity { id: string; email: string; name: string }
 interface Vault { accessToken: string; refreshToken?: string; expiresAt: number; account?: Account; scopes: string[]; clientId: string }
 interface TokenResponse { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; scope?: unknown; token_type?: unknown }
 interface Pending { verifier: string; redirectUri: string; expectedVersion: string | null }
@@ -18,12 +20,17 @@ const tokenEndpoint = 'https://dash.cloudflare.com/oauth2/token';
 const revokeEndpoint = 'https://dash.cloudflare.com/oauth2/revoke';
 const apiOrigin = 'https://api.cloudflare.com/client/v4';
 const cookieName = '__Host-gitflare-cloudflare-state';
+export const CLOUDFLARE_LINK_COOKIE = '__Host-gitflare-cloudflare-link';
 const defaultScopes = 'account-settings.read workers-scripts.metadata_read d1.read d1.write account-analytics.read containers.read';
+const defaultIdentityScopes = 'user-details.read';
 export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string!, $scriptName: string!, $start: Time!, $end: Time!) { viewer { accounts(filter: {accountTag: $accountTag}) { workersInvocationsAdaptive(limit: 100, filter: {scriptName: $scriptName, datetime_geq: $start, datetime_leq: $end}) { dimensions {scriptName} sum {requests errors} quantiles {cpuTimeP50 cpuTimeP99} } } } }';
 export const D1_USAGE_QUERY = 'query GitflareD1Usage($accountTag: string!, $databaseId: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {databaseId: $databaseId, date_geq: $start, date_leq: $end}, orderBy: [date_DESC]) { dimensions {date databaseId} sum {readQueries writeQueries rowsRead rowsWritten} } } } }';
 function service(env: AppEnv): Store { return env.GITFLARE_SECURITY.getByName('security') as unknown as Store; }
 function configured(env: AppEnv): boolean { return Boolean(env.CLOUDFLARE_CLIENT_ID && env.CLOUDFLARE_CLIENT_SECRET && env.AUTH_ENCRYPTION_KEY); }
-function requestedScopes(env: AppEnv): string[] { return [...new Set(['offline_access',...(env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes).split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
+// The OAuth client rejects openid unless registered, and its id_token carries only `sub`
+function requestedScopes(env: AppEnv, identity = false): string[] { return [...new Set(['offline_access',...`${env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes} ${identity?env.CLOUDFLARE_IDENTITY_SCOPES??defaultIdentityScopes:''}`.split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
+export function cloudflareSigninConfigured(env: AppEnv): boolean { return configured(env); }
+export function requestCookie(request: Request, name: string): string | undefined { return request.headers.get('Cookie')?.split(';').map(v=>v.trim()).find(v=>v.startsWith(`${name}=`))?.slice(name.length+1); }
 function requireConfiguration(env: AppEnv) { if (!configured(env)) throw new ApiError(503, 'CLOUDFLARE_NOT_CONFIGURED', 'Configure this installation’s Cloudflare OAuth client before connecting an account.'); }
 function connectionContext(p: Principal): string { return `cloudflare-connection:${p.workspaceId}`; }
 function currentIssuer(p: Principal): Principal { return { userId: p.userId, workspaceId: p.workspaceId, role: p.role, ...(p.bootstrap ? {bootstrap:true} : {}) }; }
@@ -49,6 +56,9 @@ function tokenValues(response: TokenResponse) {
   const expiry = Number(response.expires_in);
   if (typeof response.access_token !== 'string' || !response.access_token || response.access_token.length > 16000 || !Number.isFinite(expiry) || expiry <= 0 || expiry > 31536000 || typeof response.token_type === 'string' && response.token_type.toLowerCase() !== 'bearer') throw new ApiError(502,'CLOUDFLARE_INVALID_TOKEN','Cloudflare returned incomplete authorization credentials.');
   return {accessToken:response.access_token,refreshToken:typeof response.refresh_token==='string'?response.refresh_token:undefined,expiresAt:Date.now()+expiry*1000};
+}
+export async function sealCloudflareConnection(env: AppEnv, issuer: Principal, vault: Vault): Promise<CloudflareConnection> {
+  return {version:crypto.randomUUID(),issuer,encrypted:await encryptAuth(JSON.stringify(vault),env.AUTH_ENCRYPTION_KEY,connectionContext(issuer))};
 }
 async function save(env: AppEnv, p: Principal, vault: Vault, expectedVersion: string | null, issuer = currentIssuer(p)): Promise<CloudflareConnection> {
   const value = {version:crypto.randomUUID(),issuer,encrypted:await encryptAuth(JSON.stringify(vault),env.AUTH_ENCRYPTION_KEY,connectionContext(p))};
@@ -123,6 +133,34 @@ export async function cloudflareAnalyticsRequest(env:AppEnv,p:Principal,body:{qu
   const response=await jsonRequest(`${apiOrigin}/graphql`,{method:'POST',headers:{Authorization:`Bearer ${vault.accessToken}`,'Content-Type':'application/json'},body:JSON.stringify({query:body.query,variables:{...body.variables,accountTag:vault.account.id}})}) as {data?:unknown;errors?:unknown[]};
   if(response.errors?.length) throw new ApiError(502,'CLOUDFLARE_ANALYTICS_REJECTED','Cloudflare could not return usage for this project. Check analytics permissions.'); return response.data;
 }
+export async function cloudflareAuthorizationUrl(env:AppEnv,redirectUri:string,state:string,verifier:string,identity=false):Promise<string> {
+  const challenge=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const url=new URL(authorizeEndpoint);url.search=new URLSearchParams({response_type:'code',client_id:env.CLOUDFLARE_CLIENT_ID!,redirect_uri:redirectUri,state,code_challenge:challenge,code_challenge_method:'S256',scope:requestedScopes(env,identity).join(' ')}).toString();
+  return url.toString();
+}
+export async function exchangeCloudflareCode(env:AppEnv,code:string,redirectUri:string,verifier:string,identity=false):Promise<Vault> {
+  const response=await tokenRequest(env,new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:redirectUri,code_verifier:verifier}));const values=tokenValues(response);
+  return {...values,scopes:typeof response.scope==='string'?response.scope.split(' '):requestedScopes(env,identity),clientId:env.CLOUDFLARE_CLIENT_ID!};
+}
+export async function cloudflareIdentity(env:AppEnv,vault:Vault):Promise<CloudflareIdentity> {
+  let user:unknown;
+  try { user=await api(env,vault,'/user'); } catch { throw new ApiError(403,'CLOUDFLARE_IDENTITY_UNAVAILABLE','Cloudflare did not share your user details. Allow User Details Read and try again.'); }
+  const value=(user??{}) as {id?:unknown;email?:unknown;first_name?:unknown;last_name?:unknown;suspended?:unknown};
+  const email=typeof value.email==='string'?value.email.trim().toLowerCase():'';
+  if(typeof value.id!=='string'||!/^[A-Za-z0-9-]{8,64}$/.test(value.id)||email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ApiError(502,'CLOUDFLARE_IDENTITY_UNAVAILABLE','Cloudflare did not return a usable user identity.');
+  if(value.suspended===true) throw new ApiError(403,'CLOUDFLARE_USER_SUSPENDED','This Cloudflare user is suspended.');
+  const name=[value.first_name,value.last_name].filter(part=>typeof part==='string'&&part.trim()).join(' ').trim().slice(0,100)||email.split('@')[0].slice(0,100);
+  return {id:value.id,email,name};
+}
+export async function cloudflareAccounts(env:AppEnv,vault:Vault):Promise<Account[]> { return accountsValue(await api(env,vault,'/accounts')); }
+export async function revokeCloudflareTokens(env:AppEnv,vault:Pick<Vault,'accessToken'|'refreshToken'>):Promise<boolean> {
+  if(!env.CLOUDFLARE_CLIENT_ID||!env.CLOUDFLARE_CLIENT_SECRET)return false;
+  let revoked=true;
+  for(const token of [vault.refreshToken,vault.accessToken].filter(Boolean) as string[]) {
+    try {const response=await fetch(revokeEndpoint,{method:'POST',...authenticatedForm(env,new URLSearchParams({token})),redirect:'manual',signal:AbortSignal.timeout(15000)});if(!response.ok)revoked=false;}catch{revoked=false;}
+  }
+  return revoked;
+}
 async function start(env:AppEnv,p:Principal,origin:string) {
   await owner(env,p); requireConfiguration(env); if(!p.sessionId) throw new ApiError(403,'ACCOUNT_SESSION_REQUIRED','Sign in through the browser before connecting Cloudflare.');
   const uri=new URL(origin); if(uri.protocol!=='https:') throw new ApiError(400,'HTTPS_REQUIRED','Cloudflare account connection requires HTTPS.');
@@ -131,21 +169,18 @@ async function start(env:AppEnv,p:Principal,origin:string) {
   const pending:Pending={verifier,redirectUri:`${uri.origin}/api/cloudflare/callback`,expectedVersion:previous?.version??null};
   const record:CloudflareOAuthState={id,browserHash:await sha(binder),principal:p,expiresAt,encrypted:await encryptAuth(JSON.stringify(pending),env.AUTH_ENCRYPTION_KEY,`cloudflare-state:${id}`)};
   await service(env).connectionStore(p,'state-put',{value:record});
-  const challenge=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  const url=new URL(authorizeEndpoint);url.search=new URLSearchParams({response_type:'code',client_id:env.CLOUDFLARE_CLIENT_ID!,redirect_uri:pending.redirectUri,state,code_challenge:challenge,code_challenge_method:'S256',scope:requestedScopes(env).join(' ')}).toString();
-  return {authorizationUrl:url.toString(),expiresAt,cookie:`${cookieName}=${binder}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`};
+  return {authorizationUrl:await cloudflareAuthorizationUrl(env,pending.redirectUri,state,verifier),expiresAt,cookie:`${cookieName}=${binder}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`};
 }
 async function callback(request:Request,env:AppEnv):Promise<Response> {
   requireConfiguration(env);const url=new URL(request.url);const state=requireString(url.searchParams.get('state'),'OAuth state',128,64);
-  const binder=request.headers.get('Cookie')?.split(';').map(v=>v.trim()).find(v=>v.startsWith(`${cookieName}=`))?.slice(cookieName.length+1);
+  const binder=requestCookie(request,cookieName);
   if(!binder||!/^[a-f0-9]{64}$/.test(binder)) throw new ApiError(403,'OAUTH_BROWSER_REQUIRED','Restart the Cloudflare connection in the browser where you began.');
   const record=await service(env).connectionStore(null,'state-consume',{id:await sha(state),browserHash:await sha(binder)}) as CloudflareOAuthState;
   const pending=JSON.parse(await decryptAuth(record.encrypted,env.AUTH_ENCRYPTION_KEY,`cloudflare-state:${record.id}`)) as Pending;
   if(pending.redirectUri!==`${url.origin}${url.pathname}`) throw new ApiError(403,'OAUTH_REDIRECT_MISMATCH','The callback does not match the original installation.');
   if(url.searchParams.has('error')) throw new ApiError(400,'CLOUDFLARE_AUTHORIZATION_DENIED','Cloudflare authorization was cancelled or denied.');
   const code=requireString(url.searchParams.get('code'),'Authorization code',4096);
-  const response=await tokenRequest(env,new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:pending.redirectUri,code_verifier:pending.verifier})); const values=tokenValues(response);
-  const vault:Vault={...values,scopes:typeof response.scope==='string'?response.scope.split(' '):requestedScopes(env),clientId:env.CLOUDFLARE_CLIENT_ID!};
+  const vault=await exchangeCloudflareCode(env,code,pending.redirectUri,pending.verifier);
   await save(env,record.principal,vault,pending.expectedVersion);
   return new Response(null,{status:303,headers:{Location:`${url.origin}/settings/cloudflare`,'Set-Cookie':`${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'}});
 }
@@ -156,14 +191,8 @@ export async function dispatchCloudflare(env:AppEnv,p:Principal,action:string,bo
   if(action==='disconnect') {
     const removed=await service(env).connectionStore(p,'delete',{}) as CloudflareConnection|null;
     if(!removed)return {connected:false,revoked:true};
-    let revoked=true;
-    try {
-      const stored=JSON.parse(await decryptAuth(removed.encrypted,env.AUTH_ENCRYPTION_KEY,connectionContext(p))) as Vault;
-      if(!env.CLOUDFLARE_CLIENT_ID||!env.CLOUDFLARE_CLIENT_SECRET)revoked=false;
-      else for(const token of [stored.refreshToken,stored.accessToken].filter(Boolean) as string[]) {
-        try {const response=await fetch(revokeEndpoint,{method:'POST',...authenticatedForm(env,new URLSearchParams({token})),redirect:'manual',signal:AbortSignal.timeout(15000)});if(!response.ok)revoked=false;}catch{revoked=false;}
-      }
-    }catch{revoked=false;}
+    let revoked:boolean;
+    try { revoked=await revokeCloudflareTokens(env,JSON.parse(await decryptAuth(removed.encrypted,env.AUTH_ENCRYPTION_KEY,connectionContext(p))) as Vault); }catch{revoked=false;}
     return {connected:false,revoked};
   }
   const {record,vault}=await load(env,p);

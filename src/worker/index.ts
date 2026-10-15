@@ -12,12 +12,12 @@ import { PREVIEW_HEARTBEAT_MS, startWithDurableDispatch } from './coordinator';
 import type { Principal, Action } from './security';
 import { listDocs, readDoc } from './docs';
 import { documentationImage, documentationMarkdown } from './docs-markdown';
-import { handleOnboarding, signupWithVerification } from './onboarding';
+import { handleOnboarding } from './onboarding';
 import { listPublicDocs, readPublicDoc, publicSourceResponse } from './distribution';
 import { oauthConsent, oauthProvider } from './oauth';
 import { publicGitResponse } from './hosted-source';
 import { deliverInvitation } from './email';
-import { handleCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
+import { CLOUDFLARE_LINK_COOKIE, requestCookie, handleCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
 import { dispatchCloudflareProject, projectDependencies, type ProjectOperation } from './cloudflare-projects';
 import { validateRepositoryInitialization, initializeArtifactsRepository } from './repository-initialization';
 import { SKILL_REQUEST_MAX_BYTES, validateRepositorySkillChange, verifyRepositorySkillChange } from './skill-edit';
@@ -89,7 +89,7 @@ async function coordinatorRead<T>(operation: 'getModelConnections' | 'repository
 
 function catalogName(workspaceId: string) { return workspaceId === 'legacy' ? 'catalog:owner' : `catalog:${workspaceId}`; }
 function cookieValue(request: Request) { return request.headers.get('Cookie')?.split(';').map(item => item.trim()).find(item => item.startsWith('gitflare_session='))?.slice(17); }
-function sessionResponse(result: { token?: string; user?: unknown; workspaceId?: string; mfaRequired?: boolean }) { if (!result.token) return Response.json(result); const { token, ...body } = result; return Response.json({ ok: true, ...body }, { headers: { 'Set-Cookie': `gitflare_session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800` } }); }
+function sessionResponse(result: { token?: string; user?: unknown; workspaceId?: string; mfaRequired?: boolean }, clearLink = false) { const headers = new Headers(); if (clearLink) headers.append('Set-Cookie', `${CLOUDFLARE_LINK_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`); if (!result.token) return Response.json(result, { headers }); const { token, ...body } = result; headers.append('Set-Cookie', `gitflare_session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800`); return Response.json({ ok: true, ...body }, { headers }); }
 async function authorize(request: Request, env: AppEnv, bearerOnly = false): Promise<Principal> {
   const authorization = request.headers.get('Authorization'); const bearer = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined;
   if (env.EDITION !== 'self-hosted' && !bearerOnly && isLocalRequest(request, env.APP_ENV) && !bearer && !cookieValue(request)) return security(env).bootstrap();
@@ -205,7 +205,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     assertMutationOrigin(request);
     await security(env).rateLimit(`auth:${request.headers.get('CF-Connecting-IP') ?? 'local'}`);
     const body = await readJson(request);
-    if (url.pathname === '/api/login') return sessionResponse(await security(env).login(body, request.headers.get('CF-Connecting-IP') ?? 'local'));
+    if (url.pathname === '/api/login') { const link = requestCookie(request, CLOUDFLARE_LINK_COOKIE); return sessionResponse(await security(env).login(body, request.headers.get('CF-Connecting-IP') ?? 'local', link), !!link); }
     const token = requireString(body.token, 'Token', 1024, 32);
     if (env.EDITION === 'self-hosted' || !env.OWNER_TOKEN || !await tokenMatches(token, env.OWNER_TOKEN)) throw new ApiError(401, 'AUTH_REQUIRED', 'The owner token was not accepted.');
     return sessionResponse({ token: await security(env).legacySession(), workspaceId: 'legacy' });

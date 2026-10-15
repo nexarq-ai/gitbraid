@@ -215,8 +215,8 @@
     },
     {
       "path": "src/ui/auth-loading.css",
-      "size": 2304,
-      "sha256": "fc7ee24f99a1585b7778253d2a1e9bed4518d747b667f335429158e75d41aff3"
+      "size": 2409,
+      "sha256": "55f790fae65387d56bc7ee72f39960c3edab79bb3b50db38b762bb6cef5a0341"
     },
     {
       "path": "src/ui/AuthScreen.tsx",
@@ -440,8 +440,8 @@
     },
     {
       "path": "src/worker/cloudflare.ts",
-      "size": 22697,
-      "sha256": "7b34e234142bb7a0864bd84848295aaeba56cfdc7b20082fc4801a73e2604258"
+      "size": 25421,
+      "sha256": "c57fe99b0b99131b923c56fed3c1d6d4e15243d860ac06a41ab22f7d05d754d8"
     },
     {
       "path": "src/worker/coordinator.ts",
@@ -475,8 +475,8 @@
     },
     {
       "path": "src/worker/env.ts",
-      "size": 1614,
-      "sha256": "ea3d4d11f03603596d999595ea038b66dbd73edb0e9afe4b32de7ae73fb63bfc"
+      "size": 1653,
+      "sha256": "6cbcc3330d06bfa78d99c7b06dd77d7c232ff4f5694590a32efc24b3607f42ae"
     },
     {
       "path": "src/worker/execution.ts",
@@ -500,8 +500,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 65244,
-      "sha256": "502f69639379a4c54c3fe07a95440e1d79ef44d62ac3e68e62ffac8f6dc4060b"
+      "size": 65542,
+      "sha256": "28bfdb1072583de4a90316bdc430f3a7c308f557355b44908da789b9196d4b25"
     },
     {
       "path": "src/worker/issues.ts",
@@ -545,8 +545,8 @@
     },
     {
       "path": "src/worker/onboarding.ts",
-      "size": 5765,
-      "sha256": "81628db12bcdd8c226788d32428069fe706b12814d861745993916a19bf62e7c"
+      "size": 5522,
+      "sha256": "d6cb7fe92e5b910aa1ffd22111f0eb7d4ee18e45122eafbabd5de7eca217686c"
     },
     {
       "path": "src/worker/preview-plan.ts",
@@ -585,8 +585,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 68920,
-      "sha256": "37148ca0e57d73d738e7bceb5a840cf6ac01b0dcb8aa1c0e4bfc095c6a389ce1"
+      "size": 71888,
+      "sha256": "e7876b4529bc2f8c3316e17e03668e0d14f99dd3ecedac7e17f214e38f31f1af"
     },
     {
       "path": "src/worker/skill-edit.ts",

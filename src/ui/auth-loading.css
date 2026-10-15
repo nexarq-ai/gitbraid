@@ -103,3 +103,10 @@
 .route-progress span { position: absolute; inset: 0 auto 0 0; width: 40%; background: #f6821f; border-radius: 2px; animation: route-progress 1.1s ease-in-out infinite; }
 @keyframes route-progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
 @media (prefers-reduced-motion: reduce) { .route-progress span { animation: none; width: 100%; opacity: .6; } }
+
+.auth-cloudflare img {
+  margin-right: 8px;
+  background: #fff;
+  border-radius: 3px;
+  padding: 1px;
+}
