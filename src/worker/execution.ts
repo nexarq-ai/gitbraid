@@ -8,7 +8,10 @@ import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEF
 import { inferenceMessage, ModelResponseError, type InputItem, type ModelEnv, type ModelMessage } from './model-adapter';
 export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { classifyPreview, previewPlan } from './preview-plan';
-import { buildWorkerBundle, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type WorkerBundle } from './worker-bundle';
+import { buildWorkerBundle, DEPLOY_BUILD_TIMEOUT_MS, deployBuildScript, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type WorkerBundle } from './worker-bundle';
+import { collectAndUploadAssets, type AssetsOptions } from './worker-assets';
+import { migrationDatabases, readMigrationFiles } from './d1-migrations';
+import type { BuiltTarget } from './deployments';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
 import { DEPENDENCY_FILES, describeInstall, detectPackageManager, hasInstallableDependencies, INSTALL_ATTEMPTS, isTransientInstallFailure, runnerFor, type InstallPlan } from './package-manager';
 import type { LearnedLimits } from './check-settings';
@@ -925,29 +928,44 @@ export async function prepareCandidatePreview(env: ExecutionEnv, { mission, prev
   }
 }
 
-export interface LandedWorkerInput { repository: Repository; commitSha: string; attemptId: string; assertAuthority: AuthorityGuard }
+export interface DeployBuildTarget { configPath: string; buildCommand?: string; d1Migrations: boolean }
+export interface LandedWorkerInput { repository: Repository; commitSha: string; attemptId: string; assertAuthority: AuthorityGuard; target?: DeployBuildTarget; index?: number }
 
-export async function buildLandedWorker(env: ExecutionEnv, { repository, commitSha, attemptId, assertAuthority }: LandedWorkerInput): Promise<WorkerBundle> {
+export async function buildLandedWorker<T = BuiltTarget>(env: ExecutionEnv, { repository, commitSha, attemptId, assertAuthority, target, index = 0 }: LandedWorkerInput, publish: (built: BuiltTarget) => Promise<T> = async (built) => built as T): Promise<T> {
   if (!/^[a-f0-9-]{36}$/.test(attemptId)) throw new Error('Invalid deployment attempt ID');
   if (!validGitSha(commitSha)) throw new WorkerBuildFailure('DEPLOY_COMMIT_INVALID', 'Deployments need an exact landed commit.');
   if (!env.ARTIFACTS || !env.SANDBOX) throw new WorkerBuildFailure('DEPLOY_RUNNER_UNAVAILABLE', 'Artifacts and the sandbox runner are required to build a deployment.');
   await assertAuthority();
   using canonical = await env.ARTIFACTS.get(repository.name);
   const info = await canonical.info();
-  const sandbox = env.SANDBOX.getByName(`deploy-${repository.id}-${attemptId}`);
+  const sandbox = env.SANDBOX.getByName(index ? `deploy-${repository.id}-${attemptId}-${index}` : `deploy-${repository.id}-${attemptId}`);
   try {
     await sandbox.prepare([{ ...info, write: false }]);
     await clone(sandbox, info, commitSha);
     const files = (await checked(sandbox, ['git', 'ls-files'])).split('\n').filter(Boolean);
-    const configPath = workerConfigPath(files);
+    const configPath = target?.configPath || workerConfigPath(files);
     if (!configPath) throw new WorkerBuildFailure('WORKER_CONFIG_REQUIRED', 'The landed commit has no wrangler.jsonc, wrangler.json or wrangler.toml.');
+    if (!files.includes(configPath)) throw new WorkerBuildFailure('WORKER_CONFIG_REQUIRED', `The landed commit has no ${configPath}.`);
     const { plan } = await workingTreeInstall(sandbox, files);
     if (plan) await installDependencies(sandbox, plan, assertAuthority, async () => true);
-    const config = await readWorkerConfig(sandbox, configPath);
+    if (target?.buildCommand) {
+      if (!sandbox.check) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot run build commands.');
+      await assertAuthority();
+      const built = await sandbox.check(deployBuildScript(target.buildCommand), DEPLOY_BUILD_TIMEOUT_MS);
+      if (built.exitCode !== 0) throw new WorkerBuildFailure('DEPLOY_BUILD_FAILED', `${target.buildCommand} failed (exit ${built.exitCode}${built.timedOut ? ', timed out' : ''}). ${(built.stderr || built.stdout).replace(/\s+/g, ' ').trim().slice(-500)}`);
+    }
+    const config = await readWorkerConfig(sandbox, configPath, !!target);
     if (!config) throw new WorkerBuildFailure('WORKER_MAIN_REQUIRED', 'The Wrangler configuration has no main entry, or wrangler is not a dependency of the repository.');
-    if (config.assets) throw new WorkerBuildFailure('WORKER_ASSETS_UNSUPPORTED', 'Deploying Workers with static assets is not supported yet. Deploy them with Workers Builds or wrangler deploy.');
     await assertAuthority();
-    return await buildWorkerBundle(sandbox, config);
+    const bundle = await buildWorkerBundle(sandbox, config);
+    const migrations = target?.d1Migrations ? await readMigrationFiles(sandbox, migrationDatabases(config.deploy?.d1_databases)) : [];
+    const assets = config.deploy?.assets && typeof config.deploy.assets === 'object' ? config.deploy.assets as Record<string, unknown> : null;
+    if (config.assets && (!assets || typeof assets.directory !== 'string')) throw new WorkerBuildFailure('WORKER_ASSETS_DIRECTORY_INVALID', 'The assets directory must be inside the repository.');
+    return await publish({
+      bundle,
+      migrations,
+      ...(config.assets && assets ? { uploadAssets: (call, accountId, workerName) => collectAndUploadAssets(sandbox, { call, accountId, workerName, options: assets as unknown as AssetsOptions }) } : {}),
+    });
   } finally {
     try { await sandbox.destroy(); }
     catch { console.error('runner.deploy.cleanup.failed', repository.id); }

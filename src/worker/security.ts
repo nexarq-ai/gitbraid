@@ -538,6 +538,7 @@ type ShardGroup = 'meta' | 'workspace' | 'member' | 'session' | 'team' | 'invita
 const SHARD_GROUPS: ShardGroup[] = ['meta', 'workspace', 'member', 'session', 'team', 'invitation', 'grant', 'credential', 'protection', 'approval', 'connection', 'cfstate', 'project', 'revision'];
 interface ShardData { meta: Map<string, { workspaceId: string; source: string; version: number; at: string }>; workspace: Map<string, WorkspaceRecord>; member: Map<string, Member>; session: Map<string, Session>; team: Map<string, Team>; invitation: Map<string, Invitation>; grant: Map<string, Grant>; credential: Map<string, Credential>; protection: Map<string, Protection>; approval: Map<string, string[]>; connection: Map<string, CloudflareConnection>; cfstate: Map<string, CloudflareOAuthState>; project: Map<string, ProjectRecord>; revision: Map<string, number> }
 function emptyShard(): ShardData { return Object.fromEntries(SHARD_GROUPS.map(group => [group, new Map()])) as unknown as ShardData; }
+function connectionRepository(value: unknown): string | undefined { if (value === undefined) return undefined; if (typeof value !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(value)) fail(); return value; }
 function shardKey(group: ShardGroup, id: string): string { return `ws:${group}:${enc(id)}`; }
 function auditKey(sequence: number): string { return `wa:${String(sequence).padStart(12, '0')}`; }
 interface Context { session?: PublicSession | null; trusted?: Set<string> }
@@ -913,9 +914,11 @@ export class WorkspaceStore {
   }
   async connectionStore(p: Principal | null, operation: 'get' | 'put' | 'delete' | 'state-put' | 'state-consume', body: Record<string, unknown> = {}): Promise<unknown> {
     await this.load();
+    const repositoryId = connectionRepository(body.repositoryId);
+    const slot = repositoryId ? `repository:${repositoryId}` : 'current';
     const pending = operation === 'state-consume' ? this.data.cfstate.get(String(body.id)) : undefined;
     const context = await this.prepare(pending?.principal ?? p);
-    for (const issuer of [this.data.connection.get('current')?.issuer, (body.value as Partial<CloudflareConnection> | undefined)?.issuer]) if (issuer && !issuer.bootstrap) await this.trustedUser(issuer.userId);
+    for (const issuer of [this.data.connection.get(slot)?.issuer, (body.value as Partial<CloudflareConnection> | undefined)?.issuer]) if (issuer && !issuer.bootstrap) await this.trustedUser(issuer.userId);
     const issuerContext: Context = {};
     return this.change(change => {
       if (operation === 'state-consume') {
@@ -923,38 +926,40 @@ export class WorkspaceStore {
         if (!value || value.browserHash !== body.browserHash || value.expiresAt <= Date.now()) throw new ApiError(400, 'CLOUDFLARE_STATE_INVALID', 'The connection request has expired. Start again.');
         this.validate(value.principal, context);
         if (value.principal.role !== 'Owner' || !value.principal.sessionId || value.principal.credentialId) fail();
+        if (value.repositoryId !== undefined && (connectionRepository(value.repositoryId) !== value.repositoryId || !this.authorityAllows(value.principal, 'read', 'repository', value.repositoryId))) fail();
         this.data.cfstate.delete(value.id);
         return value;
       }
       if (!p) fail();
       this.validate(p, context);
       if (p.credentialId) fail();
+      if (repositoryId && !this.authorityAllows(p, 'read', 'repository', repositoryId)) fail();
       if (operation === 'get') {
         const authorization = body.authorization as { action: Action; resourceType: string; resourceId: string } | undefined;
         if (p.role !== 'Owner' && (!authorization || !this.authorityAllows(p, authorization.action, authorization.resourceType, authorization.resourceId))) fail();
-        const connection = this.data.connection.get('current') ?? null;
+        const connection = this.data.connection.get(slot) ?? null;
         if (connection?.issuer) this.validate({ ...connection.issuer, sessionId: undefined }, issuerContext);
         return connection;
       }
       if (p.role !== 'Owner') fail();
       if (operation === 'state-put') {
         const value = body.value as CloudflareOAuthState;
-        if (!p.sessionId || value.principal.userId !== p.userId || value.principal.workspaceId !== p.workspaceId || value.principal.sessionId !== p.sessionId || value.principal.role !== 'Owner' || value.principal.credentialId || value.expiresAt > Date.now() + 600000 || value.expiresAt <= Date.now()) fail();
+        if (!p.sessionId || value.principal.userId !== p.userId || value.principal.workspaceId !== p.workspaceId || value.principal.sessionId !== p.sessionId || value.principal.role !== 'Owner' || value.principal.credentialId || value.expiresAt > Date.now() + 600000 || value.expiresAt <= Date.now() || (value.repositoryId ?? undefined) !== repositoryId) fail();
         this.data.cfstate.set(value.id, value);
         return { ok: true };
       }
-      const existing = this.data.connection.get('current') ?? null;
+      const existing = this.data.connection.get(slot) ?? null;
       if (operation === 'put') {
         if ((existing?.version ?? null) !== body.expectedVersion) throw new ApiError(409, 'CLOUDFLARE_CONNECTION_CHANGED', 'The Cloudflare connection changed. Refresh and try again.');
         const value = body.value as CloudflareConnection;
         if (value.issuer?.workspaceId !== p.workspaceId || value.issuer.role !== 'Owner' || value.issuer.credentialId) fail();
         this.validate({ ...value.issuer, sessionId: undefined }, issuerContext);
-        this.data.connection.set('current', value);
+        this.data.connection.set(slot, value);
       } else if (operation === 'delete') {
-        this.data.connection.delete('current');
-        for (const [id, value] of this.data.cfstate) if (value.principal.workspaceId === p.workspaceId) this.data.cfstate.delete(id);
+        this.data.connection.delete(slot);
+        for (const [id, value] of this.data.cfstate) if (value.principal.workspaceId === p.workspaceId && value.repositoryId === repositoryId) this.data.cfstate.delete(id);
       }
-      change.audit.push({ actorId: p.userId, action: `cloudflare:${operation}` });
+      change.audit.push({ actorId: p.userId, action: `cloudflare:${operation}`, ...(repositoryId ? { resourceId: repositoryId } : {}) });
       return operation === 'delete' ? existing : { ok: true };
     });
   }

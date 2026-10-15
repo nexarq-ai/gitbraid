@@ -18,6 +18,8 @@ export interface WorkerBindingSource {
 export interface MigrationStep { tag: string; new_classes?: string[]; new_sqlite_classes?: string[]; renamed_classes?: { from: string; to: string }[]; deleted_classes?: string[] }
 export interface ResolvedWorkerConfig {
   configPath: string;
+  userConfigPath?: string;
+  deploy?: Record<string, unknown>;
   name?: string;
   main: string;
   compatibilityDate: string;
@@ -49,20 +51,40 @@ export function workerConfigPath(files: string[]): string | null {
 
 const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
+const CREDENTIAL_GUARD = 'unset CLOUDFLARE_API_TOKEN CLOUDFLARE_API_KEY CLOUDFLARE_EMAIL CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN CF_ACCOUNT_ID';
+const WRANGLER_LOOKUP = 'wrangler_bin() { local dir; dir=$(dirname "$1"); while :; do if [ -x "$dir/node_modules/.bin/wrangler" ]; then printf %s "$dir/node_modules/.bin/wrangler"; return 0; fi; if [ "$dir" = "." ] || [ "$dir" = "/" ]; then return 1; fi; dir=$(dirname "$dir"); done; }';
+
 // No Cloudflare credential is present in the sandbox; these unset lines guard against an image that sets one
 export function workerBuildScript(configPath: string): string {
   return [
     'set -euo pipefail',
-    'unset CLOUDFLARE_API_TOKEN CLOUDFLARE_API_KEY CLOUDFLARE_EMAIL CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN CF_ACCOUNT_ID',
+    CREDENTIAL_GUARD,
     'export WRANGLER_SEND_METRICS=false WRANGLER_LOG=error NO_COLOR=1',
-    "test -x node_modules/.bin/wrangler || { echo 'Wrangler is not a dependency of this repository. Add wrangler 4.135 or later to devDependencies.' >&2; exit 64; }",
+    WRANGLER_LOOKUP,
+    `WRANGLER=$(wrangler_bin ${quote(configPath)}) || { echo 'Wrangler is not a dependency of this repository. Add wrangler 4.135 or later to devDependencies.' >&2; exit 64; }`,
     `rm -rf ${OUTPUT_DIR}`,
-    `node_modules/.bin/wrangler deploy --dry-run --config ${quote(configPath)} --outdir ${OUTPUT_DIR} > /tmp/gitflare-worker-build.log 2>&1 || { tail -c 3000 /tmp/gitflare-worker-build.log >&2; exit 65; }`,
+    `"$WRANGLER" deploy --dry-run --config ${quote(configPath)} --outdir ${OUTPUT_DIR} > /tmp/gitflare-worker-build.log 2>&1 || { tail -c 3000 /tmp/gitflare-worker-build.log >&2; exit 65; }`,
   ].join('\n');
 }
 
-export function workerConfigScript(configPath: string): string {
-  return `node --input-type=module -e ${quote(CONFIG_PROGRAM)} ${quote(configPath)}`;
+export const DEPLOY_BUILD_TIMEOUT_MS = 600_000;
+
+export function validBuildCommand(value: unknown): value is string {
+  return typeof value === 'string' && !!value.trim() && value.length <= 500 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+export function deployBuildScript(command: string): string {
+  if (!validBuildCommand(command)) throw new WorkerBuildFailure('DEPLOY_BUILD_COMMAND_INVALID', 'The build command must be a single line of at most 500 characters.');
+  return [
+    'set -euo pipefail',
+    CREDENTIAL_GUARD,
+    'export WRANGLER_SEND_METRICS=false NO_COLOR=1 CI=true',
+    `( ${command.trim()} ) > /tmp/gitflare-deploy-build.log 2>&1 || { status=$?; tail -c 3000 /tmp/gitflare-deploy-build.log >&2; exit $status; }`,
+  ].join('\n');
+}
+
+export function workerConfigScript(configPath: string, redirect = false): string {
+  return `node --input-type=module -e ${quote(CONFIG_PROGRAM)} ${quote(configPath)}${redirect ? ' redirect' : ''}`;
 }
 
 export function workerBundleScript(configPath: string): string {
@@ -71,14 +93,36 @@ export function workerBundleScript(configPath: string): string {
 
 const CONFIG_PROGRAM = `
 import { createRequire } from 'node:module';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const write = (...args) => process.stderr.write(args.map(String).join(' ') + '\\n');
 console.log = console.info = console.warn = console.debug = write;
-const require = createRequire(process.cwd() + '/');
+const root = process.cwd();
+const inside = (path) => { const rel = relative(root, path); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); };
+const userConfigPath = process.argv[1];
+let configPath = userConfigPath;
+if (process.argv[2] === 'redirect') {
+  const redirectFile = join(root, dirname(userConfigPath), '.wrangler', 'deploy', 'config.json');
+  if (existsSync(redirectFile)) {
+    let target;
+    try { target = JSON.parse(readFileSync(redirectFile, 'utf8')).configPath; } catch { process.stderr.write('REDIRECT_INVALID'); process.exit(67); }
+    const absolute = typeof target === 'string' ? resolve(dirname(redirectFile), target) : '';
+    if (!absolute || !inside(absolute) || !existsSync(absolute)) { process.stderr.write('REDIRECT_INVALID'); process.exit(67); }
+    configPath = relative(root, absolute);
+  }
+}
+const require = createRequire(join(root, dirname(configPath)) + '/');
 let entry;
 try { entry = require.resolve('wrangler'); } catch { process.exit(64); }
 const wrangler = await import(pathToFileURL(entry).href);
-const config = wrangler.unstable_readConfig({ config: process.argv[1] }, { hideWarnings: true });
+const config = wrangler.unstable_readConfig({ config: configPath }, { hideWarnings: true });
+const configDir = join(root, dirname(configPath));
+const repoRelative = (value) => { if (typeof value !== 'string') return value; const absolute = resolve(configDir, value); return inside(absolute) ? (relative(root, absolute) || '.') : null; };
+const DEPLOY_KEYS = ['name', 'compatibility_date', 'compatibility_flags', 'vars', 'kv_namespaces', 'd1_databases', 'r2_buckets', 'services', 'queues', 'workflows', 'durable_objects', 'migrations', 'exports', 'ai', 'send_email', 'browser', 'images', 'version_metadata', 'analytics_engine_datasets', 'hyperdrive', 'vectorize', 'ratelimits', 'secrets_store_secrets', 'dispatch_namespaces', 'mtls_certificates', 'pipelines', 'worker_loaders', 'artifacts', 'ai_search', 'ai_search_namespaces', 'flagship', 'vpc_services', 'vpc_networks', 'logfwdr', 'unsafe', 'assets', 'observability', 'workers_dev', 'preview_urls', 'routes', 'route', 'triggers', 'placement', 'limits', 'logpush', 'tail_consumers', 'streaming_tail_consumers', 'containers'];
+const deploy = Object.fromEntries(DEPLOY_KEYS.filter((key) => config[key] !== undefined).map((key) => [key, config[key]]));
+if (deploy.assets && typeof deploy.assets === 'object') deploy.assets = { ...deploy.assets, directory: repoRelative(deploy.assets.directory) };
+if (Array.isArray(deploy.d1_databases)) deploy.d1_databases = deploy.d1_databases.map((item) => item && typeof item.migrations_dir === 'string' ? { ...item, migrations_dir: repoRelative(item.migrations_dir) } : item);
 const refs = (list, key = 'binding') => (Array.isArray(list) ? list : []).map((item) => item?.[key]).filter((name) => typeof name === 'string');
 const single = (item, type) => item && typeof item.binding === 'string' ? [{ name: item.binding, type }] : [];
 const source = (block) => {
@@ -116,7 +160,9 @@ const source = (block) => {
   return { vars: block.vars ?? {}, durableObjects, bindings };
 };
 const output = {
-  configPath: process.argv[1],
+  configPath,
+  userConfigPath,
+  deploy,
   name: config.name,
   main: config.main,
   compatibilityDate: config.compatibility_date,
@@ -180,6 +226,8 @@ export function parseWorkerConfig(stdout: string): ResolvedWorkerConfig | null {
   const migrations = Array.isArray(value.migrations) ? value.migrations.filter((step): step is MigrationStep => record(step) && typeof step.tag === 'string') : [];
   return {
     configPath: String(value.configPath),
+    ...(typeof value.userConfigPath === 'string' ? { userConfigPath: value.userConfigPath } : {}),
+    ...(record(value.deploy) ? { deploy: value.deploy } : {}),
     ...(typeof value.name === 'string' ? { name: value.name } : {}),
     main: value.main,
     compatibilityDate: value.compatibilityDate,
@@ -237,10 +285,11 @@ function failureDetail(result: CommandResult): string {
   return (result.stderr || result.stdout).replace(/\s+/g, ' ').trim().slice(-500);
 }
 
-export async function readWorkerConfig(sandbox: BundleSandbox, configPath: string): Promise<ResolvedWorkerConfig | null> {
+export async function readWorkerConfig(sandbox: BundleSandbox, configPath: string, redirect = false): Promise<ResolvedWorkerConfig | null> {
   if (!sandbox.collect) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot build Worker bundles.');
-  const result = await sandbox.collect(workerConfigScript(configPath), 60_000, 1024 * 1024);
+  const result = await sandbox.collect(workerConfigScript(configPath, redirect), 60_000, 1024 * 1024);
   if (result.exitCode === 64) return null;
+  if (result.exitCode === 67) throw new WorkerBuildFailure('WRANGLER_REDIRECT_INVALID', 'The build wrote .wrangler/deploy/config.json pointing outside the repository or at a missing file.');
   if (result.exitCode !== 0) throw new WorkerBuildFailure('WORKER_CONFIG_INVALID', `The Wrangler configuration could not be read. ${failureDetail(result)}`);
   return parseWorkerConfig(result.stdout);
 }
