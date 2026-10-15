@@ -610,8 +610,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 76516,
-      "sha256": "d0fbd7a6504a6001e8e520465d684a5b1e9fc6dd2a91e8f5eeb1208a19c778b7"
+      "size": 76482,
+      "sha256": "813157469e72a3e7b6ef5c3b75491389dfd0f20a5ea57119ffbbc8fe9ca30e62"
     },
     {
       "path": "src/worker/mfa.ts",
