@@ -59,7 +59,11 @@ export interface RepositoryPolicy {
   autoIncrease: AutoIncrease;
   starter: boolean;
   untested: boolean;
+  generated: GeneratedFiles | null;
 }
+
+export interface GeneratedFiles { paths: string[]; command: string | null }
+export const MAX_GENERATED_PATHS = 50;
 
 export interface PathChange { path: string; status: string }
 export interface StarterCheck { testCommand: string; evidence: RepositoryPolicy['evidence']; install: InstallPlan | null }
@@ -76,6 +80,38 @@ function command(value: unknown, field: string): string {
 function editablePath(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 200 || value.startsWith('/') || /[\\\u0000-\u001f\u007f]/.test(value) || value.split('/').some((part, index, parts) => part === '..' || part === '.' || (!part && index !== parts.length - 1))) throw new Error(`${POLICY_FILE}: "editable" entries must be repository-relative files or directories ending in "/"`);
   return value;
+}
+
+function generatedFiles(value: unknown): GeneratedFiles {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${POLICY_FILE}: "generated" must be an object with "paths" and an optional "command"`);
+  const fields = value as Record<string, unknown>;
+  const unknown = Object.keys(fields).find((key) => key !== 'paths' && key !== 'command');
+  if (unknown) throw new Error(`${POLICY_FILE}: unsupported field "generated.${unknown}"`);
+  if (!Array.isArray(fields.paths) || !fields.paths.length || fields.paths.length > MAX_GENERATED_PATHS) throw new Error(`${POLICY_FILE}: "generated.paths" must list between 1 and ${MAX_GENERATED_PATHS} files or globs`);
+  const paths = fields.paths.map((entry) => {
+    if (typeof entry !== 'string' || !entry || entry.length > 200 || entry.startsWith('/') || entry.endsWith('/') || /[\\\u0000-\u001f\u007f]/.test(entry) || entry.split('/').some((part) => !part || part === '.' || part === '..') || entry === POLICY_FILE || /^\.git(\/|$)/.test(entry)) throw new Error(`${POLICY_FILE}: "generated.paths" entries must be repository-relative files or globs such as "src/generated/**"`);
+    return entry;
+  });
+  return { paths, command: fields.command === undefined ? null : command(fields.command, 'generated.command') };
+}
+
+function globPattern(glob: string): RegExp {
+  let pattern = '';
+  for (let index = 0; index < glob.length; index++) {
+    const char = glob[index]!;
+    if (char === '*' && glob[index + 1] === '*') {
+      const slash = glob[index + 2] === '/';
+      pattern += slash ? '(?:.*/)?' : '.*';
+      index += slash ? 2 : 1;
+    } else if (char === '*') pattern += '[^/]*';
+    else if (char === '?') pattern += '[^/]';
+    else pattern += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${pattern}$`);
+}
+
+export function isGeneratedPath(path: string, globs: readonly string[]): boolean {
+  return globs.some((glob) => globPattern(glob).test(path));
 }
 
 const INSTALL_VALUES = ['npm', 'pnpm', 'yarn', 'auto'];
@@ -98,7 +134,7 @@ export function startingTimeoutMs(command: string, settings?: CheckPlan | null):
 }
 
 export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: string, baseFiles?: string[], basePackageJson?: string | null, baseLockHead?: string | null, settings?: CheckPlan | null): RepositoryPolicy {
-  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: null, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: DEFAULT_TEST_TIMEOUT_MS, testTimeoutSource: 'default', runner: DEFAULT_RUNNER, runnerSource: 'default', autoIncrease: DEFAULT_AUTO_INCREASE, starter: false, untested: false };
+  const fallback: RepositoryPolicy = { testCommand: defaultTestCommand, evidence: 'tap', editable: DEFAULT_EDITABLE, install: null, previewCommand: DEFAULT_PREVIEW, testTimeoutMs: DEFAULT_TEST_TIMEOUT_MS, testTimeoutSource: 'default', runner: DEFAULT_RUNNER, runnerSource: 'default', autoIncrease: DEFAULT_AUTO_INCREASE, starter: false, untested: false, generated: null };
   if (raw === null) {
     if (baseFiles === undefined) return withLimits(fallback, {}, settings);
     const untested = !baseFiles.some((path) => TEST_PATHS.test(path) && !path.includes('node_modules/'));
@@ -109,7 +145,7 @@ export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: st
   try { parsed = JSON.parse(raw); } catch { throw new Error(`${POLICY_FILE} is not valid JSON`); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${POLICY_FILE} must contain a JSON object`);
   const fields = parsed as Record<string, unknown>;
-  const unknown = Object.keys(fields).filter((key) => !['test', 'evidence', 'editable', 'install', 'preview', 'timeoutSeconds', 'runner'].includes(key));
+  const unknown = Object.keys(fields).filter((key) => !['test', 'evidence', 'editable', 'install', 'preview', 'timeoutSeconds', 'runner', 'generated', 'deploy'].includes(key));
   if (unknown.length) throw new Error(`${POLICY_FILE}: unsupported field "${unknown[0]}"`);
   const policy = { ...fallback };
   if (fields.test !== undefined) policy.testCommand = command(fields.test, 'test');
@@ -135,6 +171,7 @@ export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: st
     if (!Array.isArray(fields.editable) || !fields.editable.length || fields.editable.length > 20) throw new Error(`${POLICY_FILE}: "editable" must list between 1 and 20 paths`);
     policy.editable = fields.editable.map(editablePath);
   }
+  if (fields.generated !== undefined) policy.generated = generatedFiles(fields.generated);
   return withLimits(policy, explicit, settings);
 }
 

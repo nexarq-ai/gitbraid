@@ -133,19 +133,29 @@ export function registryHosts(plan: InstallPlan): string[] {
   return plan.installer === 'yarn-classic' || plan.installer === 'yarn-berry' ? [NPM_REGISTRY, YARN_REGISTRY] : [NPM_REGISTRY];
 }
 
-function managerCommand(plan: InstallPlan): string {
+export type InstallMode = 'install' | 'lockfile';
+
+// pnpm and Yarn Berry freeze the lockfile by default when CI=true
+function lockfileCommand(plan: InstallPlan): string {
+  if (plan.installer === 'pnpm') return `pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts --store-dir ${PNPM_STORE}`;
+  if (plan.installer === 'yarn-classic') return 'yarn install --ignore-scripts --non-interactive';
+  return 'yarn install --no-immutable --mode=update-lockfile';
+}
+
+function managerCommand(plan: InstallPlan, mode: InstallMode): string {
+  if (mode === 'lockfile') return lockfileCommand(plan);
   const frozen = plan.lockfile !== null;
   if (plan.installer === 'pnpm') return `pnpm install ${frozen ? '--frozen-lockfile' : '--no-frozen-lockfile'} --ignore-scripts --store-dir ${PNPM_STORE}`;
   if (plan.installer === 'yarn-classic') return `yarn install ${frozen ? '--frozen-lockfile' : '--pure-lockfile'} --ignore-scripts --non-interactive`;
   return `yarn install ${frozen ? '--immutable' : '--no-immutable'} --mode=skip-build`;
 }
 
-export function installCommand(plan: InstallPlan): string[] {
-  if (plan.installer === 'npm') return ['npm', plan.lockfile ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'];
+export function installCommand(plan: InstallPlan, mode: InstallMode = 'install'): string[] {
+  if (plan.installer === 'npm') return mode === 'lockfile' ? ['npm', 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'] : ['npm', plan.lockfile ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'];
   if (!['pnpm', 'yarn-classic', 'yarn-berry'].includes(plan.installer)) throw new Error('Unsupported package manager');
   const bin = runnerFor(plan);
   if (plan.pinned !== null && !(PACKAGE_MANAGER_FIELD.test(plan.pinned) && plan.pinned.startsWith(`${bin}@`))) throw new Error('Invalid packageManager version');
   if (plan.pinned === null && !RANGE.test(plan.fallbackRange ?? '')) throw new Error('Invalid package manager version range');
   const activate = plan.pinned ? 'corepack install' : `corepack install -g ${bin}@${plan.fallbackRange}`;
-  return ['/bin/sh', '-c', `corepack enable ${bin} && ${activate} && ${managerCommand(plan)}`];
+  return ['/bin/sh', '-c', `corepack enable ${bin} && ${activate} && ${managerCommand(plan, mode)}`];
 }

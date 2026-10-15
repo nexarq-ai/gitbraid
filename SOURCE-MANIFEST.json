@@ -100,8 +100,8 @@
     },
     {
       "path": "runner/sandbox.ts",
-      "size": 19963,
-      "sha256": "82f32c0b31ccbebf36250016e3618431755be2e36dda6ed4fc14a294f09390f7"
+      "size": 20043,
+      "sha256": "3f5a1fa49565a101ab842f3ee27f4d205636ee12f9e1713084a2648e344403e5"
     },
     {
       "path": "scripts/deploy-self-hosted.mjs",
@@ -540,8 +540,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 85685,
-      "sha256": "67ca99c2abeb604f4e14dff37c4455da67e741ab74a7d1669ca2e63f2635252f"
+      "size": 85945,
+      "sha256": "dc3ec21e3cfe574d36cc20443a6665816ca99090da727eda83ce2c6518822c1f"
     },
     {
       "path": "src/worker/d1-migrations.ts",
@@ -585,8 +585,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 78802,
-      "sha256": "d4934d7ae14152490fd38bab2bdf306692abc295f7a6853e205c0b5dd3e61b31"
+      "size": 86125,
+      "sha256": "d789b350b195c6572948a08df8799ae779ee2d465a5cf622d1ccac0b3fb9afaa"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -665,8 +665,8 @@
     },
     {
       "path": "src/worker/package-manager.ts",
-      "size": 7923,
-      "sha256": "30d42c9c0336edc3a35135258b4c035a56217eab8eea93c9b6f35819cdf0791f"
+      "size": 8622,
+      "sha256": "1652cc0d32f1fff3ff4c216b056d72917b408a1d185379ec2448a9b92cbb42e9"
     },
     {
       "path": "src/worker/preview-capability.ts",
@@ -710,8 +710,8 @@
     },
     {
       "path": "src/worker/repository-policy.ts",
-      "size": 12203,
-      "sha256": "0fa4dc453bd00d9d2eea9593f1299067fdc9f9e878490b3f3d5436dec0869cbf"
+      "size": 14444,
+      "sha256": "ff2a1f02aad8b51cccafff4bd6d185c9e116e437aecaee9cc2d531136dd819ae"
     },
     {
       "path": "src/worker/repository-skills.ts",

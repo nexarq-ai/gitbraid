@@ -767,7 +767,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.raceChecks;
       delete mission.raceChanges;
       const names = (runs: Mission['runs']) => runs.map((run) => run.name.slice(0, 60)).join(', ');
-      const moved = previousBase && mission.baseSha !== previousBase ? ` The default branch moved from ${previousBase.slice(0, 12)} to ${(mission.baseSha ?? 'none').slice(0, 12)}, so reused candidates will be re-run.` : '';
+      const moved = previousBase && mission.baseSha !== previousBase ? ` The default branch moved from ${previousBase.slice(0, 12)} to ${(mission.baseSha ?? 'none').slice(0, 12)}, so ${mission.mode === 'race' ? 'reused candidates will be re-run' : 'reused candidates are merged onto the new base and the combined checks re-verify them'}.` : '';
       const reuseNote = reused.length ? ` Reusing ${reused.length} verified candidate${reused.length === 1 ? '' : 's'} from attempt ${previousEpoch} (${names(reused)}) after confirming each commit is still in its fork.` : '';
       this.queueDispatch(mission);
       return this.saveMission(mission, mode === 'retry'
@@ -972,6 +972,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       }
       mission.runs = result.runs;
     }
+    for (const event of result.events ?? []) if (!mission.events.some((existing) => existing.id === event.id)) mission.events.push(event);
     if (result.checks) mission.checks = result.checks;
     if (result.changes) mission.changes = result.changes;
     if (result.candidateSha !== undefined) mission.candidateSha = result.candidateSha;
