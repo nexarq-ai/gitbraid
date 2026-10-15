@@ -40,13 +40,13 @@
     },
     {
       "path": "docs/public/mcp.md",
-      "size": 11121,
-      "sha256": "cd126464f82d4c49a451c5c9fa823142a3248465a5b625509f969bba042789bf"
+      "size": 10842,
+      "sha256": "f1256dd78ce298bd981201d4f1fa731678ea8c30d86161dd0e72884831b98749"
     },
     {
       "path": "docs/public/overview.md",
-      "size": 6411,
-      "sha256": "3883ec38964bd67e2a3a2afef56807c1bae13c5ef57f86f8ab920ae562e4329d"
+      "size": 6635,
+      "sha256": "596d850e34957b04ba31e5a85926f27f4ffb8a259e38d893bd08a6157875c1b9"
     },
     {
       "path": "docs/public/repositories.md",
