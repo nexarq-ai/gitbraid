@@ -432,7 +432,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     if (!writing && (request.method !== 'GET' || branchRoute[2] === 'pulls')) throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use a supported branch operation.');
     await access.authorize(principal, !writing ? 'read' : branchRoute[2] === 'branch-protection' ? 'manage' : 'contribute', 'repository', repository.id);
     if (!writing && branchRoute[2] === 'branch-protection') return Response.json(protectionSnapshot(repository.id, repository.defaultBranch, await coordinator.getBranchProtection()));
-    if (!env.ARTIFACTS || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to use branches.');
+    if (!env.ARTIFACTS || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to use streams.');
     if (!writing) return Response.json({ repositoryId: repository.id, defaultBranch: repository.defaultBranch, gitUrl: `${url.origin}/git/${repository.name}.git`, branches: await listBranches(env.ARTIFACTS, repository, effectiveRules(await coordinator.getBranchProtection(), repository.defaultBranch)) });
     assertMutationOrigin(request);
     const key = requireIdempotencyKey(request), body = await readJson(request, 65_536);

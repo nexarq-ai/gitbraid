@@ -191,7 +191,7 @@ export default function MissionDetail({
       setError(
         failure instanceof Error
           ? failure.message
-          : "The revert could not be started.",
+          : "The restore could not be started.",
       );
     } finally {
       setBusy("");
@@ -387,7 +387,7 @@ export default function MissionDetail({
       <>
         <button className="header-back" onClick={onBack}>
           <ArrowLeftIcon size={13} />
-          Pull requests
+          Proposals
         </button>
         {loadError ? (
           <ErrorNotice message={loadError} />
@@ -474,14 +474,14 @@ export default function MissionDetail({
     <>
       <button className="header-back" onClick={onBack}>
         <ArrowLeftIcon size={13} />
-        Pull requests
+        Proposals
       </button>
       <div className="page-heading detail-heading">
         <div>
           <h1>{mission.title}</h1>
           <div className="detail-meta">
             <Status status={mission.status} />
-            <span>{mission.branchChange ? "Pull request" : mission.mode === "race" ? "AI race" : "AI mission"}</span>
+            <span>{mission.branchChange ? "Proposal" : mission.mode === "race" ? "AI race" : "AI mission"}</span>
             <span>
               <GitBranchIcon size={13} />
               {repository?.name ?? "Repository"}
@@ -546,7 +546,7 @@ export default function MissionDetail({
               disabled={!!busy || !permissions.includes("contribute") || !permissions.includes("execute")}
               onClick={() => void revert()}
             >
-              Revert
+              Restore
             </Button>
           )}
           {mission.status === "approved" && (
@@ -668,8 +668,8 @@ export default function MissionDetail({
         <div className="alert info">
           <GitMergeIcon size={17} />
           <div className="alert-text">
-            The approved candidate has landed in the repository. Revert creates a
-            new commit that undoes it, checked and approved like any change.
+            The approved candidate has landed in the repository. Restore creates a
+            new revision that undoes it, checked and approved like any change.
           </div>
         </div>
       )}
@@ -703,7 +703,7 @@ export default function MissionDetail({
             <div className="alert info">
               <InfoIcon size={17} />
               <div className="alert-text">
-                The race is finished. Compare the candidates and select one; only the selected commit can be approved and landed.
+                The race is finished. Compare the candidates and select one; only the selected revision can be approved and landed.
               </div>
             </div>
           )}
@@ -720,7 +720,7 @@ export default function MissionDetail({
                 <p>{candidate.run.assignment ?? candidate.run.role}</p>
                 <div className="race-stats">
                   <span>
-                    <code>{candidate.run.commitSha?.slice(0, 12) ?? "No commit"}</code>
+                    <code>{candidate.run.commitSha?.slice(0, 12) ?? "No revision"}</code>
                   </span>
                   <span>{candidate.files} files</span>
                   <span>
@@ -944,7 +944,7 @@ export default function MissionDetail({
                         </details>
                       )}
                       <dl>
-                        <dt>Branch</dt>
+                        <dt>Stream</dt>
                         <dd>
                           <code>{run.branch ?? "Not allocated"}</code>
                         </dd>
@@ -1322,8 +1322,8 @@ export default function MissionDetail({
           </Dialog.Title>
           <Dialog.Description className="dialog-description">
             {confirming === "approve"
-              ? <>Approve commit <code>{mission.candidateSha?.slice(0, 12)}</code> after {mission.checks.length} passing check{mission.checks.length === 1 ? "" : "s"}. Approval does not change the repository; landing is a separate step.</>
-              : <>Land commit <code>{mission.candidateSha?.slice(0, 12)}</code> on <strong>{repository?.defaultBranch ?? "the default branch"}</strong> of <strong>{repository?.name ?? "this repository"}</strong>. You can undo it later with Revert.</>}
+              ? <>Approve revision <code>{mission.candidateSha?.slice(0, 12)}</code> after {mission.checks.length} passing check{mission.checks.length === 1 ? "" : "s"}. Approval does not change the repository; landing is a separate step.</>
+              : <>Land revision <code>{mission.candidateSha?.slice(0, 12)}</code> on <strong>{repository?.defaultBranch ?? "the main stream"}</strong> of <strong>{repository?.name ?? "this repository"}</strong>. You can undo it later with Restore.</>}
           </Dialog.Description>
           <div className="dialog-actions">
             <Button variant="secondary" size="base" type="button" onClick={() => setConfirming(null)}>Cancel</Button>

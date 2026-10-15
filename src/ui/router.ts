@@ -5,6 +5,10 @@ const TOKEN_ROUTES: Record<string, (fragment: string) => string> = {
   "verify-email": (fragment) => `verify-email/${fragment}`,
   "reset-password": (fragment) => `reset-password/${fragment}`,
 };
+const ROUTE_ALIASES: [RegExp, string][] = [
+  [/^(repository\/[^/]+)\/streams$/, "$1/settings/branches"],
+  [/^(repository\/[^/]+)\/checkpoints(\/|$)/, "$1/releases$2"],
+];
 const SERVER_PATH = /^\/(api|mcp|oauth|\.well-known|llms\.txt|privacy|terms|connectors|assets|social|git|source\/gitflare\.git)(\/|$)|\.[a-z0-9]+$/i;
 
 function trimSlashes(path: string): string {
@@ -17,7 +21,7 @@ export function routeFromLocation(pathname: string, hash: string): string {
   if (!path) return fragment || "home";
   const tokenRoute = TOKEN_ROUTES[path];
   if (tokenRoute) return fragment ? tokenRoute(fragment) : path;
-  return path;
+  return ROUTE_ALIASES.reduce((route, [pattern, target]) => route.replace(pattern, target), path);
 }
 
 export function routeUrl(route: string): string {

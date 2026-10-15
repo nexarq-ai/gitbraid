@@ -385,8 +385,8 @@ function Workspace() {
     {
       overview: "Overview",
       repositories: "Repositories",
-      missions: "Pull requests",
-      mission: "Pull request",
+      missions: "Proposals",
+      mission: "Proposal",
       repository: "Repository",
       activity: "Activity",
       settings: "Settings",
@@ -417,7 +417,7 @@ function Workspace() {
     { id: "repositories", label: "Repositories", icon: FolderSimpleIcon },
     {
       id: "missions",
-      label: "Pull requests",
+      label: "Proposals",
       icon: GitBranchIcon,
       count: activeCount,
     },
@@ -624,7 +624,7 @@ function Workspace() {
                         repositories:
                           "A shared home for code. Independent space for every agent.",
                         missions:
-                          "Every proposed change, whether AI agents or people wrote it.",
+                          "Every proposed change (pull request), whether AI agents or people wrote it.",
                         activity: "Follow the work across your repositories.",
                         settings:
                           "Manage access, security, and workspace connections.",
@@ -890,7 +890,7 @@ function Workspace() {
                             label: `Needs review (${reviewCount})`,
                           },
                           { value: "draft", label: "Drafts" },
-                          { value: "integrated", label: "Integrated" },
+                          { value: "integrated", label: "Landed" },
                         ]}
                       />
                     </div>
@@ -898,15 +898,15 @@ function Workspace() {
                       <div className="search-input">
                         <MagnifyingGlassIcon size={15} />
                         <Input
-                          aria-label="Search pull requests"
-                          placeholder="Search pull requests…"
+                          aria-label="Search proposals"
+                          placeholder="Search proposals…"
                           value={search}
                           onChange={(event) => setSearch(event.target.value)}
                         />
                       </div>
                       <span className="status-strip">
                         {missionList.length}{" "}
-                        {missionList.length === 1 ? "pull request" : "pull requests"}
+                        {missionList.length === 1 ? "proposal" : "proposals"}
                       </span>
                     </div>
                     <section className="panel">
@@ -1296,20 +1296,20 @@ function RepositoryDetail({
           className={tab === "pulls" || tab === "proposals" ? "is-hidden" : undefined}
           onClick={() => onTabChange("pulls/new")}
         >
-          New pull request
+          New proposal
         </Button>
       </div>
       <nav className="repository-navigation" aria-label="Repository navigation">
         {[
             { value: "code", label: "Code" },
             { value: "issues", label: "Issues" },
-            { value: "pulls", label: `Pull requests (${openPullCount})` },
+            { value: "pulls", label: `Proposals (${openPullCount})` },
             { value: "agents", label: `Agents (${missions.reduce((count, mission) => count + (mission.epoch > 0 ? mission.runs.length : 0), 0)})` },
             { value: "checks", label: `Checks (${missions.reduce((count, mission) => count + mission.checks.length, 0)})` },
             { value: "skills", label: "Skills", ai: true },
-            { value: "releases", label: "Releases" },
+            { value: "releases", label: "Checkpoints" },
             { value: "cloudflare", label: "Cloudflare" },
-            { value: "settings/branches", label: "Branches" },
+            { value: "settings/branches", label: "Streams" },
             { value: "overview", label: "Overview" },
           ].map((item) => <button key={item.value} className={"ai" in item && item.ai ? "ai-only" : undefined} aria-current={tab === item.value || `${tab}/${subroute}` === item.value || (tab === "proposals" && item.value === "pulls") ? "page" : undefined} onClick={() => onTabChange(item.value)}>{item.label}</button>)}
       </nav>

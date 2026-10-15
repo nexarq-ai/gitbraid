@@ -23,11 +23,11 @@ export function BranchCreated({ repositoryId, name, onDismiss, onNotify }: { rep
   const pull = `repository/${repositoryId}/pulls/new?branch=${encodeURIComponent(name)}`;
   return (
     <section className="panel branch-created" role="status">
-      <div className="panel-header"><h2>Branch <code>{name}</code> is ready</h2><Button variant="ghost" size="base" shape="square" aria-label="Dismiss" icon={XIcon} onClick={onDismiss} /></div>
+      <div className="panel-header"><h2>Stream <code>{name}</code> is ready</h2><Button variant="ghost" size="base" shape="square" aria-label="Dismiss" icon={XIcon} onClick={onDismiss} /></div>
       <div className="panel-body">
         <p>Fetch it in your clone and switch to it:</p>
         <div className="clipboard-row"><code>{command}</code><Button variant="ghost" size="base" shape="square" aria-label={`Copy ${command}`} icon={CopyIcon} onClick={() => void navigator.clipboard.writeText(command).then(() => onNotify?.("Command copied.")).catch(() => onNotify?.("Copy is unavailable in this browser."))} /></div>
-        <a className="text-link" href={`/${pull}`} onClick={event => { event.preventDefault(); navigate(pull); }}><GitPullRequestIcon size={14} />Open a pull request from {name}</a>
+        <a className="text-link" href={`/${pull}`} onClick={event => { event.preventDefault(); navigate(pull); }}><GitPullRequestIcon size={14} />Open a proposal from {name}</a>
       </div>
     </section>
   );
@@ -62,7 +62,7 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
     setLoadError("");
     Promise.all([request<BranchList>(`${base}/branches`), request<Protection>(`${base}/branch-protection`)])
       .then(([list, current]) => { if (!active) return; setBranches(list); setProtection(current); setRules(current.rules.map(toDraft)); })
-      .catch(failure => { if (active) setLoadError(failure instanceof Error ? failure.message : "Branch settings could not be loaded."); });
+      .catch(failure => { if (active) setLoadError(failure instanceof Error ? failure.message : "Stream settings could not be loaded."); });
     return () => { active = false; };
   }, [base, attempt]);
 
@@ -78,7 +78,7 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
       branchKey.current = null;
       done();
       await refreshBranches();
-    } catch (failure) { setBranchError(failure instanceof Error ? failure.message : "The branch could not be changed."); }
+    } catch (failure) { setBranchError(failure instanceof Error ? failure.message : "The stream could not be changed."); }
     finally { setBranchBusy(false); }
   }
 
@@ -96,9 +96,9 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
       mutation.current = null;
       setProtection(saved);
       setRules(saved.rules.map(toDraft));
-      onNotify("Branch protection saved.");
+      onNotify("Stream protection saved.");
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Branch protection could not be saved.");
+      setError(failure instanceof Error ? failure.message : "Stream protection could not be saved.");
     } finally {
       setBusy(false);
     }
@@ -111,12 +111,12 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
   const invalid = rules.some((rule, index) => !rule.pattern.trim() || patterns.indexOf(rule.pattern.trim()) !== index);
   return (
     <div className="branch-settings">
-      <div className="repository-work-heading"><div><h2>Branches &amp; protection</h2><p>Protected branches only change through pull requests or missions that pass checks and get approval on the exact revision.</p></div></div>
+      <div className="repository-work-heading"><div><h2>Streams &amp; protection<span className="git-term">· Git branches</span></h2><p>Protected streams only change through proposals or missions that pass checks and get approval on the exact revision.</p></div></div>
       <section className="panel">
-        <div className="panel-header"><h2>Branches</h2><div className="branch-header-actions"><span className="number-tag">{branches.branches.length}</span>{canContribute && <Button variant="secondary" size="base" icon={PlusIcon} onClick={() => { setBranchError(""); setDraft({ name: "", source: "branch", branch: branches.defaultBranch, sha: "" }); }}>New branch</Button>}</div></div>
+        <div className="panel-header"><h2>Streams</h2><div className="branch-header-actions"><span className="number-tag">{branches.branches.length}</span>{canContribute && <Button variant="secondary" size="base" icon={PlusIcon} onClick={() => { setBranchError(""); setDraft({ name: "", source: "branch", branch: branches.defaultBranch, sha: "" }); }}>New stream</Button>}</div></div>
         <div className="table-scroll">
           <table className="resource-table">
-            <thead><tr><th>Branch</th><th>Head</th><th>Status</th>{canContribute && <th><span className="sr-only">Actions</span></th>}</tr></thead>
+            <thead><tr><th>Stream</th><th>Head</th><th>Status</th>{canContribute && <th><span className="sr-only">Actions</span></th>}</tr></thead>
             <tbody>
               {branches.branches.map(branch => (
                 <tr key={branch.name}>
@@ -133,24 +133,24 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
       {created && <BranchCreated repositoryId={repository.id} name={created} onDismiss={() => setCreated("")} onNotify={onNotify} />}
       <Dialog.Root open={draft !== null} onOpenChange={open => { if (!open && !branchBusy) setDraft(null); }}>
         <Dialog size="sm" className="dialog-content confirm-dialog">
-          <Dialog.Title className="dialog-title">New branch</Dialog.Title>
-          <Dialog.Description className="dialog-description">The branch points at an existing commit. Nothing is committed.</Dialog.Description>
-          {draft && <form onSubmit={event => { event.preventDefault(); const name = draft.name.trim(); void changeBranch("branches", { name, from: draft.source === "branch" ? draft.branch : draft.sha }, () => { setDraft(null); setCreated(name); onNotify(`Branch ${name} created.`); }); }}>
-            <div className="form-field"><label htmlFor="branch-name">Branch name</label><Input id="branch-name" required maxLength={200} autoFocus disabled={branchBusy} value={draft.name} placeholder="feature/checkout-retries" onChange={event => setDraft({ ...draft, name: event.target.value })} /></div>
-            <div className="form-field"><span>From</span><div className="branch-source" role="radiogroup" aria-label="Branch source"><label><input type="radio" name="branch-source" checked={draft.source === "branch"} disabled={branchBusy} onChange={() => setDraft({ ...draft, source: "branch" })} />Branch</label><label><input type="radio" name="branch-source" checked={draft.source === "commit"} disabled={branchBusy} onChange={() => setDraft({ ...draft, source: "commit" })} />Commit SHA</label></div>
-              {draft.source === "branch" ? <select aria-label="Source branch" disabled={branchBusy} value={draft.branch} onChange={event => setDraft({ ...draft, branch: event.target.value })}>{branches.branches.map(branch => <option key={branch.name} value={branch.name}>{branch.name}{branch.default ? " (default)" : ""}</option>)}</select> : <Input aria-label="Commit SHA" required maxLength={40} disabled={branchBusy} value={draft.sha} placeholder="Full 40 character commit SHA" onChange={event => setDraft({ ...draft, sha: event.target.value.trim().toLowerCase() })} />}
+          <Dialog.Title className="dialog-title">New stream</Dialog.Title>
+          <Dialog.Description className="dialog-description">The stream points at an existing revision. Nothing is committed.</Dialog.Description>
+          {draft && <form onSubmit={event => { event.preventDefault(); const name = draft.name.trim(); void changeBranch("branches", { name, from: draft.source === "branch" ? draft.branch : draft.sha }, () => { setDraft(null); setCreated(name); onNotify(`Stream ${name} created.`); }); }}>
+            <div className="form-field"><label htmlFor="branch-name">Stream name</label><Input id="branch-name" required maxLength={200} autoFocus disabled={branchBusy} value={draft.name} placeholder="feature/checkout-retries" onChange={event => setDraft({ ...draft, name: event.target.value })} /></div>
+            <div className="form-field"><span>From</span><div className="branch-source" role="radiogroup" aria-label="Stream source"><label><input type="radio" name="branch-source" checked={draft.source === "branch"} disabled={branchBusy} onChange={() => setDraft({ ...draft, source: "branch" })} />Stream</label><label><input type="radio" name="branch-source" checked={draft.source === "commit"} disabled={branchBusy} onChange={() => setDraft({ ...draft, source: "commit" })} />Revision SHA</label></div>
+              {draft.source === "branch" ? <select aria-label="Source stream" disabled={branchBusy} value={draft.branch} onChange={event => setDraft({ ...draft, branch: event.target.value })}>{branches.branches.map(branch => <option key={branch.name} value={branch.name}>{branch.name}{branch.default ? " (default)" : ""}</option>)}</select> : <Input aria-label="Revision SHA" required maxLength={40} disabled={branchBusy} value={draft.sha} placeholder="Full 40 character revision SHA" onChange={event => setDraft({ ...draft, sha: event.target.value.trim().toLowerCase() })} />}
             </div>
             {branchError && <div className="error-notice" role="alert">{branchError}</div>}
-            <div className="dialog-actions"><Button variant="secondary" size="base" type="button" disabled={branchBusy} onClick={() => setDraft(null)}>Cancel</Button><Button variant="primary" size="base" type="submit" loading={branchBusy} disabled={branchBusy || !draft.name.trim() || (draft.source === "commit" && !/^[a-f0-9]{40}$/.test(draft.sha))}>Create branch</Button></div>
+            <div className="dialog-actions"><Button variant="secondary" size="base" type="button" disabled={branchBusy} onClick={() => setDraft(null)}>Cancel</Button><Button variant="primary" size="base" type="submit" loading={branchBusy} disabled={branchBusy || !draft.name.trim() || (draft.source === "commit" && !/^[a-f0-9]{40}$/.test(draft.sha))}>Create stream</Button></div>
           </form>}
         </Dialog>
       </Dialog.Root>
       <Dialog.Root open={deleting !== null} onOpenChange={open => { if (!open && !branchBusy) setDeleting(null); }}>
         <Dialog size="sm" className="dialog-content confirm-dialog">
           <Dialog.Title className="dialog-title">Delete {deleting?.name}?</Dialog.Title>
-          <Dialog.Description className="dialog-description">The branch ref is removed; commits it shares with other branches or tags stay in the repository. The delete is refused if the branch moved from <code>{deleting?.headSha.slice(0, 12)}</code>.</Dialog.Description>
+          <Dialog.Description className="dialog-description">The Git branch ref is removed; revisions it shares with other streams or tags stay in the repository. The delete is refused if the stream moved from <code>{deleting?.headSha.slice(0, 12)}</code>.</Dialog.Description>
           {branchError && <div className="error-notice" role="alert">{branchError}</div>}
-          <div className="dialog-actions"><Button variant="secondary" size="base" type="button" disabled={branchBusy} onClick={() => setDeleting(null)}>Cancel</Button><Button variant="destructive" size="base" type="button" loading={branchBusy} disabled={branchBusy} onClick={() => { const target = deleting; if (target) void changeBranch("branches/delete", { name: target.name, expectedHeadSha: target.headSha }, () => { setDeleting(null); if (created === target.name) setCreated(""); onNotify(`Branch ${target.name} deleted.`); }); }}>Delete branch</Button></div>
+          <div className="dialog-actions"><Button variant="secondary" size="base" type="button" disabled={branchBusy} onClick={() => setDeleting(null)}>Cancel</Button><Button variant="destructive" size="base" type="button" loading={branchBusy} disabled={branchBusy} onClick={() => { const target = deleting; if (target) void changeBranch("branches/delete", { name: target.name, expectedHeadSha: target.headSha }, () => { setDeleting(null); if (created === target.name) setCreated(""); onNotify(`Stream ${target.name} deleted.`); }); }}>Delete stream</Button></div>
         </Dialog>
       </Dialog.Root>
       <section className="panel branch-rules">
@@ -161,23 +161,23 @@ export default function BranchProtection({ repository, canManage, onNotify }: { 
         <div className="panel-body">
           {!protection.configured && <p className="branch-rule-note">No rules have been saved. The default rule below protects <code>{protection.defaultBranch}</code>.</p>}
           {!canManage && <p className="branch-rule-note">Only workspace owners can change protection rules.</p>}
-          {!rules.length && <p className="branch-rule-note">No branches are protected.</p>}
+          {!rules.length && <p className="branch-rule-note">No streams are protected.</p>}
           {rules.map((rule, index) => (
             <fieldset className="branch-rule" key={rule.id} disabled={readOnly} aria-label={`Rule ${index + 1}`}>
               <div className="branch-rule-row">
-                <div className="form-field"><label htmlFor={`rule-pattern-${rule.id}`}>Branch name or pattern</label><Input id={`rule-pattern-${rule.id}`} maxLength={200} value={rule.pattern} placeholder="release/*" aria-invalid={!rule.pattern.trim() || patterns.indexOf(rule.pattern.trim()) !== index} onChange={event => update(rule.id, { pattern: event.target.value })} /></div>
+                <div className="form-field"><label htmlFor={`rule-pattern-${rule.id}`}>Stream name or pattern</label><Input id={`rule-pattern-${rule.id}`} maxLength={200} value={rule.pattern} placeholder="release/*" aria-invalid={!rule.pattern.trim() || patterns.indexOf(rule.pattern.trim()) !== index} onChange={event => update(rule.id, { pattern: event.target.value })} /></div>
                 <div className="form-field branch-rule-approvals"><label htmlFor={`rule-approvals-${rule.id}`}>Required approvals</label><select id={`rule-approvals-${rule.id}`} value={rule.requiredApprovals} onChange={event => update(rule.id, { requiredApprovals: Number(event.target.value) })}>{[0, 1, 2, 3, 4, 5, 6].map(count => <option key={count} value={count}>{count}</option>)}</select></div>
                 {canManage && <Button variant="ghost" size="base" icon={TrashIcon} aria-label={`Remove rule ${rule.pattern || index + 1}`} onClick={() => setRules(current => current.filter(item => item.id !== rule.id))}>Remove</Button>}
               </div>
               <div className="branch-rule-options">
-                <label><input type="checkbox" checked={rule.requirePullRequest} onChange={event => update(rule.id, { requirePullRequest: event.target.checked })} />Require a pull request before landing</label>
+                <label><input type="checkbox" checked={rule.requirePullRequest} onChange={event => update(rule.id, { requirePullRequest: event.target.checked })} />Require a proposal before landing</label>
                 <label><input type="checkbox" checked={rule.preventSelfApproval} onChange={event => update(rule.id, { preventSelfApproval: event.target.checked })} />Authors cannot approve their own changes</label>
                 <span>Who can land:</span>
                 {landerRoles.map(role => <label key={role}><input type="checkbox" checked={rule.restrictLanders.includes(role)} onChange={event => update(rule.id, { restrictLanders: event.target.checked ? [...rule.restrictLanders, role] : rule.restrictLanders.filter(item => item !== role) })} />{role}</label>)}
                 {!rule.restrictLanders.length && <small>Anyone with land permission</small>}
               </div>
               <div className="form-field"><label htmlFor={`rule-checks-${rule.id}`}>Required check names <span className="proposal-optional">(optional, one per line)</span></label><textarea id={`rule-checks-${rule.id}`} rows={2} value={rule.checks} placeholder="test" onChange={event => update(rule.id, { checks: event.target.value })} /></div>
-              <p className="branch-rule-fixed"><ShieldCheckIcon size={14} />All checks must pass. New commits dismiss approvals because approval is pinned to the exact revision. Force pushes are blocked.</p>
+              <p className="branch-rule-fixed"><ShieldCheckIcon size={14} />All checks must pass. New revisions dismiss approvals because approval is pinned to the exact revision. Force pushes are blocked.</p>
             </fieldset>
           ))}
           {error && <div className="error-notice" role="alert">{error}</div>}
