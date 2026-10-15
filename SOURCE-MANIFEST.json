@@ -20,8 +20,8 @@
     },
     {
       "path": "distribution/wrangler.self-hosted.json",
-      "size": 2023,
-      "sha256": "4f055dbb17bc7f6afc48c3c5f07ce8a161c2c540c95c0817e7ddc8195aac5a45"
+      "size": 2101,
+      "sha256": "81a9ced5efd6ed172fad5315a95cecbbdeab8edf26df4a8de3583a2a96b7a49d"
     },
     {
       "path": "docs/public/admin.md",
@@ -40,8 +40,8 @@
     },
     {
       "path": "docs/public/mcp.md",
-      "size": 9362,
-      "sha256": "02d2d91e5f834198de0c9e433e8ca3aca6b555f32501782b554a7638a1e2ff60"
+      "size": 10060,
+      "sha256": "05956663c53559654cda448a53a66e8f8b77e4cee856a5ef4f0d4cd66b76fe12"
     },
     {
       "path": "docs/public/overview.md",
@@ -82,6 +82,11 @@
       "path": "public/favicon.svg",
       "size": 598,
       "sha256": "606c63fa7642e08bbcd7f81ea2a20bf7d69854e3e84a9f116469ff155343dd1e"
+    },
+    {
+      "path": "public/logo.svg",
+      "size": 589,
+      "sha256": "295b79764d84544883fe21b481a2bacd6734e7cc40e949ddb05f45acaa18800c"
     },
     {
       "path": "README.md",
@@ -135,8 +140,8 @@
     },
     {
       "path": "src/ui/AccessSettings.tsx",
-      "size": 21721,
-      "sha256": "b7cc7599c0f8311b100627442d852be48480824309b2f92ab78613da05cc6d62"
+      "size": 21731,
+      "sha256": "6a354d4230b9b8d042b98e54149a5a2a7f30d582542e1902e3d49322f1b56e5e"
     },
     {
       "path": "src/ui/AgentAssignment.tsx",
@@ -420,8 +425,8 @@
     },
     {
       "path": "src/ui/router.ts",
-      "size": 3715,
-      "sha256": "525fe568d29ce93a00cac5aaa9c8c4ec146c44289fdab626e06bfe7ca1a1001a"
+      "size": 3740,
+      "sha256": "fb6135e9d0b1a9bf6844bad77f1807ae7a05f0ed319f6356d8b3a9fa1d16906d"
     },
     {
       "path": "src/ui/SelfHostedHome.tsx",
@@ -479,6 +484,11 @@
       "sha256": "e366090c95bebd646adde230811ac2c04eaa0764ea7963d72cd3cd119f76894c"
     },
     {
+      "path": "src/worker/client-access.ts",
+      "size": 2122,
+      "sha256": "31681a9d48c2b7f7d904d299218ddb06d9b3e31ae1f30542bf2bf6b569b534c3"
+    },
+    {
       "path": "src/worker/cloudflare-projects.ts",
       "size": 18931,
       "sha256": "0d5f6a4924e8a05d5659f0583315fbe01e6c9bb910fe707645a07d4b7dd6d388"
@@ -520,8 +530,8 @@
     },
     {
       "path": "src/worker/env.ts",
-      "size": 1711,
-      "sha256": "3ced9c3fa30c71c0f1942977fe6506151383c9aaad816bd484151f20149045a7"
+      "size": 1763,
+      "sha256": "3cf00d7214311bffdb10a6de90435456fb6e78a9c892e8ee14ac5ee832d693f9"
     },
     {
       "path": "src/worker/execution.ts",
@@ -550,8 +560,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 69454,
-      "sha256": "d32b1a3f94d8b261c8d61d7ed82f8b3ee5741e4b9071843cc8c56b3f4b092372"
+      "size": 69785,
+      "sha256": "e65717d37bcbc3e0428f9c08c56c23f6a933fdc941625dd71cd43d8c38e636a2"
     },
     {
       "path": "src/worker/issues.ts",
@@ -560,8 +570,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 63821,
-      "sha256": "d15921835712b7e354d393f778655e80c927dfbd8858af90d5250358d37150a4"
+      "size": 66815,
+      "sha256": "ad4280f17c4f958fbffaf37b4ee363ece249b5be59c0f6295f44d7c58b7db534"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -590,8 +600,8 @@
     },
     {
       "path": "src/worker/oauth.ts",
-      "size": 7940,
-      "sha256": "9764e725a1df74edaa398628cfb6c185f7795398043ea0571de4613f30225c33"
+      "size": 11582,
+      "sha256": "dfc1b1b880ac4359d30a5061393cc67858cabaf63ea1cf49b460c5e1b589be09"
     },
     {
       "path": "src/worker/onboarding.ts",
@@ -607,6 +617,11 @@
       "path": "src/worker/proposal-review.ts",
       "size": 3352,
       "sha256": "9bf54ba0583954ee4abc1c16b628059f7d8eab5931685087475f75e16bbc3325"
+    },
+    {
+      "path": "src/worker/public-pages.ts",
+      "size": 12503,
+      "sha256": "0c59b66879ba34822d3498f942497346402b84b9cc7413fdcb92d2f0050f76d9"
     },
     {
       "path": "src/worker/releases.ts",
@@ -635,8 +650,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 72609,
-      "sha256": "97c154231bb66e40993562e8d539146fcf21a9338ce7f21643d6464797375bb6"
+      "size": 73791,
+      "sha256": "69d40fc984c902fd6bc5a2e7e0bf6b0d4e5d81a1eb51d4caddef7614d6793d4d"
     },
     {
       "path": "src/worker/skill-edit.ts",
@@ -665,8 +680,8 @@
     },
     {
       "path": "wrangler.jsonc",
-      "size": 2023,
-      "sha256": "4f055dbb17bc7f6afc48c3c5f07ce8a161c2c540c95c0817e7ddc8195aac5a45"
+      "size": 2101,
+      "sha256": "81a9ced5efd6ed172fad5315a95cecbbdeab8edf26df4a8de3583a2a96b7a49d"
     },
     {
       "path": "wrangler.preview.jsonc",

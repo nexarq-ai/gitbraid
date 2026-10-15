@@ -15,7 +15,7 @@ export const ROLE_ACTIONS: Record<Role, Action[]> = {
 };
 interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean; cloudflareId?: string }
 interface Member { userId: string; workspaceId: string; role: Role; repositoryIds?: string[] }
-interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean }
+interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean; client?: string }
 interface WorkspaceRecord { id: string; name: string; bootstrapDisabled?: boolean; agentPending?: boolean }
 interface Invitation { id: string; workspaceId: string; email: string; role: Role; hash: string; expiresAt: number; accepted?: boolean }
 interface Team { id: string; workspaceId: string; name: string; userIds: string[] }
@@ -604,6 +604,17 @@ export class SecurityService {
   private actions(value: unknown): Action[] { if (!Array.isArray(value) || !value.length || value.some(v => !ROLE_ACTIONS.Owner.includes(v))) throw new ApiError(400, 'INVALID_ACTIONS', 'Select valid resource actions.'); return [...new Set(value)] as Action[]; }
   async acceptInvite(p: Principal, value: string) { const hash = await hashToken(value); return this.mutate(state => { this.validate(state, p); if (p.bootstrap || p.credentialId) fail(); const invite = state.invitations.find(i => i.hash === hash && !i.accepted && i.expiresAt > Date.now()); if (!invite) throw new ApiError(410, 'INVITATION_EXPIRED', 'This invitation is invalid, expired, or already used.'); const user = state.users.find(u => u.id === p.userId); if (!user || user.email !== invite.email) fail('INVITATION_IDENTITY', 'This invitation was issued for a different account email.'); if (state.members.some(m => m.workspaceId === invite.workspaceId && m.userId === p.userId)) throw new ApiError(409, 'ALREADY_MEMBER', 'You already belong to this workspace.'); state.members.push({ userId: p.userId, workspaceId: invite.workspaceId, role: invite.role }); invite.accepted = true; return { ok: true, workspaceId: invite.workspaceId }; }); }
   async clearApprovals(p: Principal, missionId: string) { await this.mutate(state => { this.validate(state,p); for (const key of Object.keys(state.approvals)) if (key.startsWith(`${p.workspaceId}:${missionId}:`)) delete state.approvals[key]; }); }
+  async clientSession(p: Principal, client: string, lifetimeMs: number) {
+    const raw = token(); const hash = await hashToken(raw);
+    return this.mutate(state => {
+      this.validate(state, p); if (p.credentialId || p.bootstrap) fail('ACCOUNT_REQUIRED');
+      const authenticatedAt = state.sessions.find(s => s.id === p.sessionId)?.authenticatedAt; const now = Date.now();
+      if (authenticatedAt === undefined || authenticatedAt > now || now - authenticatedAt >= MAX_DERIVED_SESSION_AGE_MS) fail('RECENT_AUTH_REQUIRED', 'Sign in again before connecting an AI client.');
+      state.audit.push({ id: crypto.randomUUID(), workspaceId: p.workspaceId, actorId: p.userId, action: 'access:client-connect', timestamp: new Date().toISOString() });
+      const session: Session = { id: crypto.randomUUID(), userId: p.userId, workspaceId: p.workspaceId, hash, expiresAt: now + lifetimeMs, client: client.slice(0, 100) || 'AI client' };
+      state.sessions.push(session); return { token: raw, session: publicValue(session) };
+    });
+  }
   async logout(p: Principal) { if (p.sessionId) await this.action(p, 'session-revoke', { id: p.sessionId }); }
   async recordApproval(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, checks: {name: string; status: string; candidateSha?: string}[], creatorId?: string, rule?: ReviewRule) { return this.mutate(state => { this.validate(state, p); if (p.credentialId) fail(); const protection = rule ? { requiredApprovals: rule.requiredApprovals, requiredChecks: rule.requiredCheckNames, preventSelfApproval: rule.preventSelfApproval } : state.protections[p.workspaceId] ?? { requiredApprovals: 1, requiredChecks: [], preventSelfApproval: false }; if (protection.preventSelfApproval && (!creatorId || creatorId === p.userId)) fail('SELF_APPROVAL', 'A different member must review this Stream.'); if (protection.requiredChecks.some(name => !checks.some(check => check.name === name && check.status === 'passed' && check.candidateSha === candidateSha))) throw new ApiError(409, 'CHECKS_REQUIRED', 'Required checks have not passed for this revision.'); const key = `${p.workspaceId}:${missionId}:${candidateSha}:${baseSha}:${epoch}`; const reviewers = [...new Set([...(state.approvals[key] ?? []), p.userId])]; state.approvals[key] = reviewers; return { approvals: reviewers.length, requiredApprovals: protection.requiredApprovals, ready: reviewers.length >= protection.requiredApprovals }; }); }
   async assertLand(p: Principal, missionId: string, candidateSha: string, baseSha: string, epoch: number, repositoryId?: string, rule?: ReviewRule) {
@@ -657,6 +668,7 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   action(p: Principal, action: string, body: Record<string, unknown>) { return this.service.action(p, action, body); }
   acceptInvite(p: Principal, value: string) { return this.service.acceptInvite(p, value); }
   clearApprovals(p: Principal, missionId: string) { return this.service.clearApprovals(p, missionId); }
+  clientSession(p: Principal, client: string, lifetimeMs: number) { return this.service.clientSession(p, client, lifetimeMs); }
   logout(p: Principal) { return this.service.logout(p); }
   recordApproval(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, checks: {name: string; status: string; candidateSha?: string}[], creatorId?: string, rule?: ReviewRule) { return this.service.recordApproval(p, missionId, sha, baseSha, epoch, checks, creatorId, rule); }
   assertLand(p: Principal, missionId: string, sha: string, baseSha: string, epoch: number, repositoryId?: string, rule?: ReviewRule) { return this.service.assertLand(p, missionId, sha, baseSha, epoch, repositoryId, rule); }

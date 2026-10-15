@@ -12,8 +12,10 @@ To connect an OAuth-enabled deployment:
 
 1. Add a remote MCP server in your AI client using your Gitflare endpoint ending in `/mcp`.
 2. Start the client's OAuth connection flow and review the browser consent page. Confirm the client identity and redirect destination carefully; a displayed client name may be self-reported.
-3. Sign in to the intended Gitflare workspace and approve only the workspace access you expect.
+3. Sign in to the intended Gitflare workspace and choose an access level: **Read only** (`gitflare:read`), **Read and propose** (`gitflare:write`), **Approve and land** (`gitflare:land`) or **Full access** (`gitflare:admin`). Each level includes the ones before it, and your workspace role still applies. A tool outside the chosen level returns `INSUFFICIENT_SCOPE`.
 4. In the client, discover Gitflare tools, list repositories, and read a file at a returned commit SHA. Confirm the response belongs to the intended workspace before authorizing writes.
+
+Access tokens last one hour and refresh automatically; refresh tokens rotate on use. A connection lasts up to 30 days. Revoke it earlier from **Settings → Access → Account → Sessions**, which ends the client's grant. Connections approved before access levels existed keep full access until they expire. Client-specific steps for Claude, Claude Code, Codex and ChatGPT are on the `/connectors` page of your installation.
 
 For installations configured without OAuth storage, the server can also accept an account's personal bearer token. Use the client’s secure token store or environment-variable configuration; never paste the token into a prompt, repository file, or task assignment. The self-host installer is designed to create OAuth storage unless an existing namespace is supplied.
 

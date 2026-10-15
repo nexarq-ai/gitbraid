@@ -5,7 +5,7 @@ const TOKEN_ROUTES: Record<string, (fragment: string) => string> = {
   "verify-email": (fragment) => `verify-email/${fragment}`,
   "reset-password": (fragment) => `reset-password/${fragment}`,
 };
-const SERVER_PATH = /^\/(api|mcp|oauth|\.well-known|llms\.txt|assets|social|git|source\/gitflare\.git)(\/|$)|\.[a-z0-9]+$/i;
+const SERVER_PATH = /^\/(api|mcp|oauth|\.well-known|llms\.txt|privacy|terms|connectors|assets|social|git|source\/gitflare\.git)(\/|$)|\.[a-z0-9]+$/i;
 
 function trimSlashes(path: string): string {
   return path.replace(/^\/+|\/+$/g, "");
