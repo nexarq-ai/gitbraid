@@ -25,7 +25,7 @@ import { oauthConsent, oauthProvider, revokeClientGrants } from './oauth';
 import { publicPageResponse } from './public-pages';
 import { publicGitResponse } from './hosted-source';
 import { deliverInvitation } from './email';
-import { CLOUDFLARE_LINK_COOKIE, requestCookie, handleCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
+import { CLOUDFLARE_LINK_COOKIE, requestCookie, handleCloudflare, handleRepositoryCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
 import { dispatchCloudflareProject, projectDependencies, type ProjectOperation } from './cloudflare-projects';
 import { validateRepositoryInitialization, initializeArtifactsRepository } from './repository-initialization';
 import { SKILL_REQUEST_MAX_BYTES, validateRepositorySkillChange, verifyRepositorySkillChange } from './skill-edit';
@@ -346,6 +346,13 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     console.log(JSON.stringify({ event: 'workspace_timing', repositories: repositories.length, missions: summaries.length, staleRepositories: stale, catalogMs, summariesMs, accessMs: Date.now() - started - catalogMs - summariesMs, totalMs: Date.now() - started }));
     return Response.json(workspace);
   }
+  const cloudflareRepositoryConnection = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/cloudflare\/connection(?:\/(accounts|resources|connect|select-account|disconnect))?$/.exec(url.pathname);
+  if (cloudflareRepositoryConnection) {
+    const repository = await catalog.getRepository(cloudflareRepositoryConnection[1]);
+    if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+    await access.authorize(principal, 'read', 'repository', repository.id);
+    return handleRepositoryCloudflare(request, env, principal, repository.id, cloudflareRepositoryConnection[2] ?? 'status');
+  }
   const cloudflareProject = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/cloudflare(?:\/(usage|action))?$/.exec(url.pathname);
   if (cloudflareProject) {
     const repository = await catalog.getRepository(cloudflareProject[1]);
@@ -360,9 +367,9 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     } else if (request.method !== 'GET' || cloudflareProject[2] === 'action') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use a supported project operation.');
     const read = { action: 'read' as const, resourceType: 'repository', resourceId: repository.id };
     const dependencies = projectDependencies(env, principal, { ...repository, workspaceId: principal.workspaceId }, {
-      account: () => cloudflareAccount(env, principal, read),
-      api: (path, options) => cloudflareApiRequest(env, principal, path, { ...options, authorization: options?.method === 'POST' ? { action: 'migrate', resourceType: 'database', resourceId: path.split('/')[3] } : read }),
-      analytics: (query) => cloudflareAnalyticsRequest(env, principal, query, { ...read, expectedAccountId: query.expectedAccountId }),
+      account: () => cloudflareAccount(env, principal, read, repository.id),
+      api: (path, options) => cloudflareApiRequest(env, principal, path, { ...options, authorization: options?.method === 'POST' ? { action: 'migrate', resourceType: 'database', resourceId: path.split('/')[3] } : read }, repository.id),
+      analytics: (query) => cloudflareAnalyticsRequest(env, principal, query, { ...read, expectedAccountId: query.expectedAccountId }, repository.id),
     });
     return Response.json(await dispatchCloudflareProject(principal, { ...repository, workspaceId: principal.workspaceId }, operation, body, dependencies));
   }
@@ -387,6 +394,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
         return dispatchBackground(env.MISSION_WORKFLOW, deployWorkflowId(record.id), { kind: 'deploy', repositoryId: repository.id, deploymentId: record.id, principal: backgroundPrincipal(principal) } satisfies DeployParams);
       },
       failDispatch: async (record) => { await coordinator.updateDeployment(record.id, ['queued'], { status: 'failed', errorCode: 'DEPLOYMENT_NOT_STARTED', error: 'The deployment could not be scheduled.' }); },
+      audit: (action) => access.auditRepositoryChange(principal, action, repository.id),
     });
   }
   const issues = await handleIssues(request, url, principal, access, catalog, (id) => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`));

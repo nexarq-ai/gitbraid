@@ -8,8 +8,10 @@ import { PREVIEW_HEARTBEAT_MS, WORKER_PREVIEW_TTL_MS } from './coordinator';
 import { buildLandedWorker, integrateCandidate, IntegrationFailure, prepareCandidatePreview, PreviewFailure } from './execution';
 import { deleteWorkerPreview, previewAlias, upsertWorkerPreview, WorkerPreviewError, workerPreviewsConfig } from './worker-previews';
 import { WorkerBuildFailure } from './worker-bundle';
-import { deployWorkflowId, landedDeployment, runDeployment, type DeployParams } from './deployments';
+import { deployWorkflowId, landedDeployment, policyDeployTargets, runDeployment, type DeploymentRecord, type DeployParams } from './deployments';
 import { cloudflareWorkerDeployer } from './cloudflare';
+import { POLICY_FILE } from './repository-policy';
+import type { ProjectSnapshot } from './cloudflare-projects';
 
 export interface LandingParams { kind: 'land'; repositoryId: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimId: string; principal: Principal }
 export interface PreviewParams { kind: 'preview'; repositoryId: string; missionId: string; epoch: number; candidateSha: string; claimId: string; principal: Principal }
@@ -86,7 +88,7 @@ export async function landCandidate(env: AppEnv, params: LandingParams, step: St
   if (!landed) return;
   await step.do('retire candidate preview and schedule deployment', { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => {
     await retireWorkerPreview(env, repositoryId, missionId, principal.workspaceId);
-    await scheduleLandedDeployment(env, repositoryId, missionId, epoch, candidateSha);
+    await scheduleLandedDeployment(env, repositoryId, missionId, epoch, candidateSha, baseSha);
     return true;
   });
 }
@@ -98,10 +100,10 @@ export async function retireWorkerPreview(env: AppEnv, repositoryId: string, mis
   if (await dispatchBackground(env.MISSION_WORKFLOW, previewRetireWorkflowId(record.claimId), { kind: 'preview-retire', repositoryId, missionId, previewName: record.previewName, workspaceId }) === 'missing') console.error('preview.retire.dispatch.failed', missionId);
 }
 
-export async function scheduleLandedDeployment(env: AppEnv, repositoryId: string, missionId: string, epoch: number, commitSha: string): Promise<void> {
+export async function scheduleLandedDeployment(env: AppEnv, repositoryId: string, missionId: string, epoch: number, commitSha: string, baseSha?: string): Promise<void> {
   const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
   const { settings } = await coordinator.deployState();
-  const draft = landedDeployment(settings, repositoryId, missionId, commitSha);
+  const draft = landedDeployment(settings, repositoryId, missionId, commitSha, baseSha);
   if (!draft || !settings) return;
   const key = `land-${missionId}-${epoch}`;
   const fingerprint = JSON.stringify(['land', missionId, epoch, commitSha]);
@@ -127,14 +129,34 @@ export async function retirePreview(env: AppEnv, params: PreviewRetireParams, st
   });
 }
 
+async function policyBase(env: AppEnv, repositoryName: string, record: DeploymentRecord): Promise<string | null> {
+  if (record.baseSha) return record.baseSha;
+  if (!env.ARTIFACTS || !record.commitSha) return null;
+  using repository = await env.ARTIFACTS.get(repositoryName);
+  const commits = await repository.log({ ref: record.commitSha, limit: 2 });
+  return commits[0]?.hash === record.commitSha ? commits[1]?.hash ?? null : null;
+}
+
 export async function deployLandedWorker(env: AppEnv, params: DeployParams, step: StepRunner & { sleep(name: string, duration: number): Promise<void> }): Promise<void> {
   const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${params.repositoryId}`);
   const access = securityClient(env);
   await runDeployment(params, step, {
     coordinator,
     authorize: (principal, workerName) => access.check(principal, 'deploy', 'environment', workerName),
-    deployer: (principal, record) => cloudflareWorkerDeployer(env, principal, record.workerName, record.accountId),
-    build: (repository, record, assertAuthority) => buildLandedWorker(env, { repository, commitSha: record.commitSha!, attemptId: record.attemptId, assertAuthority }),
+    deployer: (principal, record, workerName) => cloudflareWorkerDeployer(env, principal, workerName, record.accountId, undefined, record.repositoryId),
+    build: (repository, record, target, index, assertAuthority, publish) => buildLandedWorker(env, { repository, commitSha: record.commitSha!, attemptId: record.attemptId, assertAuthority, ...(target.inheritBindings ? {} : { target }), index }, publish),
+    policyTargets: async (repository, record) => {
+      if (!env.ARTIFACTS) return null;
+      const base = await policyBase(env, repository.name, record);
+      if (!base) return null;
+      using source = await env.ARTIFACTS.get(repository.name);
+      const file = await source.readFile({ ref: base, path: POLICY_FILE });
+      return policyDeployTargets(file ? await file.text() : null);
+    },
+    mappedWorkers: async (principal, repositoryId) => {
+      const { mapping } = await access.projectStore(principal, repositoryId, 'get') as ProjectSnapshot;
+      return mapping ? { accountId: mapping.accountId, workers: (mapping.resources ?? []).filter((resource) => resource.type === 'worker').map((resource) => resource.id) } : null;
+    },
   });
 }
 
