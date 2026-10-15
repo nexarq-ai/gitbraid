@@ -14,7 +14,8 @@ import { listDocs, readDoc } from './docs';
 import { documentationImage, documentationMarkdown } from './docs-markdown';
 import { handleOnboarding, signupWithVerification } from './onboarding';
 import { listPublicDocs, readPublicDoc, publicSourceResponse } from './distribution';
-import { oauthConsent, oauthProvider } from './oauth';
+import { oauthConsent, oauthProvider, revokeClientGrants } from './oauth';
+import { publicPageResponse } from './public-pages';
 import { publicGitResponse } from './hosted-source';
 import { deliverInvitation } from './email';
 import { handleCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
@@ -220,6 +221,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     if (action === 'membership' && body.repositoryIds !== undefined) { if (!Array.isArray(body.repositoryIds)) throw new ApiError(400, 'INVALID_SCOPE', 'Provide repository IDs.'); const catalog = env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId)); for (const id of body.repositoryIds) if (typeof id !== 'string' || !await catalog.getRepository(id)) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'Every scoped repository must belong to this workspace.'); }
     if (action === 'credential-create') { const catalog = env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId)); if (!await catalog.getRepository(String(body.repositoryId))) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'Select a repository in this workspace.'); }
     const result = await access.action(principal, action, body);
+    if (action === 'session-revoke' && typeof body.id === 'string') await revokeClientGrants(env, url.origin, application, authorize, principal.userId, body.id);
     if (action === 'invite' && result && typeof result === 'object' && 'token' in result && typeof result.token === 'string') { const workspace = await access.workspace(principal); const delivery = await deliverInvitation(env, { email: String(body.email), token: result.token, workspaceName: workspace.name, origin: url.origin }); return Response.json({ ...result, delivery }); }
     return Response.json(result);
   }
@@ -688,6 +690,8 @@ const application = {
     if (publicGit) return publicGit;
     if (path === '/oauth/authorize') return oauthConsent(request, env, authorize);
     if (path === '/llms.txt') return new Response('# Gitflare\n\n' + listPublicDocs().map(doc => `- [${doc.title}](${new URL(request.url).origin}/api/public/docs/${doc.id}.md): ${doc.description}`).join('\n'), { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+    const publicPage = publicPageResponse(request, env);
+    if (publicPage) return publicPage;
     const entry = await entryRedirect(request, env, path);
     if (entry) return entry;
     if (!path.startsWith('/api/') && path !== '/mcp') return env.ASSETS.fetch(request);
