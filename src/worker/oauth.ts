@@ -7,12 +7,14 @@ type Authenticate = (request: Request, env: AppEnv, bearerOnly?: boolean) => Pro
 type Handler = { fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> };
 const escape = (value: string) => value.replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`);
 
-function page(body: string, headers = new Headers()): Response {
+function page(body: string, headers = new Headers(), validatedRedirectUri?: string): Response {
+  const callback = validatedRedirectUri ? new URL(validatedRedirectUri) : undefined;
+  const callbackSource = callback && ['http:', 'https:'].includes(callback.protocol) ? ` ${callback.origin}` : '';
   headers.set('Content-Type', 'text/html; charset=utf-8');
   headers.set('Cache-Control', 'no-store');
   headers.set('X-Frame-Options', 'DENY');
   headers.set('Referrer-Policy', 'strict-origin');
-  headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  headers.set('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${callbackSource}; frame-ancestors 'none'; base-uri 'none'`);
   return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect to Gitflare</title><style>body{margin:0;background:#f7f8fa;color:#1d2025;font:16px/1.6 system-ui,sans-serif}main{max-width:480px;margin:10vh auto;padding:36px;background:white;border:1px solid #e3e5e8;border-radius:12px}h1{font-size:26px;line-height:1.3}button,.button{display:inline-block;padding:10px 18px;border:1px solid #bbb;border-radius:6px;background:white;color:inherit;font:inherit;cursor:pointer;text-decoration:none}button[value=approve]{background:#161719;color:white;border-color:#161719}label{display:block;margin:16px 0}small{color:#555}strong{overflow-wrap:anywhere}@media(max-width:560px){main{margin:24px 16px;padding:24px}}</style><main><small>GITFLARE · CONNECT MCP</small>${body}</main></html>`, { headers });
 }
 
@@ -34,7 +36,7 @@ export async function oauthConsent(request: Request, env: AppEnv, authenticate: 
       const details = await oauth.describeConsent(authRequest);
       const transaction = await oauth.beginConsent(authRequest);
       const workspace = await env.GITFLARE_SECURITY.getByName('security').workspace(principal);
-      return page(`<h1>Connect ${escape(details.clientName)}?</h1><p>${details.clientDomain ? `Published by <strong>${escape(details.clientDomain)}</strong>.` : 'This client’s name is self-reported and has not been verified.'}</p><p>Access returns to <strong>${escape(details.redirectHost)}</strong>.</p>${details.redirectIsLoopback ? '<p>Only continue if you started this connection from an app on your computer.</p>' : ''}<p>Workspace: <strong>${escape(workspace.name)}</strong><br>Role: <strong>${escape(principal.role)}</strong></p><p>The client can use your current workspace permissions, including changes and approvals if your role allows them. Permission changes and session revocation take effect on subsequent requests. Reconnect after eight hours.</p><form method="post"><input type="hidden" name="handle" value="${escape(transaction.handle)}"><label><input type="checkbox" name="scope" value="gitflare" checked required> Access this Gitflare workspace</label><button name="decision" value="approve">Allow connection</button> <button name="decision" value="deny" formnovalidate>Cancel</button></form>`, transaction.headers);
+      return page(`<h1>Connect ${escape(details.clientName)}?</h1><p>${details.clientDomain ? `Published by <strong>${escape(details.clientDomain)}</strong>.` : 'This client’s name is self-reported and has not been verified.'}</p><p>Access returns to <strong>${escape(details.redirectHost)}</strong>.</p>${details.redirectIsLoopback ? '<p>Only continue if you started this connection from an app on your computer.</p>' : ''}<p>Workspace: <strong>${escape(workspace.name)}</strong><br>Role: <strong>${escape(principal.role)}</strong></p><p>The client can use your current workspace permissions, including changes and approvals if your role allows them. Permission changes and session revocation take effect on subsequent requests. Reconnect after eight hours.</p><form method="post"><input type="hidden" name="handle" value="${escape(transaction.handle)}"><label><input type="checkbox" name="scope" value="gitflare" checked required> Access this Gitflare workspace</label><button name="decision" value="approve">Allow connection</button> <button name="decision" value="deny" formnovalidate>Cancel</button></form>`, transaction.headers, details.redirectUri);
     }
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
     if (request.headers.get('Origin') !== new URL(request.url).origin || request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new ApiError(403, 'ORIGIN_REJECTED', 'Submit authorization from this Gitflare installation.');
