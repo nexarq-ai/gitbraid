@@ -129,6 +129,11 @@
       "sha256": "1b875dc6d42046e4fc1d3ddd38a75e53325858e523a858b66f5ccc7628d07eb0"
     },
     {
+      "path": "src/shared/mcp-clients.ts",
+      "size": 8247,
+      "sha256": "bdaeca4d80fcc562d6bfe16b6d285c74e54460e3398d5bf7b862ae710fb8b5cd"
+    },
+    {
       "path": "src/shared/pull-requests.ts",
       "size": 449,
       "sha256": "b8674ae92674df9998b49e5eb66a4448aebbaffe5c4d87ed63acd74dfedbc0d0"
