@@ -7,16 +7,34 @@ import type { ModelEnv } from './model-adapter';
 
 export interface StoredAiKey { provider: AiKeyProvider; encrypted: string; last4: string; addedBy: string; addedAt: string; verifiedModel: string }
 export interface StoredAiGateway { accountId: string; gatewayId: string; encryptedToken?: string; tokenLast4?: string; updatedBy: string; updatedAt: string }
-export interface AiCredentials { keys: StoredAiKey[]; gateway: StoredAiGateway | null }
+export interface OperatorModelGrant { missionsPerDay: number; draftsPerDay: number; grantedAt: string }
+export interface AiCredentials { keys: StoredAiKey[]; gateway: StoredAiGateway | null; operatorModels?: OperatorModelGrant | null }
+export type OperatorUsageKind = 'mission' | 'draft';
+export interface OperatorUsageStore { reserveOperatorUsage(kind: OperatorUsageKind, id: string): Promise<{ allowed: boolean; limit: number }> }
 export interface AiCredentialStore { getAiCredentials(): Promise<AiCredentials> }
 export interface AiAccessOptions { AUTH_ENCRYPTION_KEY?: string; EDITION?: 'hosted' | 'self-hosted'; OPERATOR_MODEL_WORKSPACES?: string }
 
 const keyContext = (workspaceId: string, provider: AiKeyProvider) => `ai-key:${workspaceId}:${provider}`;
 const gatewayContext = (workspaceId: string) => `ai-gateway:${workspaceId}`;
 
-export function operatorModelAccess(env: AiAccessOptions, workspaceId: string): boolean {
+function deploymentOperatorAccess(env: AiAccessOptions, workspaceId: string): boolean {
   if (workspaceId === 'legacy' || env.EDITION === 'self-hosted') return true;
   return (env.OPERATOR_MODEL_WORKSPACES ?? '').split(',').map(value => value.trim()).filter(Boolean).includes(workspaceId);
+}
+
+export function operatorModelAccess(env: AiAccessOptions, workspaceId: string, credentials?: Pick<AiCredentials, 'operatorModels'>): boolean {
+  return deploymentOperatorAccess(env, workspaceId) || env.EDITION !== 'self-hosted' && !!credentials?.operatorModels;
+}
+
+function ownModelAccess(credentials: AiCredentials, model: ModelConnection): boolean {
+  const provider = modelProvider(model);
+  return (!!provider && credentials.keys.some(key => key.provider === provider)) || (!!credentials.gateway && model.source === 'gateway');
+}
+
+export async function reserveOperatorUsage(env: AiAccessOptions, workspaceId: string, credentials: AiCredentials, models: ModelConnection[], kind: OperatorUsageKind, id: string, store: OperatorUsageStore): Promise<void> {
+  if (!credentials.operatorModels || deploymentOperatorAccess(env, workspaceId) || models.length && models.every(model => ownModelAccess(credentials, model))) return;
+  const reservation = await store.reserveOperatorUsage(kind, id);
+  if (!reservation.allowed) throw new ApiError(429, 'OPERATOR_DAILY_LIMIT', `This demo workspace has used its ${reservation.limit} platform-funded AI ${kind === 'mission' ? 'mission starts' : 'drafts'} for today (UTC). Try again tomorrow.`);
 }
 
 export function providerLabel(provider: AiKeyProvider): string {
@@ -63,8 +81,7 @@ export function aiKeyRequired(model: ModelConnection): ApiError {
 }
 
 export function hasModelAccess(env: AiAccessOptions, workspaceId: string, credentials: AiCredentials, model: ModelConnection): boolean {
-  const provider = modelProvider(model);
-  return (!!provider && credentials.keys.some(key => key.provider === provider)) || (!!credentials.gateway && model.source === 'gateway') || operatorModelAccess(env, workspaceId);
+  return ownModelAccess(credentials, model) || operatorModelAccess(env, workspaceId, credentials);
 }
 
 export function assertModelAccess(env: AiAccessOptions, workspaceId: string, credentials: AiCredentials, models: ModelConnection[]): void {
@@ -72,7 +89,7 @@ export function assertModelAccess(env: AiAccessOptions, workspaceId: string, cre
 }
 
 export function assertWorkspaceAi(env: AiAccessOptions, workspaceId: string, credentials: AiCredentials): void {
-  if (!operatorModelAccess(env, workspaceId) && !credentials.keys.length && !credentials.gateway) throw new ApiError(412, 'AI_KEY_REQUIRED', 'Add your AI key in Settings > AI models to start missions.');
+  if (!operatorModelAccess(env, workspaceId, credentials) && !credentials.keys.length && !credentials.gateway) throw new ApiError(412, 'AI_KEY_REQUIRED', 'Add your AI key in Settings > AI models to start missions.');
 }
 
 export async function modelRoute(env: AiAccessOptions, workspaceId: string, credentials: AiCredentials, model: ModelConnection): Promise<ModelRoute> {
@@ -81,7 +98,7 @@ export async function modelRoute(env: AiAccessOptions, workspaceId: string, cred
   const gateway = model.source === 'gateway' ? await ownGateway(env, workspaceId, credentials.gateway) : undefined;
   if (stored && provider) return { workspaceId, credential: { provider, key: await decryptAuth(stored.encrypted, env.AUTH_ENCRYPTION_KEY, keyContext(workspaceId, provider)) }, ...(gateway ? { gateway } : {}) };
   if (gateway) return { workspaceId, gateway };
-  if (operatorModelAccess(env, workspaceId)) return { workspaceId };
+  if (operatorModelAccess(env, workspaceId, credentials)) return { workspaceId };
   throw aiKeyRequired(model);
 }
 
@@ -95,8 +112,8 @@ export function aiKeysSnapshot(env: AiAccessOptions, workspaceId: string, creden
     providers: AI_KEY_PROVIDERS.map(({ id, label }) => ({ id, label })),
     keys: credentials.keys.map(({ provider, last4, addedBy, addedAt, verifiedModel }) => ({ provider, last4, addedBy, addedAt, verifiedModel })),
     gateway: gateway ? { accountId: gateway.accountId, gatewayId: gateway.gatewayId, authenticated: !!gateway.encryptedToken, ...(gateway.tokenLast4 ? { tokenLast4: gateway.tokenLast4 } : {}), updatedBy: gateway.updatedBy, updatedAt: gateway.updatedAt } : null,
-    operatorAccess: operatorModelAccess(env, workspaceId),
-    ready: operatorModelAccess(env, workspaceId) || credentials.keys.length > 0 || !!gateway,
+    operatorAccess: operatorModelAccess(env, workspaceId, credentials),
+    ready: operatorModelAccess(env, workspaceId, credentials) || credentials.keys.length > 0 || !!gateway,
   };
 }
 
