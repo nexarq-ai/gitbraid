@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -13,7 +14,7 @@ import "./pull-requests.css";
 function PullChoice({ repository, onAskAgents }: { repository: Repository; onAskAgents: () => void }) {
   return (
     <div className="pull-choice" role="group" aria-label="How to make this change">
-      <button type="button" className="ai-only" aria-pressed="false" onClick={onAskAgents}><RobotIcon size={20} /><div><strong>Ask AI agents</strong><span>Describe the change. Agents write it in isolated forks of {repository.name}, and their result becomes this proposal.</span></div></button>
+      <button type="button" className="ai-only" aria-pressed="false" onClick={onAskAgents}><RobotIcon size={20} /><div><strong>Ask AI agents</strong><span>Describe the change. Agents write it in isolated forks of {repositoryLabel(repository)}, and their result becomes this proposal.</span></div></button>
       <button type="button" aria-pressed="true"><GitBranchIcon size={20} /><div><strong>From a stream</strong><span>Propose a stream (Git branch) you pushed or created on the Streams page.</span></div></button>
     </div>
   );
@@ -62,7 +63,7 @@ export default function PullRequestCreate({ repository, canContribute, canExecut
   if (loadError || !list) return <div className="pull-create"><PullChoice repository={repository} onAskAgents={onAskAgents} />{loadError ? <ErrorNotice message={loadError} onRetry={() => setAttempt(value => value + 1)} /> : <RouteProgress />}</div>;
   const candidates = list.branches.filter(item => !item.default);
   const selected = candidates.find(item => item.name === branch);
-  const gitUrl = list.gitUrl || `${location.origin}/git/${repository.name}.git`;
+  const gitUrl = list.gitUrl || `${location.origin}/git/${repositoryLabel(repository)}.git`;
   if (!candidates.length)
     return (
       <div className="pull-create">

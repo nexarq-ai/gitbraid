@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useEffect, useId, useMemo, useState } from "react";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -28,7 +29,7 @@ export default function QuickSearch({
     return [
       ...workspace.repositories.map((repository) => ({
         id: `repository/${repository.id}`,
-        title: repository.name,
+        title: repositoryLabel(repository),
         detail: repository.description,
         category: "Repository",
         icon: FolderSimpleIcon,

@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { BranchChangeResult, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
+import { repositoryLabel } from '../shared/repository-names';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
@@ -20,6 +21,7 @@ import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type De
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
 
 interface Receipt<T> { fingerprint: string; result: T }
+export interface MissionSummaryCache { repositoryId: string; summaries: MissionSummary[]; cachedAt: string }
 export interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
 const INTEGRATION_PREPARATION_MS = 600_000;
 
@@ -121,6 +123,14 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   saveRepository(repository: Repository): void {
     this.store.put(`repository:${repository.id}`, repository);
+  }
+
+  listSummaryCache(): MissionSummaryCache[] {
+    return this.store.list<MissionSummaryCache>('summary-cache:');
+  }
+
+  saveSummaryCache(entries: MissionSummaryCache[]): void {
+    this.ctx.storage.transactionSync(() => { for (const entry of entries) this.store.put(`summary-cache:${entry.repositoryId}`, entry); });
   }
 
   listIssues(query: IssueQuery): IssueList { return listIssues(this.store, query); }
@@ -514,8 +524,9 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
 
   createRepository(key: string, repository: Repository): Repository {
     return this.mutate(key, JSON.stringify(['repository', repository.name, repository.description]), () => {
-      if (this.listRepositories().some((item) => item.name.toLowerCase() === repository.name.toLowerCase())) {
-        throw new ApiError(409, 'REPOSITORY_EXISTS', 'A repository with this name already exists.');
+      const label = repositoryLabel(repository).toLowerCase();
+      if (this.listRepositories().some((item) => item.name.toLowerCase() === repository.name.toLowerCase() || repositoryLabel(item).toLowerCase() === label)) {
+        throw new ApiError(409, 'REPOSITORY_EXISTS', `A repository named ${repositoryLabel(repository)} already exists in this workspace.`);
       }
       this.saveRepository(repository);
       return repository;

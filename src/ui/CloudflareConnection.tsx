@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useEffect, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
@@ -70,7 +71,7 @@ function CloudflareAccount({ status, accounts, resources, repositories, busy, ac
   ] : [];
   const counts = Object.fromEntries(resourceTypes.map((item) => [item.type, catalog.filter((resource) => resource.type === item.type).length])) as Record<ResourceType, number>;
   const linkedKeys = new Map<string, string[]>();
-  for (const link of links ?? []) for (const resource of link.resources) linkedKeys.set(resourceKey(resource), [...(linkedKeys.get(resourceKey(resource)) ?? []), link.repository.name]);
+  for (const link of links ?? []) for (const resource of link.resources) linkedKeys.set(resourceKey(resource), [...(linkedKeys.get(resourceKey(resource)) ?? []), repositoryLabel(link.repository)]);
   const matches = catalog.filter((item) => (filter === "all" || item.type === filter) && `${item.name} ${item.id}`.toLowerCase().includes(search.trim().toLowerCase()));
   const pages = Math.max(1, Math.ceil(matches.length / 15));
   const current = Math.min(page, pages - 1);
@@ -105,7 +106,7 @@ function CloudflareAccount({ status, accounts, resources, repositories, busy, ac
     {status.account && <section className="panel">
       <div className="panel-header"><h2>Linked to repositories</h2></div>
       <div className="panel-body">
-        {!links ? <RouteProgress /> : links.length ? <div className="cf-repository-links">{links.map(({ repository, resources: linked }) => <a key={repository.id} href={`/repository/${repository.id}/cloudflare`}><strong>{repository.name}</strong><span>{linked.map((item) => `${item.name} · ${item.environment}`).join("  ·  ")}</span></a>)}</div> : <p>No repository is linked to these resources yet. Open a repository’s <strong>Cloudflare</strong> tab to choose the Workers, databases and other services it deploys to.</p>}
+        {!links ? <RouteProgress /> : links.length ? <div className="cf-repository-links">{links.map(({ repository, resources: linked }) => <a key={repository.id} href={`/repository/${repository.id}/cloudflare`}><strong>{repositoryLabel(repository)}</strong><span>{linked.map((item) => `${item.name} · ${item.environment}`).join("  ·  ")}</span></a>)}</div> : <p>No repository is linked to these resources yet. Open a repository’s <strong>Cloudflare</strong> tab to choose the Workers, databases and other services it deploys to.</p>}
       </div>
     </section>}
     <Dialog.Root open={confirmDisconnect} onOpenChange={setConfirmDisconnect}>
@@ -225,7 +226,7 @@ export default function CloudflareConnection({ repository, repositoryId, reposit
   }
   if (repositoryId && !repository) return <ErrorNotice message="This repository could not be found." />;
   return <div className="cf-connection-page">
-    <a className="header-back" href={repositoryId ? `/repository/${repositoryId}` : "/settings"}><ArrowLeftIcon size={13} />{repositoryId ? repository?.name : "Settings"}</a>
+    <a className="header-back" href={repositoryId ? `/repository/${repositoryId}` : "/settings"}><ArrowLeftIcon size={13} />{repositoryId ? repository && repositoryLabel(repository) : "Settings"}</a>
     <div className="page-heading"><div><h1><img src={cloudflareIcon} alt="" width="22" height="22" />Cloudflare{repositoryId ? " resources" : " account"}</h1><p>{repositoryId ? "Associate this repository with your account’s resources and inspect its usage." : "Authorize Cloudflare and choose the account for your workspace."}</p></div><Button variant="secondary" size="base" icon={ArrowClockwiseIcon} disabled={!!busy} onClick={() => setRetry((value) => value + 1)}>Refresh</Button></div>
     {error && <ErrorNotice message={error} onRetry={() => setRetry((value) => value + 1)} />}
     {message && <p className="cf-notice" role="status">{message}</p>}

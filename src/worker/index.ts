@@ -4,7 +4,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
 import { createArtifactsRepository, repositoryHead } from './artifacts';
-import { ApiError, assertMutationOrigin, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString } from './domain';
+import { ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
+import { repositoryLabel } from '../shared/repository-names';
 import { checkSettingsSnapshot, normalizeCheckSettings, retryCheckSettings } from './check-settings';
 import type { AppEnv } from './env';
 import { executionReadiness } from './execution';
@@ -14,8 +15,8 @@ import type { ProjectSnapshot } from './cloudflare-projects';
 import { PREVIEW_STEP_MS } from './budgets';
 import { handleMcp, mcpToolNames } from './mcp';
 import { integrationPendingMessage, PREVIEW_STARTING_MESSAGE, startWithDurableDispatch } from './coordinator';
-import { hashToken, securityClient, type Principal, type Action } from './security';
-import { consume, rateLimitedResponse, rateSubject } from './rate-limits';
+import { hashToken, securityClient, wellFormedToken, type Principal, type Action } from './security';
+import { consume, gitRateLimits, rateLimitedResponse, rateSubject } from './rate-limits';
 import { listDocs, readDoc } from './docs';
 import { documentationImage, documentationMarkdown } from './docs-markdown';
 import { handleOnboarding } from './onboarding';
@@ -35,6 +36,7 @@ import { modelConnectionsSnapshot, modelIdentifier, resolveModelConnection, vali
 import { aiKeyProvider, aiKeysSnapshot, assertModelAccess, assertWorkspaceAi, createModelAccess, encryptAiGateway, encryptAiKey, ownGatewayInput, providerKey, reserveOperatorUsage, storedOwnGateway, storedProviderKey, verificationModel, verifyProviderKey, type AiCredentials } from './ai-keys';
 import { IMPORT_REQUEST_MAX_BYTES, RepositoryImportFailure, buildImportPack, importFingerprint, inspectRepositoryImport, parseImportArchive, pushRepositoryImport, validateImportInput } from './repository-import';
 import { handleGitRequest, listBranches, type GitHttpDependencies } from './git-http';
+import { collectMissionSummaries } from './workspace-summaries';
 import { branchApi } from './branches';
 import { branchName, effectiveRules, landingRule, protectionSnapshot } from './branch-protection';
 import { handleUrlImport } from './url-import';
@@ -91,11 +93,18 @@ async function authorize(request: Request, env: AppEnv, bearerOnly = false): Pro
 }
 
 async function landingReviewRule(env: AppEnv, repository: Repository) { return landingRule(await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getBranchProtection(), repository.defaultBranch); }
+const gitBlocks = new Map<string, number>();
+
 function gitDependencies(env: AppEnv): GitHttpDependencies {
   return {
-    authenticate: async (token) => env.EDITION !== 'self-hosted' && env.OWNER_TOKEN && env.OWNER_TOKEN.length >= 32 && await tokenMatches(token, env.OWNER_TOKEN) ? security(env).bootstrap() : security(env).authenticate(token),
+    authenticate: async (token) => {
+      if (env.EDITION !== 'self-hosted' && env.OWNER_TOKEN && env.OWNER_TOKEN.length >= 32 && await tokenMatches(token, env.OWNER_TOKEN)) return security(env).bootstrap();
+      if (!wellFormedToken(token)) throw new ApiError(401, 'AUTH_REQUIRED', 'The Gitflare token is malformed.');
+      return security(env).authenticate(token);
+    },
+    limits: gitRateLimits(env, gitBlocks),
     authorize: (principal, action, repositoryId) => security(env).authorize(principal, action, 'repository', repositoryId),
-    repository: async (principal, name) => (await env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId)).listRepositories()).find(item => item.name === name || principal.workspaceId !== 'legacy' && item.name === `w-${principal.workspaceId.replace(/-/g, '')}-${name.slice(0, 29)}`),
+    repository: async (principal, name) => findRepositoryByName(await env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId)).listRepositories(), principal.workspaceId, name),
     rules: async (repository) => effectiveRules(await env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).getBranchProtection(), repository.defaultBranch),
     artifacts: env.ARTIFACTS,
   };
@@ -208,7 +217,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   }
   const principal = await authorize(request, env);
   const access = security(env);
-  if (request.method === 'GET' && (['/api/docs', '/api/mcp', '/api/workspace'].includes(url.pathname) || url.pathname.startsWith('/api/docs/'))) await access.authorizeMetadata(principal);
+  if (request.method === 'GET' && (['/api/docs', '/api/mcp'].includes(url.pathname) || url.pathname.startsWith('/api/docs/'))) await access.authorizeMetadata(principal);
   if (url.pathname === '/api/access' && request.method === 'GET') return Response.json(await access.snapshot(principal));
   if (url.pathname.startsWith('/api/access/') && request.method === 'POST') {
     assertMutationOrigin(request); const body = await readJson(request); const action = url.pathname.slice('/api/access/'.length);
@@ -312,14 +321,29 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     return Response.json({ ok: true }, { headers: { 'Set-Cookie': 'gitflare_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0' } });
   }
   if (request.method === 'GET' && url.pathname === '/api/workspace') {
+    const started = Date.now();
     if (local) await seedLocal(env);
-    const repositories = await catalog.listRepositories();
-    const readable = await access.checkMany(principal, 'read', repositories.map((repository) => ({ resourceType: 'repository', resourceId: repository.id })));
-    const visible = repositories.filter((_, index) => readable[index]);
-    const listed = (await Promise.all(visible.map((repository) => env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`).listMissionSummaries()))).flat();
-    const allowed = await access.checkMany(principal, 'read', listed.map((mission) => ({ resourceType: 'repository', resourceId: mission.repositoryId, missionId: mission.id })));
-    const missions = listed.filter((_, index) => allowed[index]);
-    const workspace: Workspace = { name: principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : (await access.workspace(principal)).name, mode: local ? 'local' : 'connected', repositories: visible, missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local), ai: await aiSettings(env, catalog) };
+    const [, repositories, name, ai, cached] = await Promise.all([
+      access.authorizeMetadata(principal),
+      catalog.listRepositories(),
+      principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : access.workspace(principal).then(workspace => workspace.name),
+      aiSettings(env, catalog),
+      Promise.resolve().then(() => catalog.listSummaryCache()).catch(() => []),
+    ]);
+    const catalogMs = Date.now() - started;
+    const { summaries, stale } = await collectMissionSummaries(repositories.map(repository => repository.id), {
+      live: id => env.GITFLARE_COORDINATOR.getByName(`repository:${id}`).listMissionSummaries(),
+      cached,
+      save: entries => catalog.saveSummaryCache(entries),
+      defer: work => { const settled = work.catch(error => console.warn(JSON.stringify({ event: 'workspace_summary_cache_failed', name: error instanceof Error ? error.name : typeof error }))); ctx?.waitUntil(settled); },
+    });
+    const summariesMs = Date.now() - started - catalogMs;
+    const allowed = await access.checkMany(principal, 'read', [...repositories.map(repository => ({ resourceType: 'repository', resourceId: repository.id })), ...summaries.map(mission => ({ resourceType: 'repository', resourceId: mission.repositoryId, missionId: mission.id }))]);
+    const visible = repositories.filter((_, index) => allowed[index]);
+    const visibleIds = new Set(visible.map(repository => repository.id));
+    const missions = summaries.filter((mission, index) => allowed[repositories.length + index] && visibleIds.has(mission.repositoryId));
+    const workspace: Workspace = { name, mode: local ? 'local' : 'connected', repositories: visible.map(repository => ({ ...repository, displayName: repositoryLabel(repository) })), missions: missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), integrations: integrations(env, local), ai };
+    console.log(JSON.stringify({ event: 'workspace_timing', repositories: repositories.length, missions: summaries.length, staleRepositories: stale, catalogMs, summariesMs, accessMs: Date.now() - started - catalogMs - summariesMs, totalMs: Date.now() - started }));
     return Response.json(workspace);
   }
   const cloudflareProject = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/cloudflare(?:\/(usage|action))?$/.exec(url.pathname);
@@ -428,7 +452,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     await access.authorize(principal, !writing ? 'read' : branchRoute[2] === 'branch-protection' ? 'manage' : 'contribute', 'repository', repository.id);
     if (!writing && branchRoute[2] === 'branch-protection') return Response.json(protectionSnapshot(repository.id, repository.defaultBranch, await coordinator.getBranchProtection()));
     if (!env.ARTIFACTS || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to use streams.');
-    if (!writing) return Response.json({ repositoryId: repository.id, defaultBranch: repository.defaultBranch, gitUrl: `${url.origin}/git/${repository.name}.git`, branches: await listBranches(env.ARTIFACTS, repository, effectiveRules(await coordinator.getBranchProtection(), repository.defaultBranch)) });
+    if (!writing) return Response.json({ repositoryId: repository.id, defaultBranch: repository.defaultBranch, gitUrl: `${url.origin}/git/${repositoryLabel(repository)}.git`, branches: await listBranches(env.ARTIFACTS, repository, effectiveRules(await coordinator.getBranchProtection(), repository.defaultBranch)) });
     assertMutationOrigin(request);
     const key = requireIdempotencyKey(request), body = await readJson(request, 65_536);
     if (branchRoute[2] === 'branch-protection') { await coordinator.setBranchProtection(key, body.rules, principal.userId); return Response.json(protectionSnapshot(repository.id, repository.defaultBranch, await coordinator.getBranchProtection())); }
@@ -544,11 +568,11 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     await access.authorize(principal, 'manage');
     const requestedName = repositoryName(body.name);
     if (principal.workspaceId === 'legacy' && /^w-[a-f0-9]{32}-/.test(requestedName)) throw new ApiError(403, 'RESERVED_NAMESPACE', 'This repository prefix is reserved for isolated workspaces.');
-    const name = principal.workspaceId === 'legacy' ? requestedName : repositoryName(`w-${principal.workspaceId.replace(/-/g, '')}-${requestedName.slice(0, 29)}`);
+    const name = await storageRepositoryName(principal.workspaceId, requestedName);
     const description = body.description === undefined || body.description === '' ? '' : requireString(body.description, 'Description', 500);
     if (!local && !env.ARTIFACTS) throw new ApiError(503, 'REPOSITORY_SETUP_REQUIRED', 'Connect Artifacts before creating a repository.');
     const now = new Date().toISOString();
-    let repository = await catalog.createRepository(key, { id: crypto.randomUUID(), workspaceId: principal.workspaceId, name, description, defaultBranch: 'main', headSha: null, provider: env.ARTIFACTS ? 'artifacts' : 'local', createdAt: now, updatedAt: now });
+    let repository = await catalog.createRepository(key, { id: crypto.randomUUID(), workspaceId: principal.workspaceId, name, ...(name === requestedName ? {} : { displayName: requestedName }), description, defaultBranch: 'main', headSha: null, provider: env.ARTIFACTS ? 'artifacts' : 'local', createdAt: now, updatedAt: now });
     if (repository.provider === 'artifacts') {
       repository = await catalog.getRepository(repository.id) ?? repository;
       if (!repository.remote) {

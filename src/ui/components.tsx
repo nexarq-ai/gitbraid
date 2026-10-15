@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import type { ReactNode } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import {
@@ -206,9 +207,9 @@ export function MissionTable({
                       {mission.title}
                     </button>
                     <small>
-                      {workspace.repositories.find(
+                      {repositoryLabel(workspace.repositories.find(
                         (repo) => repo.id === mission.repositoryId,
-                      )?.name ?? "Repository"}
+                      ) ?? { name: "Repository" })}
                     </small>
                   </div>
                 </div>

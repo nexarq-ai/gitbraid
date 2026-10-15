@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useCallback, useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -161,7 +162,7 @@ function ReleaseDetail({ repository, list, release, canLand, onChanged, onNotify
         <Dialog.Title className="dialog-title">{confirming === "publish" ? `Publish ${release.tag}?` : "Delete this checkpoint?"}</Dialog.Title>
         <Dialog.Description className="dialog-description">
           {confirming === "publish"
-            ? <>This creates the tag <code>{release.tag}</code> at revision <code>{release.targetSha.slice(0, 12)}</code> in <strong>{repository.name}</strong>. Tags are permanent and are never moved.</>
+            ? <>This creates the tag <code>{release.tag}</code> at revision <code>{release.targetSha.slice(0, 12)}</code> in <strong>{repositoryLabel(repository)}</strong>. Tags are permanent and are never moved.</>
             : release.draft ? <>The draft <strong>{release.name}</strong> will be removed. No tag exists for it.</> : <>Only the checkpoint record is removed. The tag <code>{release.tag}</code> is immutable and stays in the repository.</>}
         </Dialog.Description>
         <div className="dialog-actions">

@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -137,7 +138,7 @@ export default function RepositoryBrowser({
         </form>
         <nav className="source-breadcrumbs" aria-label="Repository path">
           <button onClick={() => setSelection({ path: "", kind: "directory" })}>
-            {repository.name}
+            {repositoryLabel(repository)}
           </button>
           {segments.map((segment, index) => (
             <span key={`${segment}-${index}`}>

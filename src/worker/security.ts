@@ -118,6 +118,7 @@ const SESSION_ID_PATTERN = /^([A-Za-z0-9-]{1,64})\.[0-9a-f-]{36}$/;
 export function shardName(workspaceId: string): string { return `security:ws:${workspaceId}`; }
 function mintToken(workspaceId: string): string { return `gf1.${workspaceId}.${token()}`; }
 function tokenHome(value: string): string | undefined { return TOKEN_PATTERN.exec(value)?.[1]; }
+export function wellFormedToken(value: string): boolean { return TOKEN_PATTERN.test(value) || /^[a-f0-9]{64}$/.test(value); }
 function sessionIdHome(id: string): string | undefined { return SESSION_ID_PATTERN.exec(id)?.[1]; }
 function missingRpcMethod(error: unknown): boolean {
   return error instanceof Error && !error.message.startsWith('GITFLARE:') && /not a function|does not exist|not implemented|does not implement|unknown method|no such method|not supported/i.test(error.message);

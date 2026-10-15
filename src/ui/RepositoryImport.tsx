@@ -1,3 +1,4 @@
+import { repositoryLabel } from "../shared/repository-names";
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from 'react';
 import { Button } from '@cloudflare/kumo/components/button';
 import { Input } from '@cloudflare/kumo/components/input';
@@ -93,7 +94,7 @@ function GitSetup({ repository, remote, branch }: { repository: Repository; remo
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState('');
   if (!remote) return null;
-  const commands = `git clone ${quoteGitArgument(remote)} ${quoteGitArgument(repository.name)}\ncd ${quoteGitArgument(repository.name)}\ngit switch ${quoteGitArgument(branch)}\ngit add .\ngit commit -m 'Import existing code'\ngit push origin ${quoteGitArgument(branch)}`;
+  const commands = `git clone ${quoteGitArgument(remote)} ${quoteGitArgument(repositoryLabel(repository))}\ncd ${quoteGitArgument(repositoryLabel(repository))}\ngit switch ${quoteGitArgument(branch)}\ngit add .\ngit commit -m 'Import existing code'\ngit push origin ${quoteGitArgument(branch)}`;
   return <details className="panel repository-import-git"><summary><GitBranchIcon size={18} aria-hidden="true" />Set up with Git</summary><div><p>Use your Cloudflare Artifacts Git credential when Git asks you to authenticate. A Gitflare owner key or task credential cannot authenticate this Git remote.</p><p>Clone this repository, switch to the target branch, then copy your project into the cloned folder before running the add, commit and push commands. Keep the cloned <code>.git</code> directory. If the repository is empty, use <code>git switch -c {quoteGitArgument(branch)}</code> instead.</p><pre><code>{commands}</code></pre><Button type="button" variant="secondary" size="base" onClick={() => { void navigator.clipboard.writeText(commands).then(() => { setCopied(true); setCopyError(''); }).catch(() => setCopyError('Copy is unavailable. Select and copy the commands above.')); }}>{copied ? 'Copied' : 'Copy Git commands'}</Button>{copyError && <p role="alert">{copyError}</p>}<p className="repository-import-muted">The target branch must contain your code before a mission can use it.</p></div></details>;
 }
 

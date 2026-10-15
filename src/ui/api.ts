@@ -11,6 +11,7 @@ export class RequestError extends Error {
 }
 
 let workspaceId = "";
+const READ_TIMEOUT_MS = 30_000;
 
 export function selectWorkspace(id: string) { workspaceId = id; }
 
@@ -20,7 +21,7 @@ export async function request<T>(
   key?: string,
 ): Promise<T> {
   const response = await fetch(path, {
-    signal: body === undefined ? AbortSignal.timeout(30000) : undefined,
+    signal: body === undefined ? AbortSignal.timeout(READ_TIMEOUT_MS) : undefined,
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     headers: {
@@ -31,6 +32,12 @@ export async function request<T>(
           }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+  }).catch((failure: unknown) => {
+    if (failure instanceof DOMException && failure.name === "TimeoutError")
+      throw new RequestError(`Gitflare did not answer within ${READ_TIMEOUT_MS / 1000} seconds. Try again.`, 0, "TIMEOUT");
+    if (failure instanceof TypeError)
+      throw new RequestError("Gitflare could not be reached. Check your connection and try again.", 0, "NETWORK");
+    throw failure;
   });
   const data = (await response.json().catch(() => null)) as T | ApiError | null;
   if (!response.ok) {

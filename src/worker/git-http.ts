@@ -1,6 +1,7 @@
 import type { BranchInfo, BranchRule, Repository } from '../shared/types';
 import type { ArtifactRepo, ArtifactsBinding } from './artifacts';
 import { evaluatePush, ruleFor, ZERO_SHA, type PushDecision, type RefUpdate } from './branch-protection';
+import { rateLimitMessage, type GitRateLimits, type RateLimited } from './rate-limits';
 import type { Action, Principal } from './security';
 
 export const GIT_PUSH_MAX_BYTES = 104_857_600;
@@ -18,12 +19,17 @@ export interface GitHttpDependencies {
   rules(repository: Repository): Promise<BranchRule[]>;
   artifacts?: ArtifactsBinding;
   fetcher?: typeof fetch;
+  limits?: GitRateLimits;
 }
 
 export class GitProtocolError extends Error {}
 
 function text(status: number, message: string, headers: Record<string, string> = {}): Response {
   return new Response(`${message}\n`, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...headers } });
+}
+
+function rejectedTokens(limited: RateLimited): Response {
+  return text(429, `Too many rejected Gitflare tokens from this address. Wait ${limited.retryAfterSeconds} seconds, then retry with a valid personal token.`, { 'Retry-After': String(limited.retryAfterSeconds) });
 }
 
 export function pktLine(payload: string | Uint8Array): Uint8Array {
@@ -250,9 +256,18 @@ export async function handleGitRequest(request: Request, deps: GitHttpDependenci
   if (request.method !== (kind === 'refs' ? 'GET' : 'POST')) return text(405, 'This Git operation uses a different HTTP method.');
   const token = suppliedToken(request);
   if (!token) return text(401, 'Authenticate with a Gitflare personal token as the password. Create one in Settings → Account.', challenge);
+  const client = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  const blocked = deps.limits?.blocked(client);
+  if (blocked) return rejectedTokens(blocked);
   let principal: Principal;
   try { principal = await deps.authenticate(token); }
-  catch { return text(401, 'The Gitflare token was not accepted. Create a new personal token in Settings → Account.', challenge); }
+  catch {
+    const limited = await deps.limits?.failure(client);
+    if (limited) return rejectedTokens(limited);
+    return text(401, 'The Gitflare token was not accepted. Create a new personal token in Settings → Account.', challenge);
+  }
+  const limited = await deps.limits?.credential(principal);
+  if (limited) return text(429, rateLimitMessage(limited, 'Git requests'), { 'Retry-After': String(limited.retryAfterSeconds) });
   const repository = await deps.repository(principal, match[1]);
   if (!repository) return text(404, 'This repository was not found in your Gitflare workspace.');
   if (repository.provider !== 'artifacts' || !deps.artifacts) return text(409, 'This repository is not connected to Git storage.');

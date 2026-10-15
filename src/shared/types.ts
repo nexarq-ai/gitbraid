@@ -7,6 +7,7 @@ export interface Repository {
   workspaceId?: string;
   id: string;
   name: string;
+  displayName?: string;
   description: string;
   defaultBranch: string;
   headSha: string | null;
