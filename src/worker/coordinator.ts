@@ -27,7 +27,7 @@ function eligibleRaceRuns(mission: Mission): Mission['runs'] {
   const checks = mission.raceChecks ?? mission.checks;
   return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
 }
-export interface PreviewCapability { workspaceId?: string; principal?: import('./security').Principal; repositoryId: string; missionId: string; epoch: number; candidateSha: string; sandboxName: string; expiresAt: number }
+export interface PreviewCapability { workspaceId?: string; principal?: import('./security').Principal; repositoryId: string; missionId: string; epoch: number; candidateSha: string; sandboxName: string; expiresAt: number; host?: string; isolated?: boolean }
 export interface WorkerPreviewInfo { previewName: string; previewUrl: string | null; deploymentUrl: string | null; notes: string[] }
 interface PreviewState { claimId: string; epoch: number; candidateSha: string; phase: 'preparing' | 'ready'; expiresAt: number; sandboxName?: string; worker?: WorkerPreviewInfo }
 interface WorkerPreviewRecord { previewName: string; claimId: string; expiresAt: number }
@@ -374,17 +374,26 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
-  savePreviewCapability(hash: string, capability: PreviewCapability): void {
+  async savePreviewCapability(hash: string, capability: PreviewCapability): Promise<void> {
     this.store.put(`preview:${hash}`, capability);
+    await this.ensureDispatchAlarm(capability.expiresAt);
   }
 
-  getPreviewCapability(hash: string): PreviewCapability | undefined {
+  async getPreviewCapability(hash: string): Promise<PreviewCapability | undefined> {
     const capability = this.store.get<PreviewCapability>(`preview:${hash}`);
-    if (capability && capability.expiresAt <= Date.now()) {
-      this.store.delete(`preview:${hash}`);
-      return undefined;
+    if (capability && capability.expiresAt > Date.now()) return capability;
+    await this.prunePreviewCapabilities();
+    return undefined;
+  }
+
+  private async prunePreviewCapabilities(): Promise<void> {
+    const now = Date.now();
+    let next = Infinity;
+    for (const [key, capability] of this.store.entries<PreviewCapability>('preview:')) {
+      if (capability.expiresAt <= now) this.store.delete(key);
+      else next = Math.min(next, capability.expiresAt);
     }
-    return capability;
+    if (next !== Infinity) await this.ensureDispatchAlarm(next);
   }
 
   claimPreview(key: string, id: string, epoch: number, candidateSha: string): { sandboxName?: string; worker?: WorkerPreviewInfo; claimId: string; claimed: boolean; expiresAt?: number; previous?: string } {
@@ -675,6 +684,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   }
 
   async alarm(): Promise<void> {
+    await this.prunePreviewCapabilities();
     const existing = this.listDispatches();
     if (!existing.length) return;
     const due = existing.filter((intent) => intent.nextAttemptAt <= Date.now()).slice(0, 10);

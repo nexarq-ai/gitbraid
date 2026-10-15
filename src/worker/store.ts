@@ -27,4 +27,8 @@ export class SqlStore {
   list<T>(prefix: string): T[] {
     return this.sql.exec<{ value: string }>('SELECT value FROM records WHERE key >= ? AND key < ? ORDER BY key', prefix, `${prefix}\uffff`).toArray().map((row) => JSON.parse(row.value));
   }
+
+  entries<T>(prefix: string): [string, T][] {
+    return this.sql.exec<{ key: string; value: string }>('SELECT key, value FROM records WHERE key >= ? AND key < ? ORDER BY key', prefix, `${prefix}\uffff`).toArray().map((row) => [row.key, JSON.parse(row.value)]);
+  }
 }

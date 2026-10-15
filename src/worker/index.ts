@@ -38,6 +38,7 @@ import { handleGitRequest, listBranches, type GitHttpDependencies } from './git-
 import { branchApi } from './branches';
 import { branchName, effectiveRules, landingRule, protectionSnapshot } from './branch-protection';
 import { handleUrlImport } from './url-import';
+import { capabilityHash, mintPreviewToken, PREVIEW_CAPABILITY_MS, previewCapabilityStore, previewTarget, relayPreview } from './preview-capability';
 
 export { GitflareSecurity } from './security';
 export { GitflareCoordinator } from './coordinator';
@@ -46,33 +47,9 @@ export { AgentSandbox, BootstrapOutbound, GitOutbound, ImportOutbound, RegistryO
 
 const encoder = new TextEncoder();
 
-async function capabilityHash(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
 export class PreviewRelay extends WorkerEntrypoint<AppEnv> {
   async fetch(request: Request): Promise<Response> {
-    const token = request.headers.get('X-Gitflare-Preview');
-    if (!token || !/^[a-f0-9]{64}$/.test(token)) return new Response('Preview access is required.', { status: 401 });
-    const capability = await this.env.GITFLARE_COORDINATOR.getByName('catalog:owner').getPreviewCapability(await capabilityHash(token));
-    if (!capability || !this.env.SANDBOX) return new Response('This preview has expired.', { status: 410 });
-    if (!capability.principal) return new Response('This preview requires renewal.', { status: 410 });
-    try { await security(this.env).check(capability.principal, 'read', 'repository', capability.repositoryId, capability.missionId); } catch { return new Response('Preview authority has been revoked.', { status: 410 }); }
-    const mission = await this.env.GITFLARE_COORDINATOR.getByName(`repository:${capability.repositoryId}`).getMission(capability.missionId);
-    if (!mission || mission.epoch !== capability.epoch || mission.candidateSha !== capability.candidateSha || !['needs_review', 'approved', 'integrating', 'integrated'].includes(mission.status)) return new Response('This candidate preview is no longer current.', { status: 410 });
-    if (request.headers.get('X-Gitflare-Preview-Validate') === '1') return new Response(null, { status: 204 });
-    const headers = new Headers(request.headers);
-    headers.delete('Authorization');
-    headers.delete('Cookie');
-    headers.delete('X-Gitflare-Preview');
-    headers.delete('X-Gitflare-Preview-Validate');
-    const response = await this.env.SANDBOX.getByName(capability.sandboxName).preview(new Request(request, { headers }));
-    const safe = new Response(response.body, response);
-    safe.headers.delete('Set-Cookie');
-    safe.headers.set('Cache-Control', 'no-store');
-    safe.headers.set('Referrer-Policy', 'no-referrer');
-    return safe;
+    return relayPreview(this.env, request, (capability) => security(this.env).check(capability.principal, 'read', 'repository', capability.repositoryId, capability.missionId));
   }
 }
 
@@ -671,8 +648,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     }
     if (match[2] === 'preview') {
       if (!env.PREVIEW_ORIGIN || !env.SANDBOX || !env.ARTIFACTS) throw new ApiError(503, 'PREVIEW_NOT_CONFIGURED', 'Configure the isolated preview service before creating a preview.');
-      const previewOrigin = new URL(env.PREVIEW_ORIGIN);
-      if (previewOrigin.protocol !== 'https:' || previewOrigin.origin === url.origin) throw new ApiError(503, 'PREVIEW_ORIGIN_INVALID', 'Previews require a separate HTTPS origin.');
+      const target = previewTarget(env.PREVIEW_ORIGIN, url.origin);
       if (!mission.candidateSha || !mission.checks.some((check) => check.candidateSha === mission.candidateSha && check.status === 'passed') || mission.checks.some((check) => check.status !== 'passed')) throw new ApiError(409, 'CHECKS_REQUIRED', 'The current integration candidate must pass verification before preview.');
       if (!env.MISSION_WORKFLOW) throw new ApiError(503, 'PREVIEW_NOT_CONFIGURED', 'Configure the Mission Workflow before creating a preview.');
       const reserved = await catalog.reservePreviewSlot(mission.id, Date.now() + PREVIEW_STEP_MS);
@@ -691,11 +667,11 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       }
       const current = await coordinator.getMission(mission.id);
       if (!current || current.epoch !== mission.epoch || current.candidateSha !== mission.candidateSha || !['needs_review', 'approved', 'integrating', 'integrated'].includes(current.status)) throw new ApiError(409, 'STALE_PREVIEW', 'The candidate changed while the preview was starting.');
-      const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const expiresAt = Math.min(Date.now() + 900_000, claim.expiresAt ?? Infinity);
+      const token = mintPreviewToken(principal.workspaceId);
+      const expiresAt = Math.min(Date.now() + PREVIEW_CAPABILITY_MS, claim.expiresAt ?? Infinity);
       await access.check(principal, 'read', 'repository', repository.id, mission.id);
-      await env.GITFLARE_COORDINATOR.getByName('catalog:owner').savePreviewCapability(await capabilityHash(token), { workspaceId: principal.workspaceId, principal, repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, sandboxName, expiresAt });
-      return Response.json({ status: 'ready', previewUrl: `${previewOrigin.origin}/open/${token}`, candidateSha: mission.candidateSha, expiresAt: new Date(expiresAt).toISOString() });
+      await env.GITFLARE_COORDINATOR.getByName(previewCapabilityStore(principal.workspaceId)).savePreviewCapability(await capabilityHash(token), { workspaceId: principal.workspaceId, principal, repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, sandboxName, expiresAt, host: target.host, isolated: target.isolated });
+      return Response.json({ status: 'ready', previewUrl: `${target.origin}/open/${token}`, candidateSha: mission.candidateSha, expiresAt: new Date(expiresAt).toISOString() });
     }
     if (match[2] === 'revert') {
       await access.authorize(principal, 'contribute', 'repository', repository.id);
