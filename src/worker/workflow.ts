@@ -3,14 +3,20 @@ import type { GitflareSecurity } from './security';
 import type { Mission, ModelConnection, Repository } from '../shared/types';
 import { assertPinnedModel } from './model-config';
 import { executeMission, type ExecutionEnv, type ExecutionResult } from './execution';
+import type { AppEnv } from './env';
+import { landCandidate, preparePreview, type LandingParams, type PreviewParams } from './background-work';
+import { missionStepTimeoutMs } from './budgets';
+import { catalogName } from './capacity';
 
-export interface MissionWorkflowParams { repositoryId: string; missionId: string; epoch: number }
+export interface MissionRunParams { kind?: 'mission'; repositoryId: string; missionId: string; epoch: number }
+export type MissionWorkflowParams = MissionRunParams | LandingParams | PreviewParams;
 interface Coordinator {
   getModelConnections(): Promise<ModelConnection[]>;
   getRepository(repositoryId: string): Promise<Repository | undefined>;
   getMission(missionId: string): Promise<Mission | undefined>;
   isMissionActive(missionId: string, epoch: number): Promise<boolean>;
   recordExecution(missionId: string, epoch: number, result: ExecutionResult, complete?: boolean): Promise<unknown>;
+  releaseMissionSlot(missionId: string, epoch: number): Promise<void>;
 }
 interface WorkflowEnv extends ExecutionEnv {
   GITFLARE_SECURITY: DurableObjectNamespace<GitflareSecurity>;
@@ -19,10 +25,15 @@ interface WorkflowEnv extends ExecutionEnv {
 
 export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWorkflowParams> {
   async run(event: WorkflowEvent<MissionWorkflowParams>, step: WorkflowStep): Promise<void> {
-    const { repositoryId, missionId, epoch } = event.payload;
+    const params = event.payload;
+    if (params.kind === 'land') return landCandidate(this.env as unknown as AppEnv, params, step);
+    if (params.kind === 'preview') return preparePreview(this.env as unknown as AppEnv, params, step);
+    const { repositoryId, missionId, epoch } = params;
     const coordinator = this.env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
+    const planned = await coordinator.getMission(missionId);
+    const timeout = missionStepTimeoutMs(planned ?? { runs: [] });
     try {
-      await step.do('execute isolated agents and verify integration', { retries: { limit: 0, delay: '1 second' }, timeout: '25 minutes' }, async () => {
+      await step.do('execute isolated agents and verify integration', { retries: { limit: 0, delay: '1 second' }, timeout }, async () => {
         const [repository, mission] = await Promise.all([coordinator.getRepository(repositoryId), coordinator.getMission(missionId)]);
         if (!repository || !mission) throw new Error('Mission repository was not found');
         if (!await coordinator.isMissionActive(missionId, epoch)) return;
@@ -51,6 +62,8 @@ export class MissionWorkflow extends WorkflowEntrypoint<WorkflowEnv, MissionWork
         error: error instanceof Error ? error.message : 'Workflow failed',
       }, true);
       throw error;
+    } finally {
+      await this.env.GITFLARE_COORDINATOR.getByName(catalogName(planned?.authorization?.workspaceId ?? 'legacy')).releaseMissionSlot(missionId, epoch).catch(() => {});
     }
   }
 }

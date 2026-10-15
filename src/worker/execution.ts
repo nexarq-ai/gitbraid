@@ -8,6 +8,7 @@ import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEF
 import { inferenceMessage, ModelResponseError, type InputItem, type ModelMessage } from './model-adapter';
 export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { previewPlan } from './preview-plan';
+import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
 import { DEFAULT_EDITABLE, isProtectedPath, parseNameStatus, parseRepositoryPolicy, POLICY_FILE, protectedChanges, starterCheck, type RepositoryPolicy } from './repository-policy';
 
 export interface SandboxRunner {
@@ -70,7 +71,7 @@ export async function runConcurrent<T>(jobs: (() => Promise<T>)[]): Promise<Prom
       catch (reason) { outcomes[index] = { status: 'rejected', reason }; }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(3, jobs.length) }, () => worker()));
+  await Promise.all(Array.from({ length: Math.min(AGENT_CONCURRENCY, jobs.length) }, () => worker()));
   return outcomes;
 }
 
@@ -123,7 +124,7 @@ const MIN_MAX_TURNS = 1;
 const MAX_MAX_TURNS = 32;
 
 export async function runAgentLoop(env: ExecutionEnv, sandbox: SandboxRunner, prompt: string, isActive: () => Promise<boolean>, onTool: (text: string) => Promise<void> = async () => {}, model: ModelConnection = resolveModelConnection(defaultModelConnections(), selectedModel(env)), options: AgentLoopOptions = {}): Promise<string> {
-  const deadline = Date.now() + 600_000;
+  const deadline = Date.now() + AGENT_BUDGET_MS;
   const maxTurns = Math.min(MAX_MAX_TURNS, Math.max(MIN_MAX_TURNS, Math.trunc(options.maxTurns ?? DEFAULT_MAX_TURNS)));
   const editable = (options.editable ?? DEFAULT_EDITABLE).join(', ');
   const teamwork = options.team && options.independent ? ' This is an independent race: every peer attempts the whole mission in a separate fork. Call team_status to share progress, but complete your assigned candidate independently even when peers edit the same paths.' : options.team ? ' Other agents are working on this mission at the same time in their own forks. Call team_status before you start editing and again before you finish: share a one-line note of your intent, and avoid changing files a peer is already changing unless your assignment requires it.' : '';

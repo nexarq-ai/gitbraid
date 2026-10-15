@@ -9,6 +9,7 @@ interface OutboundProps { repositories: GitPermission[] }
 const ca = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
 // Vite-based dev and preview servers reject any Host other than localhost
 const PREVIEW_HOST = 'http://localhost:8080';
+export const SANDBOX_MAX_LIFETIME_MS = 7_200_000;
 
 export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
   async fetch(request: Request): Promise<Response> {
@@ -89,6 +90,7 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     const container = this.ctx.container;
     if (!container) throw new Error('Container binding is not configured');
     if (container.running) await container.destroy();
+    await this.ctx.storage.setAlarm(Date.now() + SANDBOX_MAX_LIFETIME_MS);
     const image = container.images?.tools ?? this.env.RUNNER_IMAGE ?? 'cloudflare/debian-trixie';
     container.start({ image, instance: 'standard-1', entrypoint: ['sleep', 'infinity'], enableInternet: false });
     let stage = 'container startup';
@@ -249,7 +251,16 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     return container.getTcpPort(8080).fetch(new Request(`${PREVIEW_HOST}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body, redirect: 'manual' }));
   }
 
+  async expireAt(at: number): Promise<void> {
+    await this.ctx.storage.setAlarm(at);
+  }
+
+  async alarm(): Promise<void> {
+    if (this.ctx.container?.running) await this.ctx.container.destroy();
+  }
+
   async destroy(): Promise<void> {
+    await this.ctx.storage.deleteAlarm();
     if (this.ctx.container?.running) await this.ctx.container.destroy();
   }
 }
