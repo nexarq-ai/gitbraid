@@ -16,7 +16,7 @@ import { defaultModelConnections, pinMissionModels, validateModelConnection } fr
 import { applyIssueChange, issueFingerprint, linkIssueMission, listIssues, readIssue, recordIssueOutcome, type IssueActor, type IssueChange, type IssueQuery } from './issues';
 import { branchName, normalizeBranchRules, type StoredBranchProtection } from './branch-protection';
 import { capacityError, catalogName, liveSlots, MISSION_SLOT_GRACE_MS, slotKey, WORKSPACE_MISSION_LIMIT, WORKSPACE_PREVIEW_LIMIT, type CapacitySlot } from './capacity';
-import { missionStepTimeoutMs, PREVIEW_STEP_MS } from './budgets';
+import { missionStepTimeoutMs } from './budgets';
 import { AUTO_INCREASE_ACTOR, checkDurations, checkPlan, DURATION_SAMPLES, normalizeCheckSettings, withLearnedLimits, type CheckSettingsInput, type LearnedLimits } from './check-settings';
 import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type DeploySettings, type DeployState } from './deployments';
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
@@ -63,7 +63,7 @@ export function integrationPendingMessage(candidateSha: string): string {
 
 export const INTEGRATION_UNCONFIRMED_MESSAGE = 'Landing could not confirm whether the default branch moved to the approved commit, so other proposals in this repository cannot land until it is resolved. Choose Land again to recheck the default branch; it never pushes twice. If the branch does not show the approved commit, ask a workspace Owner to inspect it before landing anything else.';
 
-export const PREVIEW_STARTING_MESSAGE = `Preparing the preview: cloning, installing dependencies and starting the server usually takes 1 to 3 minutes. Status refreshes automatically; if it is not ready after ${minutes(PREVIEW_STEP_MS)} minutes it stops and reports why.`;
+export const PREVIEW_STARTING_MESSAGE = 'Building the preview from this exact revision: clone, install and build, then publish it as a Cloudflare Worker Preview (or start it in a preview container for apps that are not Workers). This usually takes about a minute. If a step fails, the preview stops and says why.';
 
 export async function startWithDurableDispatch(coordinator: { startMissionWithDispatch(key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> }, key: string, id: string, authorization?: NonNullable<Mission['authorization']>, models?: ModelConnection[]): Promise<Mission> {
   try {

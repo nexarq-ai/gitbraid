@@ -545,8 +545,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 87907,
-      "sha256": "d7b5e0bfd1e0c68446e67d9f2c07ed5774e66a6bb905aa4e81666ef124e911a5"
+      "size": 87933,
+      "sha256": "3ef7362b6443f9190116c2fe0f6d4cf2945777993221153bcff560e261e0d3b9"
     },
     {
       "path": "src/worker/d1-migrations.ts",
