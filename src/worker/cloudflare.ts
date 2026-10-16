@@ -31,8 +31,8 @@ export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string
 export const D1_USAGE_QUERY = 'query GitflareD1Usage($accountTag: string!, $databaseId: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {databaseId: $databaseId, date_geq: $start, date_leq: $end}, orderBy: [date_DESC]) { dimensions {date databaseId} sum {readQueries writeQueries rowsRead rowsWritten} } } } }';
 function service(env: AppEnv): Store { return securityClient(env) as unknown as Store; }
 function configured(env: AppEnv): boolean { return Boolean(env.CLOUDFLARE_CLIENT_ID && env.CLOUDFLARE_CLIENT_SECRET && env.AUTH_ENCRYPTION_KEY); }
-// The OAuth client rejects any unregistered scope (openid included), so deploy scopes stay opt-in; its id_token carries only `sub`
-export function requestedScopes(env: AppEnv, identity = false): string[] { return [...new Set(['offline_access',...`${env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes} ${env.CLOUDFLARE_DEPLOY_SCOPES??''} ${identity?env.CLOUDFLARE_IDENTITY_SCOPES??defaultIdentityScopes:''}`.split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
+// The OAuth client rejects any unregistered scope (openid included), so deploy and Access scopes stay opt-in; its id_token carries only `sub`
+export function requestedScopes(env: AppEnv, identity = false): string[] { return [...new Set(['offline_access',...`${env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes} ${env.CLOUDFLARE_DEPLOY_SCOPES??''} ${env.CLOUDFLARE_ACCESS_SCOPES??''} ${identity?env.CLOUDFLARE_IDENTITY_SCOPES??defaultIdentityScopes:''}`.split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
 export const CLOUDFLARE_DEPLOY_SCOPE = 'workers-scripts.edit';
 export function cloudflareSigninConfigured(env: AppEnv): boolean { return configured(env); }
 export function requestCookie(request: Request, name: string): string | undefined { return request.headers.get('Cookie')?.split(';').map(v=>v.trim()).find(v=>v.startsWith(`${name}=`))?.slice(name.length+1); }

@@ -10,7 +10,7 @@ const SENTINEL = 'GITFLARE_WORKER_BUNDLE ';
 export interface WorkerModule { name: string; contentType: string; content: Uint8Array<ArrayBuffer> }
 export interface BindingRef { name: string; type: string }
 export interface DurableObjectBinding { name: string; class_name: string; script_name?: string }
-export interface D1DatabaseSource { binding: string; migrationsDir: string | null; migrationsDirSet: boolean; migrationsTable?: string; migrationsPattern?: boolean }
+export interface D1DatabaseSource { binding: string; databaseId?: string; databaseName?: string; migrationsDir: string | null; migrationsDirSet: boolean; migrationsTable?: string; migrationsPattern?: boolean }
 export interface WorkerBindingSource {
   vars: Record<string, unknown>;
   durableObjects: DurableObjectBinding[];
@@ -161,6 +161,8 @@ const source = (block) => {
   const durableObjects = (block.durable_objects?.bindings ?? []).map((item) => ({ name: item.name, class_name: item.class_name, ...(item.script_name ? { script_name: item.script_name } : {}) }));
   const d1Databases = (Array.isArray(block.d1_databases) ? block.d1_databases : []).filter((item) => typeof item?.binding === 'string').map((item) => ({
     binding: item.binding,
+    ...(typeof item.database_id === 'string' ? { databaseId: item.database_id } : {}),
+    ...(typeof item.database_name === 'string' ? { databaseName: item.database_name } : {}),
     migrationsDir: repoRelative(typeof item.migrations_dir === 'string' ? item.migrations_dir : 'migrations'),
     migrationsDirSet: typeof item.migrations_dir === 'string',
     ...(typeof item.migrations_table === 'string' ? { migrationsTable: item.migrations_table } : {}),
@@ -216,6 +218,7 @@ function sentinelPayload(stdout: string): unknown {
 }
 
 const bindingName = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+const databaseIdPattern = /^[A-Za-z0-9-]{1,64}$/;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
@@ -226,6 +229,8 @@ function bindingSource(value: unknown): WorkerBindingSource | null {
   const bindings = Array.isArray(value.bindings) ? value.bindings.filter((item): item is BindingRef => record(item) && typeof item.name === 'string' && typeof item.type === 'string').map((item) => ({ name: item.name.slice(0, 64), type: item.type.slice(0, 40) })) : [];
   const d1Databases = Array.isArray(value.d1Databases) ? value.d1Databases.filter((item): item is D1DatabaseSource => record(item) && typeof item.binding === 'string' && bindingName.test(item.binding) && (item.migrationsDir === null || typeof item.migrationsDir === 'string')).map((item) => ({
     binding: item.binding,
+    ...(typeof item.databaseId === 'string' && databaseIdPattern.test(item.databaseId) ? { databaseId: item.databaseId } : {}),
+    ...(typeof item.databaseName === 'string' && item.databaseName.length <= 64 ? { databaseName: item.databaseName } : {}),
     migrationsDir: item.migrationsDir,
     migrationsDirSet: item.migrationsDirSet === true,
     ...(typeof item.migrationsTable === 'string' ? { migrationsTable: item.migrationsTable } : {}),
@@ -336,28 +341,48 @@ export function declaredDurableObjectClasses(config: ResolvedWorkerConfig): Set<
   return declared;
 }
 
-export function hostedPreviewBindings(config: ResolvedWorkerConfig, d1: PreviewD1Database[] = []): PreviewBindingPlan {
+export function missingPreviewDatabaseNote(binding: string): string {
+  return `D1 binding ${binding} has no preview database. Add previews.d1_databases to wrangler.jsonc to give previews a staging database.`;
+}
+
+export type PreviewBaseBindings = Record<string, { type?: string }>;
+export const NO_PREVIEW_CONFIG_NOTE = 'This Worker has no preview base configuration and the app has no previews block, so only vars and its own Durable Objects reach the Preview. Add preview bindings in the Worker’s Previews settings in the Cloudflare dashboard, or a previews block in wrangler.jsonc.';
+
+export function hostedPreviewBindings(config: ResolvedWorkerConfig, d1: PreviewD1Database[] = [], base: PreviewBaseBindings | null = null): PreviewBindingPlan {
+  const fromPreviews = !!config.previews;
   const source = config.previews ?? config.production;
+  const baseNames = new Set(Object.keys(base ?? {}));
+  const inherited = (name: string) => !fromPreviews && baseNames.has(name);
   const env: Record<string, PreviewBinding> = {};
   const notes: string[] = [];
   for (const [name, value] of Object.entries(source.vars)) {
+    if (inherited(name)) continue;
     if (typeof value === 'string') env[name] = { type: 'plain_text', text: value.slice(0, 5120) };
     else env[name] = { type: 'json', json: value };
   }
   const declared = declaredDurableObjectClasses(config);
   for (const binding of source.durableObjects) {
+    if (inherited(binding.name)) continue;
     if (binding.script_name) notes.push(`Binding ${binding.name} (Durable Object in ${binding.script_name}) is not available in hosted previews.`);
     else if (!declared.has(binding.class_name)) notes.push(`Binding ${binding.name} (Durable Object ${binding.class_name}) has no migration or export and is not available in hosted previews.`);
     else env[binding.name] = { type: 'durable_object_namespace', class_name: binding.class_name };
   }
   for (const binding of source.bindings) {
-    const database = binding.type === 'd1' ? d1.find((item) => item.binding === binding.name) : undefined;
-    if (!database) { notes.push(`Binding ${binding.name} (${binding.type}) is not available in hosted previews.`); continue; }
+    if (baseNames.has(binding.name) && !(fromPreviews && binding.type === 'd1' && d1.some((item) => item.binding === binding.name))) continue;
+    if (binding.type !== 'd1') { notes.push(`Binding ${binding.name} (${binding.type}) is not available in hosted previews.`); continue; }
+    const database = d1.find((item) => item.binding === binding.name);
+    if (!database) { notes.push(missingPreviewDatabaseNote(binding.name)); continue; }
     env[binding.name] = { type: 'd1', database_id: database.databaseId, database_name: database.databaseName };
-    notes.push(`D1 ${binding.name} → isolated preview database ${database.databaseName}, migrations applied: ${database.migrationsApplied}`);
+    notes.push(`D1 ${binding.name} → preview database ${database.databaseName}, migrations applied: ${database.migrationsApplied}`);
+  }
+  if (config.previews) {
+    const bound = new Set(source.bindings.map((binding) => binding.name));
+    for (const binding of config.production.bindings) if (binding.type === 'd1' && !bound.has(binding.name) && !baseNames.has(binding.name)) notes.push(missingPreviewDatabaseNote(binding.name));
   }
   const assetsBinding = config.assets && record(config.deploy?.assets) ? config.deploy.assets.binding : undefined;
   if (typeof assetsBinding === 'string' && bindingName.test(assetsBinding)) env[assetsBinding] = { type: 'assets' };
+  for (const [name, binding] of Object.entries(base ?? {})) notes.push(env[name] ? `Binding ${name} from the Worker’s preview settings is overridden by the previews block.` : `Binding ${name} (${binding.type ?? 'binding'}) from the Worker’s preview settings.`);
+  if (base !== null && !baseNames.size && !fromPreviews) notes.push(NO_PREVIEW_CONFIG_NOTE);
   if (config.containers.length) notes.push('Containers are not available in hosted previews.');
   return { env, notes };
 }

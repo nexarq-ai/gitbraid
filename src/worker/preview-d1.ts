@@ -5,76 +5,39 @@ import { WorkerBuildFailure, type PreviewD1Database, type ResolvedWorkerConfig }
 import { WorkerPreviewError } from './worker-previews';
 
 export const PREVIEW_D1_LIMIT = 3;
-const D1_NAME_MAX = 63;
 const D1_NOT_FOUND = '[7404]';
-export const PREVIEW_D1_FORBIDDEN_MESSAGE = 'The previews API token cannot manage D1 databases. This preview binds D1, so the token needs Account → D1 → Edit on the previews account in addition to Workers Scripts → Edit. An Owner can replace the token in Settings → Cloudflare → Previews and deploys on this installation; the prefilled token page includes both permissions.';
+export const PREVIEW_D1_FORBIDDEN_MESSAGE = 'The Cloudflare credential hosting this preview cannot use D1 databases. This preview binds a preview D1 database, so the credential needs D1 Edit on that account (d1.write for a Cloudflare connection, Account → D1 → Edit for the installation token) in addition to Workers Scripts Edit. An Owner can reconnect Cloudflare, or replace the installation token in Settings → Cloudflare → Previews and deploys on this installation.';
 
 export function previewD1Migrations(config: ResolvedWorkerConfig): D1MigrationDatabase[] {
-  const entries = (config.previews ?? config.production).d1Databases ?? [];
-  if (entries.length > PREVIEW_D1_LIMIT) throw new WorkerBuildFailure('PREVIEW_D1_LIMIT', `Hosted previews support at most ${PREVIEW_D1_LIMIT} D1 databases; this configuration binds ${entries.length}.`);
+  const entries = (config.previews?.d1Databases ?? []).filter((entry) => entry.databaseId);
+  if (entries.length > PREVIEW_D1_LIMIT) throw new WorkerBuildFailure('PREVIEW_D1_LIMIT', `Hosted previews bind at most ${PREVIEW_D1_LIMIT} preview D1 databases; previews.d1_databases declares ${entries.length}.`);
   return entries.map((entry) => {
     if (entry.migrationsPattern) throw new WorkerBuildFailure('D1_MIGRATIONS_PATTERN_UNSUPPORTED', `D1 binding ${entry.binding} sets migrations_pattern, which Gitflare does not apply yet. Use the default <migrations_dir>/*.sql layout.`);
     const directory = entry.migrationsDir?.replace(/\/+$/, '') || (entry.migrationsDir === null ? null : '.');
     if (directory === null || (directory !== '.' && !migrationsPathPattern.test(directory))) throw new WorkerBuildFailure('D1_MIGRATIONS_CONFIG_INVALID', `D1 binding ${entry.binding} has a migrations_dir outside the repository.`);
     const table = entry.migrationsTable ?? D1_MIGRATIONS_TABLE;
     if (!migrationsTablePattern.test(table)) throw new WorkerBuildFailure('D1_MIGRATIONS_CONFIG_INVALID', `D1 binding ${entry.binding} has an unsupported migrations_table name.`);
-    return { binding: entry.binding, databaseName: entry.binding, directory, table, ...(entry.migrationsDirSet ? {} : { optional: true }) };
+    return { binding: entry.binding, databaseName: entry.databaseName ?? entry.binding, databaseId: entry.databaseId, directory, table, ...(entry.migrationsDirSet ? {} : { optional: true }) };
   });
-}
-
-function shortHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index++) hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193);
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-export function previewDatabaseName(alias: string, binding: string): string {
-  const name = `gfp-${alias}-${binding.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
-  if (name.length <= D1_NAME_MAX) return name;
-  const suffix = `-${shortHash(name)}`;
-  return `${name.slice(0, D1_NAME_MAX - suffix.length).replace(/-+$/, '')}${suffix}`;
 }
 
 function forbidden(error: unknown): boolean {
   return error instanceof ApiError && error.code === 'CLOUDFLARE_PERMISSION_DENIED';
 }
 
-async function findDatabase(call: CloudflareCall, accountId: string, name: string): Promise<string | null> {
-  const found = await call<{ uuid?: string; name?: string }[]>(`/accounts/${accountId}/d1/database`, { query: { name } });
-  return (Array.isArray(found) ? found : []).find((item) => item?.name === name && typeof item.uuid === 'string')?.uuid ?? null;
-}
-
-async function ensureDatabase(call: CloudflareCall, accountId: string, name: string): Promise<{ id: string; created: boolean }> {
-  const existing = await findDatabase(call, accountId, name);
-  if (existing) return { id: existing, created: false };
-  try {
-    const created = await call<{ uuid?: string }>(`/accounts/${accountId}/d1/database`, { method: 'POST', json: { name } });
-    if (typeof created?.uuid !== 'string') throw new WorkerPreviewError('PREVIEW_D1_REJECTED', `Cloudflare did not return an id for D1 database ${name}.`);
-    return { id: created.uuid, created: true };
-  } catch (error) {
-    if (!(error instanceof ApiError && error.code === 'CLOUDFLARE_DEPLOY_REJECTED')) throw error;
-    const raced = await findDatabase(call, accountId, name);
-    if (!raced) throw error;
-    return { id: raced, created: false };
-  }
-}
-
-export async function provisionPreviewD1(call: CloudflareCall, accountId: string, alias: string, sets: D1MigrationSet[], created: string[] = []): Promise<PreviewD1Database[]> {
-  const names = sets.map((set) => previewDatabaseName(alias, set.binding));
-  if (new Set(names).size !== names.length) throw new WorkerPreviewError('PREVIEW_D1_CONFIG_INVALID', 'Two D1 bindings differ only by letter case; hosted previews need distinct binding names.');
+export async function bindPreviewD1(call: CloudflareCall, accountId: string, sets: D1MigrationSet[]): Promise<PreviewD1Database[]> {
   const databases: PreviewD1Database[] = [];
   try {
-    for (const [index, set] of sets.entries()) {
-      const databaseName = names[index];
-      const database = await ensureDatabase(call, accountId, databaseName);
-      if (database.created) created.push(database.id);
+    for (const set of sets) {
+      if (!set.databaseId) continue;
       try {
-        await applyD1Migrations(call, accountId, { ...set, databaseName, databaseId: database.id });
+        await applyD1Migrations(call, accountId, set);
       } catch (error) {
         if (error instanceof ApiError && error.code === 'D1_MIGRATION_FAILED') throw new WorkerPreviewError('PREVIEW_D1_MIGRATION_FAILED', error.detail);
+        if (error instanceof ApiError && (error.code === 'CLOUDFLARE_NOT_FOUND' || error.detail.includes(D1_NOT_FOUND))) throw new WorkerPreviewError('PREVIEW_D1_NOT_FOUND', `Preview D1 database ${set.databaseName} (${set.databaseId}) for binding ${set.binding} was not found on account ${accountId}, which hosts this preview. Point previews.d1_databases at a database on that account.`);
         throw error;
       }
-      databases.push({ binding: set.binding, databaseName, databaseId: database.id, migrationsApplied: set.files.length });
+      databases.push({ binding: set.binding, databaseName: set.databaseName, databaseId: set.databaseId, migrationsApplied: set.files.length });
     }
   } catch (error) {
     if (forbidden(error)) throw new WorkerPreviewError('PREVIEWS_D1_FORBIDDEN', PREVIEW_D1_FORBIDDEN_MESSAGE, 403);

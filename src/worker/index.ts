@@ -8,6 +8,7 @@ import { assertDependencyApproval } from './dependency-changes';
 import { agentRunIds, ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
 import { repositoryLabel } from '../shared/repository-names';
 import { checkSettingsSnapshot, normalizeCheckSettings, retryPlan } from './check-settings';
+import { handlePreviewSettings } from './preview-settings-api';
 import type { AppEnv } from './env';
 import { executionReadiness } from './execution';
 import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflowId, retireWorkerPreview } from './background-work';
@@ -451,6 +452,12 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     await access.auditRepositoryChange(principal, 'repository.check-settings', repository.id);
     return Response.json(checkSettingsSnapshot(repository.id, saved, await coordinator.getCheckDurations()));
   }
+  const previewSettingsRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/preview-settings$/.exec(url.pathname);
+  if (previewSettingsRoute) {
+    const repository = await catalog.getRepository(previewSettingsRoute[1]);
+    if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
+    return handlePreviewSettings(request, env, principal, repository.id, env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`));
+  }
   const branchRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/(branches|branch-protection|pulls)$/.exec(url.pathname);
   if (branchRoute) {
     const repository = await catalog.getRepository(branchRoute[1]);
@@ -480,7 +487,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const draft = await coordinator.createMission(key, { repositoryId: repository.id, expectedBaseSha: current.headSha, title, prompt: description ?? `Merge ${branch} into ${repository.defaultBranch}.`, branchChange: { branch, headSha, targetBranch: repository.defaultBranch, ...(description ? { description } : {}) } }, authorization, models);
     return Response.json(await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models), { status: 202 });
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|attempts|review|select|revert|pull|retry-checks|retry-agents|drop-failed-agents))?$/.exec(url.pathname);
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|preview-extend|attempts|review|select|revert|pull|retry-checks|retry-agents|drop-failed-agents))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -653,7 +660,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const reviewInput = match[2] === 'review' ? reviewMissionInput(body) : undefined;
     const pullAction = match[2] === 'pull' ? body.action : undefined;
     if (match[2] === 'pull' && !['update', 'close', 'reopen'].includes(String(pullAction))) throw new ApiError(400, 'INVALID_PULL_ACTION', 'Choose update, close or reopen.');
-    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents' || match[2] === 'revert' || (pullAction && pullAction !== 'close') ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
+    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents' || match[2] === 'revert' || (pullAction && pullAction !== 'close') ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' || match[2] === 'preview-extend' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
     try { await access.authorize(principal, action, 'repository', repository.id, mission.id); }
     catch (error) {
       if (reviewInput?.action !== 'comment' || publicError(error).code !== 'FORBIDDEN') throw error;
@@ -684,6 +691,13 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       await coordinator.settleApprovalClears(mission.id, principal);
       return Response.json(selected);
     }
+    if (match[2] === 'preview-extend') {
+      const extension = await coordinator.extendPreview(mission.id);
+      if (extension.sandboxName) await env.SANDBOX?.getByName(extension.sandboxName).expireAt(extension.expiresAt);
+      await catalog.holdPreviewSlot(mission.id, extension.expiresAt);
+      await access.auditRepositoryChange(principal, 'mission.preview.extended', mission.id);
+      return Response.json(await coordinator.previewStatus(mission.id));
+    }
     if (match[2] === 'preview') {
       if (!env.PREVIEW_ORIGIN || !env.SANDBOX || !env.ARTIFACTS) throw new ApiError(503, 'PREVIEW_NOT_CONFIGURED', 'Configure the isolated preview service before creating a preview.');
       const target = previewTarget(env.PREVIEW_ORIGIN, url.origin);
@@ -694,7 +708,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       try { claim = await coordinator.claimPreview(key, mission.id, mission.epoch, mission.candidateSha); }
       catch (error) { if (reserved) await catalog.releasePreviewSlot(mission.id); throw error; }
       if (claim.previous) await env.SANDBOX.getByName(claim.previous).destroy().catch(() => {});
-      if (claim.worker) return Response.json({ status: 'ready', kind: 'worker', candidateSha: mission.candidateSha, expiresAt: new Date(claim.expiresAt ?? Date.now()).toISOString(), previewUrl: claim.worker.previewUrl ?? claim.worker.deploymentUrl, deploymentUrl: claim.worker.deploymentUrl, previewName: claim.worker.previewName, notes: claim.worker.notes, ...(claim.worker.d1Databases?.length ? { d1Databases: claim.worker.d1Databases } : {}), access: 'public' });
+      if (claim.worker) return Response.json({ status: 'ready', kind: 'worker', candidateSha: mission.candidateSha, expiresAt: new Date(claim.expiresAt ?? Date.now()).toISOString(), previewUrl: claim.worker.previewUrl ?? claim.worker.deploymentUrl, deploymentUrl: claim.worker.deploymentUrl, previewName: claim.worker.previewName, notes: claim.worker.notes, ...(claim.worker.d1Databases?.length ? { d1Databases: claim.worker.d1Databases } : {}), ...(claim.worker.host ? { host: claim.worker.host } : {}), access: claim.worker.host?.access ?? 'link' });
       const sandboxName = claim.sandboxName;
       if (!sandboxName) {
         if (claim.claimed && await dispatchBackground(env.MISSION_WORKFLOW, previewWorkflowId(claim.claimId), { kind: 'preview', repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, claimId: claim.claimId, principal }) === 'missing') {
@@ -709,7 +723,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       const expiresAt = Math.min(Date.now() + PREVIEW_CAPABILITY_MS, claim.expiresAt ?? Infinity);
       await access.check(principal, 'read', 'repository', repository.id, mission.id);
       await env.GITFLARE_COORDINATOR.getByName(previewCapabilityStore(principal.workspaceId)).savePreviewCapability(await capabilityHash(token), { workspaceId: principal.workspaceId, principal, repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, sandboxName, expiresAt, host: target.host, isolated: target.isolated });
-      return Response.json({ status: 'ready', previewUrl: `${target.origin}/open/${token}`, candidateSha: mission.candidateSha, expiresAt: new Date(expiresAt).toISOString() });
+      return Response.json({ status: 'ready', kind: 'container', access: 'members', previewUrl: `${target.origin}/open/${token}`, candidateSha: mission.candidateSha, expiresAt: new Date(claim.expiresAt ?? expiresAt).toISOString(), linkExpiresAt: new Date(expiresAt).toISOString() });
     }
     if (match[2] === 'revert') {
       await access.authorize(principal, 'contribute', 'repository', repository.id);

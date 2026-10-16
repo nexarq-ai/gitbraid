@@ -1139,7 +1139,7 @@ function uploadsAssets(sandbox: BundleSandbox, options: AssetsOptions | null): P
   return options ? { uploadAssets: (call, accountId, workerName) => collectAndUploadAssets(sandbox, { call, accountId, workerName, options }) } : {};
 }
 
-export async function prepareCandidatePreview<T = undefined>(env: ExecutionEnv, { mission, previewAttemptId, assertAuthority = unrestricted, workerPreviews = false, publishWorker }: IntegrationInput & { previewAttemptId: string; workerPreviews?: boolean; publishWorker?: (built: BuiltPreview) => Promise<T> }): Promise<PreparedPreview<T>> {
+export async function prepareCandidatePreview<T = undefined>(env: ExecutionEnv, { mission, previewAttemptId, assertAuthority = unrestricted, workerPreviews = false, configPath: preferredConfig, publishWorker }: IntegrationInput & { previewAttemptId: string; workerPreviews?: boolean; configPath?: string; publishWorker?: (built: BuiltPreview) => Promise<T> }): Promise<PreparedPreview<T>> {
   if (mission.authorization && assertAuthority === unrestricted) throw new Error('Preview authority guard is required');
   if (!/^[a-f0-9-]{36}$/.test(previewAttemptId)) throw new Error('Invalid preview attempt ID');
   if (!env.ARTIFACTS || !env.SANDBOX || !mission.candidateSha || !mission.integrationForkName) throw new Error('A real integration candidate is required for preview');
@@ -1156,7 +1156,7 @@ export async function prepareCandidatePreview<T = undefined>(env: ExecutionEnv, 
     const policy = mission.baseSha ? await loadPolicy(sandbox, mission.baseSha, '') : undefined;
     const files = (await checked(sandbox, ['git', 'ls-files'])).split('\n').filter(Boolean);
     let installed = false;
-    const configPath = workerConfigPath(files);
+    const configPath = preferredConfig && files.includes(preferredConfig) ? preferredConfig : workerConfigPath(files);
     if (configPath && classifyPreview(files, { main: configPath }, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
       let built: BuiltPreview | null = null;
       try {
