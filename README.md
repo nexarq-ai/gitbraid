@@ -43,6 +43,7 @@ Gitbraid is the open-source, single-workspace edition of Gitflare. It gives ever
 
 **Cloudflare resources**
 - Connect your Cloudflare account to link the Workers, D1 databases, Durable Objects, Containers and Workflows each repository deploys to, see their usage, and apply reviewed D1 migrations.
+- Worker apps get live Cloudflare Worker Previews with their own isolated D1 databases. Turn them on in **Settings → Cloudflare** by pasting one API token; no terminal needed.
 
 ## Built on Cloudflare
 
@@ -58,6 +59,8 @@ node scripts/install-self-hosted.mjs
 ```
 
 Supply `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` of at least 12 characters, sign in with them and enroll MFA. Deployment creates or reuses the AI Gateway and Artifacts namespace, derives the preview origin from your account, and deploys the application and preview Workers. The build credential needs AI Gateway Read/Write and Artifacts Read/Edit in addition to Workers, Containers, Workflows and KV permissions (Worker Settings → Builds).
+
+To turn on Worker Previews, open **Settings → Cloudflare** after signing in: the card opens Cloudflare's token page with Workers Scripts: Edit and D1: Edit prefilled, and you paste the token back. You can instead supply it once as `GITBRAID_CLOUDFLARE_TOKEN` when deploying.
 
 To use AI, configure provider keys (BYOK) or Unified Billing in AI Gateway, then enable models under **AI models** in the workspace. Email requires your own verified sender.
 

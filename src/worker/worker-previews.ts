@@ -53,8 +53,8 @@ async function call<T>(config: WorkerPreviewsConfig, fetcher: Fetcher, path: str
   if (!response.ok || envelope.success === false) {
     const codes = (envelope.errors ?? []).map((error) => Number(error.code)).filter(Number.isFinite);
     const detail = (envelope.errors ?? []).map((error) => error.message).filter(Boolean).join('; ').slice(0, 300);
-    if (WORKER_NOT_FOUND.some((code) => codes.includes(code))) throw new WorkerPreviewError('PREVIEWS_WORKER_MISSING', `The previews Worker ${config.workerName} does not exist. Create it once in the operator account before enabling previews.`, response.status, codes);
-    if (response.status === 401 || response.status === 403) throw new WorkerPreviewError('PREVIEWS_FORBIDDEN', 'The previews API token was rejected. It needs Workers Scripts Write on the previews account.', response.status, codes);
+    if (WORKER_NOT_FOUND.some((code) => codes.includes(code))) throw new WorkerPreviewError('PREVIEWS_WORKER_MISSING', `The previews Worker ${config.workerName} does not exist. An Owner can set up the installation credential again in Settings → Cloudflare, which creates it.`, response.status, codes);
+    if (response.status === 401 || response.status === 403) throw new WorkerPreviewError('PREVIEWS_FORBIDDEN', 'The previews API token was rejected. It needs Workers Scripts Edit on the previews account. An Owner can replace it in Settings → Cloudflare → Previews and deploys on this installation.', response.status, codes);
     throw new WorkerPreviewError(response.status === 404 || PREVIEW_NOT_FOUND.some((code) => codes.includes(code)) ? 'PREVIEW_NOT_FOUND' : 'PREVIEWS_REJECTED', `Cloudflare rejected the preview request${detail ? `: ${detail}` : '.'}`, response.status, codes);
   }
   return envelope.result as T;

@@ -4,6 +4,7 @@ import { securityClient, type Action, type Principal } from './security';
 import { decryptAuth, encryptAuth, randomCapability } from './mfa';
 import type { WorkerDeployer } from './deployments';
 import { cloudflareDeployClient, workerDeployer, type CloudflareDeployAccess } from './cloudflare-deploy';
+import { handleInstallationCredential } from './installation-credential';
 
 export interface CloudflareConnection { version: string; encrypted: string; issuer: Principal }
 export interface CloudflareOAuthState { id: string; browserHash: string; principal: Principal; expiresAt: number; encrypted: string; repositoryId?: string }
@@ -302,6 +303,8 @@ export async function handleCloudflare(request:Request,env:AppEnv,authenticate:(
   const url=new URL(request.url);const path=url.pathname;if(!path.startsWith('/api/cloudflare'))return null;
   if(path==='/api/cloudflare/callback'&&request.method==='GET')return callback(request,env);
   const p=await authenticate(request,env);await owner(env,p);await service(env).rateLimit(`cloudflare:${p.userId}`,30,60000);
+  const credential=/^\/api\/cloudflare\/installation-credential(?:\/([a-z-]+))?$/.exec(path);
+  if(credential)return handleInstallationCredential(request,env,p,credential[1]??'');
   return connectionResponse(request,env,p,path==='/api/cloudflare'?'status':path.slice('/api/cloudflare/'.length));
 }
 export async function handleRepositoryCloudflare(request:Request,env:AppEnv,p:Principal,repositoryId:string,action='status'):Promise<Response> {

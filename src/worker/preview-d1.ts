@@ -7,7 +7,7 @@ import { WorkerPreviewError } from './worker-previews';
 export const PREVIEW_D1_LIMIT = 3;
 const D1_NAME_MAX = 63;
 const D1_NOT_FOUND = '[7404]';
-export const PREVIEW_D1_FORBIDDEN_MESSAGE = 'The previews API token cannot manage D1 databases. This preview binds D1, so the token needs Account → D1 → Edit on the previews account in addition to Workers Scripts → Edit. Run npm run setup:previews to create a token with both permissions; on a self-hosted install, create that token and redeploy with GITBRAID_PREVIEWS_API_TOKEN.';
+export const PREVIEW_D1_FORBIDDEN_MESSAGE = 'The previews API token cannot manage D1 databases. This preview binds D1, so the token needs Account → D1 → Edit on the previews account in addition to Workers Scripts → Edit. An Owner can replace the token in Settings → Cloudflare → Previews and deploys on this installation; the prefilled token page includes both permissions.';
 
 export function previewD1Migrations(config: ResolvedWorkerConfig): D1MigrationDatabase[] {
   const entries = (config.previews ?? config.production).d1Databases ?? [];
