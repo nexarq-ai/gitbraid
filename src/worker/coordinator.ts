@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { BranchChangeResult, CheckOverride, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
 import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint, failureLine } from './domain';
+import { assertDependenciesAcknowledged, assertDependencyApprover } from './dependency-changes';
 import { repositoryLabel } from '../shared/repository-names';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
@@ -207,7 +208,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (['integrating', 'integrated'].includes(mission.status)) throw new ApiError(409, 'PULL_REQUEST_LANDED', 'This pull request is landing or has landed.');
       if (action === 'close') {
         if (change.closedAt) return mission;
-        if (mission.status === 'approved') { this.archive(mission, 'approved'); delete mission.approvedAt; delete mission.approvedBy; this.archive(mission, 'approval_revoked'); }
+        if (mission.status === 'approved') { this.archive(mission, 'approved'); delete mission.approvedAt; delete mission.approvedBy; delete mission.dependencyApproval; this.archive(mission, 'approval_revoked'); }
         this.store.delete(`dispatch:${mission.id}-${mission.epoch}`);
         this.store.delete(`watch:${mission.id}-${mission.epoch}`);
         mission.runs = mission.runs.map((run) => ['queued', 'running'].includes(run.status) ? { ...run, status: 'cancelled', completedAt: new Date().toISOString() } : run);
@@ -226,6 +227,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         mission.status = 'needs_review';
         delete mission.approvedAt;
         delete mission.approvedBy;
+        delete mission.dependencyApproval;
         this.archive(mission, 'approval_revoked');
       }
       const { closedAt: _closedAt, closedBy: _closedBy, ...open } = change;
@@ -701,6 +703,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.error;
       delete mission.approvedAt;
       delete mission.approvedBy;
+      delete mission.dependencyApproval;
+      delete mission.dependencyChanges;
       delete mission.integrationForkName;
       delete mission.selectedRunId;
       delete mission.raceChecks;
@@ -754,6 +758,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       delete mission.error;
       delete mission.approvedAt;
       delete mission.approvedBy;
+      delete mission.dependencyApproval;
+      delete mission.dependencyChanges;
       delete mission.integrationForkName;
       delete mission.selectedRunId;
       delete mission.raceChecks;
@@ -969,6 +975,8 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (result.changes) mission.changes = result.changes;
     if (result.candidateSha !== undefined) mission.candidateSha = result.candidateSha;
     if (result.integrationForkName !== undefined) mission.integrationForkName = result.integrationForkName;
+    if (result.dependencyChanges?.length) mission.dependencyChanges = result.dependencyChanges;
+    else if (result.dependencyChanges) delete mission.dependencyChanges;
     mission.status = 'running';
     if (complete) {
       const durations = checkDurations(mission.checks);
@@ -1012,6 +1020,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
           mission.status = 'needs_review';
           delete mission.approvedAt;
           delete mission.approvedBy;
+          delete mission.dependencyApproval;
           this.archive(mission, 'approval_revoked');
         }
       }
@@ -1035,19 +1044,23 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       mission.integrationForkName = run.forkName;
       mission.checks = mission.raceChecks.filter((check) => check.runId === run.id);
       mission.changes = mission.raceChanges.filter((change) => change.runIds.includes(run.id));
+      if (run.dependencyChanges?.length) mission.dependencyChanges = run.dependencyChanges;
+      else delete mission.dependencyChanges;
       return this.saveMission(mission, `${actorId} selected ${run.name.slice(0, 120)}'s candidate ${run.commitSha!.slice(0, 12)} for review.`);
     });
   }
 
-  approveMission(key: string, id: string, candidateSha: string, baseSha: string, actorId = 'workspace-owner'): Mission {
+  approveMission(key: string, id: string, candidateSha: string, baseSha: string, actorId = 'workspace-owner', dependencyApprover = false): Mission {
     return this.mutateMission(key, JSON.stringify(['approve', id, candidateSha, baseSha]), id, () => {
       const mission = this.requiredMission(id);
       const repository = this.getRepository(mission.repositoryId);
       assertReviewClear(mission);
       assertApproval({ status: mission.status, candidateSha: mission.candidateSha, baseSha: mission.baseSha, currentHead: repository?.headSha, requestedCandidate: candidateSha, requestedBase: baseSha, checksPassed: mission.checks.some((check) => check.candidateSha === mission.candidateSha) && mission.checks.every((check) => check.status === 'passed') });
+      assertDependencyApprover(mission, dependencyApprover);
       mission.status = 'approved';
       mission.approvedAt = new Date().toISOString();
       mission.approvedBy = actorId;
+      if (mission.dependencyChanges?.length) mission.dependencyApproval = { approvedBy: actorId, approvedAt: mission.approvedAt, candidateSha, baseSha, epoch: mission.epoch };
       this.saveMission(mission, `Reviewer ${actorId} approved commit ${candidateSha.slice(0, 12)}. Approval does not merge or deploy this change.`, 'success');
       this.archive(mission, 'approved');
       return mission;
@@ -1064,6 +1077,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       mission.status = 'needs_review';
       delete mission.approvedAt;
       delete mission.approvedBy;
+      delete mission.dependencyApproval;
       this.saveMission(mission, 'Approval was revoked. Review this candidate again or rerun the mission against the current branch.', 'warning');
       this.archive(mission, 'approval_revoked');
       return mission;
@@ -1080,6 +1094,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (mission.status === 'integrated') return { mission, claimed: false };
       assertReviewClear(mission);
       if (!['approved', 'integrating'].includes(mission.status)) throw new ApiError(409, 'APPROVAL_REQUIRED', 'Approve this candidate before integration.');
+      assertDependenciesAcknowledged(mission, candidateSha, baseSha);
       const claim = this.store.get<IntegrationClaim>('integration:claim');
       if (claim) {
         if (claim.missionId !== id || claim.epoch !== mission.epoch || claim.candidateSha !== candidateSha) throw new ApiError(409, 'INTEGRATION_BUSY', 'Another integration is in progress for this repository.');
