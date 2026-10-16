@@ -69,7 +69,8 @@ export interface PathChange { path: string; status: string }
 export interface StarterCheck { testCommand: string; evidence: RepositoryPolicy['evidence']; install: InstallPlan | null }
 
 const DEFAULT_PREVIEW = 'node src/preview.mjs';
-const ALWAYS_PROTECTED = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.pnpmfile\.c?js|\.yarnrc|\.yarnrc\.yml|\.pnp\.c?js|\.pnp\.loader\.mjs|gitflare\.json|\.npmrc)$|(^|\/)\.yarn\/|^\.(git|github)(\/|$)/;
+export const LOCKFILES = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$/;
+const ALWAYS_PROTECTED = /(^|\/)(package\.json|pnpm-workspace\.yaml|\.pnpmfile\.c?js|\.yarnrc|\.yarnrc\.yml|\.pnp\.c?js|\.pnp\.loader\.mjs|gitflare\.json|\.npmrc)$|(^|\/)\.yarn\/|^\.(git|github)(\/|$)/;
 const TEST_PATHS = /(^|\/)(__tests__|tests?|node_modules)(\/|$)|\.(test|spec)\.[^.\/]+$|_test\.[^.\/]+$|(^|\/)(test_[^\/]+|conftest)\.py$/;
 
 function command(value: unknown, field: string): string {
@@ -181,6 +182,7 @@ function configuredInstall(value: PackageManager | 'auto', files: string[], pack
 }
 
 export function isProtectedPath(path: string, editable: string[] = DEFAULT_EDITABLE): boolean {
+  if (LOCKFILES.test(path)) return false;
   const allowed = editable.some((entry) => entry.endsWith('/') ? path.startsWith(entry) : path === entry);
   return !allowed || ALWAYS_PROTECTED.test(path) || TEST_PATHS.test(path);
 }
