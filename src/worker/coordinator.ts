@@ -18,7 +18,7 @@ import { branchName, normalizeBranchRules, type StoredBranchProtection } from '.
 import { capacityError, catalogName, liveSlots, MISSION_SLOT_GRACE_MS, slotKey, WORKSPACE_MISSION_LIMIT, WORKSPACE_PREVIEW_LIMIT, type CapacitySlot } from './capacity';
 import { missionStepTimeoutMs } from './budgets';
 import { AUTO_INCREASE_ACTOR, checkDurations, checkPlan, DURATION_SAMPLES, normalizeCheckSettings, withLearnedLimits, type CheckSettingsInput, type LearnedLimits } from './check-settings';
-import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type DeploySettings, type DeployState } from './deployments';
+import { DeploymentLedger, type DeployEnvironment, type DeployEnvironmentSettings, type DeploymentRecord, type DeploymentStatus, type DeploySettings, type DeployState } from './deployments';
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
 import type { PreviewD1Database } from './worker-bundle';
 
@@ -1272,6 +1272,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   deployState(): DeployState { return new DeploymentLedger(this.store).state(); }
 
   saveDeploySettings(settings: DeploySettings): DeploySettings { return new DeploymentLedger(this.store).saveSettings(settings); }
+
+  saveDeployEnvironment(environment: DeployEnvironment, settings: DeployEnvironmentSettings): DeploySettings {
+    return this.ctx.storage.transactionSync(() => new DeploymentLedger(this.store).saveEnvironment(environment, settings));
+  }
 
   getDeployment(id: string): DeploymentRecord | undefined { return new DeploymentLedger(this.store).get(id); }
 

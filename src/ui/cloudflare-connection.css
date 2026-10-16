@@ -142,3 +142,15 @@
 @media (max-width: 600px) { .cf-target { grid-template-columns: minmax(0,1fr); padding: 12px; } }
 .installation-credential-form { margin-top: 16px; }
 .installation-credential-form ol { margin: 0 0 16px; padding-left: 18px; display: grid; gap: 6px; }
+.cf-environments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+.cf-environment { border: 1px solid #dfe3e8; border-radius: 6px; padding: 14px 16px; min-width: 0; }
+.cf-environment h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; color: #252b32; }
+.cf-environment-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 12px 0; font-size: 13px; }
+.cf-environment-facts dt { color: #77818d; }
+.cf-environment-facts dd { margin: 0; overflow-wrap: anywhere; }
+.cf-target-choice { border: 0; padding: 0; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }
+.cf-target-choice legend { font-size: 12px; color: #69737e; margin-bottom: 6px; }
+.cf-target-choice label { display: flex; align-items: center; gap: 6px; }
+.cf-target textarea { padding: 8px 10px; border: 1px solid #d7dce2; border-radius: 5px; font: 12px ui-monospace, monospace; width: 100%; }
+.cf-environment-settings summary { cursor: pointer; font-size: 13px; font-weight: 600; margin-bottom: 12px; }
+@media (max-width: 800px) { .cf-environments { grid-template-columns: 1fr; } }

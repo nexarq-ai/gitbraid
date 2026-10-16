@@ -5,6 +5,7 @@ import type { SqlStore } from './store';
 import type { CloudflareCall } from './cloudflare-deploy';
 import { applyD1Migrations, type D1MigrationEvidence, type D1MigrationSet } from './d1-migrations';
 import { applyTriggers, currentMigrationTag, ensureResources, requiredDeployScopes, SCOPE_WORKERS_SCRIPTS_WRITE, scriptMetadata } from './worker-provisioning';
+import { validWatchPath, WATCH_PATHS_MAX, watchPathsMatch } from './deploy-changes';
 import { previewMigrations, validBuildCommand, WORKER_CONFIG_FILES, WorkerBuildFailure, type WorkerBundle } from './worker-bundle';
 
 export const DEPLOY_STEP_MS = 1_800_000;
@@ -15,12 +16,13 @@ export const DEPLOY_TARGETS_MAX = 5;
 
 export type DeployEnvironment = 'production' | 'staging';
 export type DeployRollout = 'immediate' | 'gradual';
-export type DeployConfirmation = 'manual' | 'auto';
+export type DeployTrigger = 'manual' | 'auto';
 export type DeployMode = 'deploy' | 'upload-only';
-export type DeploymentStatus = 'awaiting_confirmation' | 'queued' | 'building' | 'deploying' | 'rolling_out' | 'succeeded' | 'uploaded' | 'failed' | 'superseded';
-export type DeploymentTrigger = 'land' | 'manual' | 'rollback';
+export type DeploymentStatus = 'awaiting_confirmation' | 'queued' | 'building' | 'deploying' | 'rolling_out' | 'succeeded' | 'uploaded' | 'failed' | 'superseded' | 'skipped';
+export type DeploymentTrigger = 'land' | 'manual' | 'rollback' | 'promote';
 export type DeployTargetStatus = 'pending' | 'building' | 'uploaded' | 'deploying' | 'rolling_out' | 'succeeded' | 'failed' | 'skipped';
-export interface DeployTarget { workerName: string; configPath: string; buildCommand?: string; d1Migrations: boolean }
+export interface DeployTarget { workerName: string; configPath: string; buildCommand?: string; d1Migrations: boolean; watchPaths?: string[] }
+export interface SkippedTarget { workerName: string; configPath: string; reason: string }
 export interface DeployTargetRun extends DeployTarget {
   status: DeployTargetStatus;
   percentage: number;
@@ -35,18 +37,19 @@ export interface DeployTargetRun extends DeployTarget {
   errorCode?: string;
   error?: string;
 }
-export interface DeploySettings {
+export interface DeployEnvironmentSettings {
   enabled: boolean;
   workerName: string;
   accountId: string;
-  environment: DeployEnvironment;
   rollout: DeployRollout;
-  confirmation: DeployConfirmation;
+  trigger: DeployTrigger;
   mode?: DeployMode;
   targets?: DeployTarget[];
   authorizedBy: Principal;
   updatedAt: string;
 }
+export interface DeploySettings { environments: Partial<Record<DeployEnvironment, DeployEnvironmentSettings>> }
+interface LegacyDeploySettings extends Omit<DeployEnvironmentSettings, 'trigger'> { environment: DeployEnvironment; confirmation: DeployTrigger }
 export interface DeploymentRecord {
   id: string;
   attemptId: string;
@@ -65,6 +68,10 @@ export interface DeploymentRecord {
   versionId?: string;
   previousVersionId?: string;
   rollbackOf?: string;
+  promotedFrom?: string;
+  selectedWorkers?: string[];
+  selectedConfigs?: string[];
+  skippedTargets?: SkippedTarget[];
   targets?: DeployTargetRun[];
   targetsSource?: 'settings' | 'gitflare.json';
   actorId: string;
@@ -87,17 +94,41 @@ export function backgroundPrincipal(principal: Principal): Principal {
   return { userId: principal.userId, workspaceId: principal.workspaceId, role: principal.role };
 }
 
-export function publicSettings(settings: DeploySettings | null): Omit<DeploySettings, 'authorizedBy'> & { authorizedBy: string } | null {
+export const DEPLOY_ENVIRONMENTS: DeployEnvironment[] = ['staging', 'production'];
+export const DEFAULT_TRIGGER: Record<DeployEnvironment, DeployTrigger> = { staging: 'auto', production: 'manual' };
+
+export function wranglerEnvironment(environment: DeployEnvironment): string | undefined {
+  return environment === 'staging' ? 'staging' : undefined;
+}
+
+export function normalizeDeploySettings(value: unknown): DeploySettings | null {
+  if (!value || typeof value !== 'object') return null;
+  const stored = value as Partial<DeploySettings> & Partial<LegacyDeploySettings>;
+  if (stored.environments && typeof stored.environments === 'object') return { environments: stored.environments };
+  if (!stored.environment || !DEPLOY_ENVIRONMENTS.includes(stored.environment)) return null;
+  const { environment, confirmation, ...rest } = stored as LegacyDeploySettings;
+  return { environments: { [environment]: { ...rest, trigger: confirmation === 'auto' ? 'auto' : 'manual' } } };
+}
+
+type PublicEnvironmentSettings = Omit<DeployEnvironmentSettings, 'authorizedBy'> & { authorizedBy: string };
+
+export function publicSettings(settings: DeploySettings | null): { environments: Partial<Record<DeployEnvironment, PublicEnvironmentSettings>> } | null {
   if (!settings) return null;
-  const { authorizedBy, ...rest } = settings;
-  return { ...rest, mode: settings.mode ?? 'deploy', targets: settingsTargets(settings), authorizedBy: authorizedBy.userId };
+  const environments: Partial<Record<DeployEnvironment, PublicEnvironmentSettings>> = {};
+  for (const environment of DEPLOY_ENVIRONMENTS) {
+    const value = settings.environments[environment];
+    if (!value) continue;
+    const { authorizedBy, ...rest } = value;
+    environments[environment] = { ...rest, mode: value.mode ?? 'deploy', targets: settingsTargets(value), authorizedBy: authorizedBy.userId };
+  }
+  return { environments };
 }
 
 export function deploymentId(now = Date.now()): string {
   return `${now.toString(36).padStart(9, '0')}-${crypto.randomUUID()}`;
 }
 
-export function settingsTargets(settings: Pick<DeploySettings, 'workerName' | 'targets'>): DeployTarget[] {
+export function settingsTargets(settings: Pick<DeployEnvironmentSettings, 'workerName' | 'targets'>): DeployTarget[] {
   return settings.targets?.length ? settings.targets : [{ workerName: settings.workerName, configPath: '', d1Migrations: false }];
 }
 
@@ -110,20 +141,33 @@ export function parseDeployTargets(value: unknown, source = 'targets'): DeployTa
     if (typeof entry.configPath !== 'string' || entry.configPath.length > 300 || !configPathPattern.test(entry.configPath) || !WORKER_CONFIG_FILES.some((name) => entry.configPath === name || String(entry.configPath).endsWith(`/${name}`))) throw new ApiError(400, 'INVALID_DEPLOY_TARGETS', `${source}[${index}].configPath must be a repository-relative wrangler.jsonc, wrangler.json or wrangler.toml.`);
     if (entry.buildCommand !== undefined && entry.buildCommand !== '' && !validBuildCommand(entry.buildCommand)) throw new ApiError(400, 'INVALID_DEPLOY_TARGETS', `${source}[${index}].buildCommand must be a single line of at most 500 characters.`);
     if (entry.d1Migrations !== undefined && typeof entry.d1Migrations !== 'boolean') throw new ApiError(400, 'INVALID_DEPLOY_TARGETS', `${source}[${index}].d1Migrations must be true or false.`);
-    return { workerName: entry.workerName, configPath: entry.configPath, ...(typeof entry.buildCommand === 'string' && entry.buildCommand.trim() ? { buildCommand: entry.buildCommand.trim() } : {}), d1Migrations: entry.d1Migrations === true };
+    if (entry.watchPaths !== undefined && (!Array.isArray(entry.watchPaths) || entry.watchPaths.length > WATCH_PATHS_MAX || !entry.watchPaths.every(validWatchPath))) throw new ApiError(400, 'INVALID_DEPLOY_TARGETS', `${source}[${index}].watchPaths must list up to ${WATCH_PATHS_MAX} repository-relative globs (prefix ! to exclude).`);
+    const watchPaths = Array.isArray(entry.watchPaths) && entry.watchPaths.length ? { watchPaths: [...new Set(entry.watchPaths as string[])] } : {};
+    return { workerName: entry.workerName, configPath: entry.configPath, ...(typeof entry.buildCommand === 'string' && entry.buildCommand.trim() ? { buildCommand: entry.buildCommand.trim() } : {}), d1Migrations: entry.d1Migrations === true, ...watchPaths };
   });
   if (new Set(targets.map((target) => target.workerName)).size !== targets.length) throw new ApiError(400, 'INVALID_DEPLOY_TARGETS', 'Each Worker can appear in only one deploy target.');
   return targets;
 }
 
-export function policyDeployTargets(text: string | null): DeployTarget[] | null {
+export function policyDeployTargets(text: string | null, environment: DeployEnvironment = 'production'): DeployTarget[] | null {
   if (text === null) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { throw new ApiError(400, 'DEPLOY_POLICY_INVALID', 'gitflare.json is not valid JSON.'); }
   const deploy = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).deploy : undefined;
   if (deploy === undefined) return null;
-  if (!deploy || typeof deploy !== 'object' || Array.isArray(deploy)) throw new ApiError(400, 'DEPLOY_POLICY_INVALID', 'gitflare.json "deploy" must be an object with "targets".');
-  return parseDeployTargets((deploy as Record<string, unknown>).targets, 'gitflare.json deploy.targets');
+  const invalid = () => new ApiError(400, 'DEPLOY_POLICY_INVALID', 'gitflare.json "deploy" must be an object with "targets" or "environments".');
+  if (!deploy || typeof deploy !== 'object' || Array.isArray(deploy)) throw invalid();
+  const { targets, environments } = deploy as Record<string, unknown>;
+  if (environments !== undefined) {
+    if (!environments || typeof environments !== 'object' || Array.isArray(environments) || Object.keys(environments).some((name) => !DEPLOY_ENVIRONMENTS.includes(name as DeployEnvironment))) throw new ApiError(400, 'DEPLOY_POLICY_INVALID', 'gitflare.json "deploy.environments" may only contain staging and production.');
+    const entry = (environments as Record<string, unknown>)[environment];
+    if (entry !== undefined) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new ApiError(400, 'DEPLOY_POLICY_INVALID', `gitflare.json "deploy.environments.${environment}" must be an object with "targets".`);
+      return parseDeployTargets((entry as Record<string, unknown>).targets, `gitflare.json deploy.environments.${environment}.targets`);
+    }
+  } else if (targets === undefined) throw invalid();
+  if (environment !== 'production' || targets === undefined) return null;
+  return parseDeployTargets(targets, 'gitflare.json deploy.targets');
 }
 
 function targetRuns(targets: DeployTarget[], inheritBindings = false): DeployTargetRun[] {
@@ -135,14 +179,18 @@ export class DeploymentLedger {
 
   state(limit = 50): DeployState {
     const deployments = this.store.list<DeploymentRecord>('deployment:').reverse().slice(0, limit);
-    return { settings: this.store.get<DeploySettings>('deploy-settings') ?? null, deployments };
+    return { settings: this.settings(), deployments };
   }
 
-  settings(): DeploySettings | null { return this.store.get<DeploySettings>('deploy-settings') ?? null; }
+  settings(): DeploySettings | null { return normalizeDeploySettings(this.store.get<unknown>('deploy-settings')); }
 
   saveSettings(settings: DeploySettings): DeploySettings {
     this.store.put('deploy-settings', settings);
     return settings;
+  }
+
+  saveEnvironment(environment: DeployEnvironment, value: DeployEnvironmentSettings): DeploySettings {
+    return this.saveSettings({ environments: { ...this.settings()?.environments, [environment]: value } });
   }
 
   get(id: string): DeploymentRecord | undefined { return this.store.get<DeploymentRecord>(`deployment:${id}`); }
@@ -155,9 +203,10 @@ export class DeploymentLedger {
       if (existing) return existing;
     }
     const records = this.store.list<DeploymentRecord>('deployment:');
-    const blocking = (item: DeploymentRecord) => ACTIVE.includes(item.status) && !(record.trigger === 'rollback' && item.status === 'rolling_out');
-    if (record.status !== 'awaiting_confirmation' && records.some(blocking)) throw new ApiError(409, 'DEPLOYMENT_IN_PROGRESS', 'Another deployment of this repository is still running. Wait for it to finish.');
-    for (const item of records) if (item.status === 'awaiting_confirmation' || (record.trigger === 'rollback' && item.status === 'rolling_out')) this.store.put(`deployment:${item.id}`, { ...item, status: 'superseded', updatedAt: record.createdAt } satisfies DeploymentRecord);
+    const sameEnvironment = (item: DeploymentRecord) => item.environment === record.environment;
+    const blocking = (item: DeploymentRecord) => sameEnvironment(item) && ACTIVE.includes(item.status) && !(record.trigger === 'rollback' && item.status === 'rolling_out');
+    if (record.status !== 'awaiting_confirmation' && records.some(blocking)) throw new ApiError(409, 'DEPLOYMENT_IN_PROGRESS', `Another ${record.environment} deployment of this repository is still running. Wait for it to finish.`);
+    for (const item of records) if (sameEnvironment(item) && (item.status === 'awaiting_confirmation' || (record.trigger === 'rollback' && item.status === 'rolling_out'))) this.store.put(`deployment:${item.id}`, { ...item, status: 'superseded', updatedAt: record.createdAt } satisfies DeploymentRecord);
     this.store.put(`deployment:${record.id}`, record);
     this.store.put(`deploy-request:${key}`, { fingerprint, id: record.id });
     for (const stale of records.slice(0, Math.max(0, records.length + 1 - DEPLOYMENT_HISTORY_LIMIT))) this.store.delete(`deployment:${stale.id}`);
@@ -169,7 +218,7 @@ export class DeploymentLedger {
     if (!record) throw new ApiError(404, 'DEPLOYMENT_NOT_FOUND', 'This deployment could not be found.');
     if (record.status === 'queued' || ACTIVE.includes(record.status)) return record;
     if (record.status !== 'awaiting_confirmation') throw new ApiError(409, 'DEPLOYMENT_NOT_PENDING', 'This deployment is no longer waiting for confirmation.');
-    if (this.store.list<DeploymentRecord>('deployment:').some((item) => ACTIVE.includes(item.status))) throw new ApiError(409, 'DEPLOYMENT_IN_PROGRESS', 'Another deployment of this repository is still running. Wait for it to finish.');
+    if (this.store.list<DeploymentRecord>('deployment:').some((item) => item.environment === record.environment && ACTIVE.includes(item.status))) throw new ApiError(409, 'DEPLOYMENT_IN_PROGRESS', `Another ${record.environment} deployment of this repository is still running. Wait for it to finish.`);
     const next = { ...record, status: 'queued' as const, actorId, updatedAt: new Date().toISOString() };
     this.store.put(`deployment:${id}`, next);
     return next;
@@ -250,6 +299,7 @@ export interface DeployDependencies {
   deployer(principal: Principal, record: DeploymentRecord, workerName: string): Promise<WorkerDeployer>;
   build<T>(repository: Repository, record: DeploymentRecord, target: DeployTargetRun, index: number, assertAuthority: () => Promise<void>, publish: (built: BuiltTarget) => Promise<T>): Promise<T>;
   policyTargets?(repository: Repository, record: DeploymentRecord): Promise<DeployTarget[] | null>;
+  changedPaths?(repository: Repository, record: DeploymentRecord): Promise<string[] | null>;
   mappedWorkers?(principal: Principal, repositoryId: string): Promise<{ accountId: string; workers: string[] } | null>;
   platform?: DeployPlatform;
 }
@@ -281,6 +331,25 @@ function serviceDependencies(deploy: Record<string, unknown> | undefined): strin
 function requireCall(deployer: WorkerDeployer): CloudflareCall {
   if (!deployer.call) throw new ApiError(503, 'DEPLOYER_INCOMPLETE', 'The Cloudflare deployer cannot provision resources.');
   return deployer.call;
+}
+
+async function selectTargets(record: DeploymentRecord, targets: DeployTargetRun[], paths: () => Promise<string[] | null>): Promise<{ run: DeployTargetRun[]; skipped: SkippedTarget[] }> {
+  const split = (keep: (target: DeployTargetRun) => boolean, reason: string) => ({
+    run: targets.filter(keep),
+    skipped: targets.filter((target) => !keep(target)).map((target) => ({ workerName: target.workerName, configPath: target.configPath, reason })),
+  });
+  if (record.trigger === 'rollback') return { run: targets, skipped: [] };
+  if (record.selectedWorkers?.length) {
+    const unknown = record.selectedWorkers.filter((name) => !targets.some((target) => target.workerName === name));
+    if (unknown.length) throw new ApiError(409, 'DEPLOY_TARGET_NOT_CONFIGURED', `${unknown.join(', ')} ${unknown.length === 1 ? 'is' : 'are'} not ${record.environment} deploy targets of this repository.`);
+    return split((target) => record.selectedWorkers!.includes(target.workerName), 'not selected');
+  }
+  if (record.selectedConfigs) return split((target) => record.selectedConfigs!.includes(target.configPath), 'not deployed by the promoted staging deployment');
+  if (record.trigger === 'land' && targets.some((target) => target.watchPaths?.length)) {
+    const changed = await paths();
+    if (changed) return split((target) => watchPathsMatch(target.watchPaths, changed), 'no changes under watch paths');
+  }
+  return { run: targets, skipped: [] };
 }
 
 type UploadOutcome = { kind: 'stale' } | { kind: 'failed' } | { kind: 'uploaded'; versionId: string; deployed: boolean; previousVersionId?: string; triggers?: Record<string, unknown> };
@@ -324,8 +393,14 @@ export async function runDeployment(params: DeployParams, step: DeployStepRunner
         if (mapping && mapping.accountId !== record.accountId) throw new ApiError(409, 'CLOUDFLARE_ACCOUNT_CHANGED', 'The repository resource mapping now points at a different Cloudflare account.');
       }
       for (const target of targets) await dependencies.authorize(principal, target.workerName);
-      await coordinator.updateDeployment(id, ['queued'], { targets, targetsSource: fromPolicy ? 'gitflare.json' : 'settings' });
-      return targets.length;
+      const targetsSource = fromPolicy ? 'gitflare.json' as const : 'settings' as const;
+      const { run, skipped } = await selectTargets(record, targets, () => dependencies.changedPaths?.(repository, record) ?? Promise.resolve(null));
+      if (!run.length) {
+        await coordinator.updateDeployment(id, ['queued'], { status: 'skipped', targets: [], skippedTargets: skipped, targetsSource });
+        return 0;
+      }
+      await coordinator.updateDeployment(id, ['queued'], { targets: run, targetsSource, ...(skipped.length ? { skippedTargets: skipped } : {}) });
+      return run.length;
     } catch (error) {
       await fail(error);
       return 0;
@@ -361,7 +436,7 @@ export async function runDeployment(params: DeployParams, step: DeployStepRunner
             return { kind: 'uploaded', versionId: version.id, deployed: false };
           }
           const deploy = built.bundle.config.deploy ?? {};
-          if (typeof deploy.name === 'string' && deploy.name !== target.workerName) throw new WorkerBuildFailure('DEPLOY_TARGET_NAME_MISMATCH', `${target.configPath} names Worker ${deploy.name}, but this target deploys ${target.workerName}.`);
+          if (typeof deploy.name === 'string' && deploy.name !== target.workerName) throw new WorkerBuildFailure('DEPLOY_TARGET_NAME_MISMATCH', `${target.configPath}${wranglerEnvironment(record.environment) ? ` with env.${wranglerEnvironment(record.environment)}` : ''} names Worker ${deploy.name}, but this ${record.environment} target deploys ${target.workerName}.`);
           const later = (record.targets ?? []).slice(index + 1).map((item) => item.workerName);
           const dependsOnLater = serviceDependencies(deploy).filter((name) => later.includes(name));
           if (dependsOnLater.length) throw new WorkerBuildFailure('DEPLOY_ORDER_INVALID', `${target.workerName} has a service binding to ${dependsOnLater.join(', ')}, which deploys later. Move ${dependsOnLater.join(', ')} earlier in the target list.`);
@@ -370,6 +445,9 @@ export async function runDeployment(params: DeployParams, step: DeployStepRunner
             if (missing.length) throw new ApiError(403, 'CLOUDFLARE_SCOPE_MISSING', `The Cloudflare connection was not granted ${missing.join(', ')}, which deploying ${target.workerName} needs. An Owner must reconnect Cloudflare after the installation requests ${missing.length === 1 ? 'that scope' : 'those scopes'}.`);
           }
           const call = requireCall(deployer);
+          for (const name of serviceDependencies(deploy).filter((service) => record.skippedTargets?.some((skipped) => skipped.workerName === service))) {
+            if (!(await platform.currentMigrationTag(call, deployer.accountId, name)).exists) throw new WorkerBuildFailure('DEPLOY_DEPENDENCY_MISSING', `${target.workerName} has a service binding to ${name}, which is not part of this deployment and does not exist in ${record.environment} yet. Deploy ${name} first or include it.`);
+          }
           const resources = await platform.ensureResources(call, deployer.accountId, deploy);
           notes.push(...resources.notes);
           const migrations: D1MigrationEvidence[] = [];
@@ -494,7 +572,8 @@ export interface DeployApiContext {
   principal: Principal;
   ledger: {
     state(): Promise<DeployState>;
-    saveSettings(settings: DeploySettings): Promise<DeploySettings>;
+    get(id: string): Promise<DeploymentRecord | undefined>;
+    saveEnvironment(environment: DeployEnvironment, settings: DeployEnvironmentSettings): Promise<DeploySettings>;
     create(key: string, fingerprint: string, record: DeploymentRecord): Promise<DeploymentRecord>;
     confirm(id: string, actorId: string): Promise<DeploymentRecord>;
   };
@@ -508,16 +587,96 @@ export interface DeployApiContext {
   audit?(action: string): Promise<void>;
 }
 
-const ENVIRONMENTS: DeployEnvironment[] = ['production', 'staging'];
+export interface EnvironmentStatus {
+  current: { deploymentId: string; commitSha: string | null; trigger: DeploymentTrigger; status: DeploymentStatus; updatedAt: string; workers: { workerName: string; versionId: string; percentage: number }[] } | null;
+  lastChange: { deploymentId: string; commitSha: string | null; trigger: DeploymentTrigger; status: DeploymentStatus; updatedAt: string; error?: string } | null;
+  pending: string | null;
+  running: boolean;
+  promotable?: { deploymentId: string; commitSha: string } | null;
+}
+
+const isLive = (item: DeploymentRecord) => item.status === 'succeeded' || item.status === 'rolling_out';
+const isPromotable = (item: DeploymentRecord) => item.environment === 'staging' && item.status === 'succeeded' && item.trigger !== 'rollback' && item.mode !== 'upload-only' && !!item.commitSha && sha.test(item.commitSha);
+
+export function environmentStatus(deployments: DeploymentRecord[], environment: DeployEnvironment): EnvironmentStatus {
+  const own = deployments.filter((item) => item.environment === environment);
+  const current = own.find(isLive);
+  const latest = own[0];
+  const workers = !current ? [] : current.targets?.length
+    ? current.targets.filter((target) => target.versionId).map((target) => ({ workerName: target.workerName, versionId: target.versionId!, percentage: target.percentage }))
+    : current.versionId ? [{ workerName: current.workerName, versionId: current.versionId, percentage: current.percentage }] : [];
+  const promotable = environment === 'staging' ? own.find(isPromotable) : undefined;
+  return {
+    current: current ? { deploymentId: current.id, commitSha: current.commitSha, trigger: current.trigger, status: current.status, updatedAt: current.updatedAt, workers } : null,
+    lastChange: latest ? { deploymentId: latest.id, commitSha: latest.commitSha, trigger: latest.trigger, status: latest.status, updatedAt: latest.updatedAt, ...(latest.error ? { error: latest.error } : {}) } : null,
+    pending: own.find((item) => item.status === 'awaiting_confirmation')?.id ?? null,
+    running: own.some((item) => ACTIVE.includes(item.status)),
+    ...(environment === 'staging' ? { promotable: promotable ? { deploymentId: promotable.id, commitSha: promotable.commitSha! } : null } : {}),
+  };
+}
+
+function parseEnvironment(value: unknown): DeployEnvironment {
+  if (!DEPLOY_ENVIRONMENTS.includes(value as DeployEnvironment)) throw new ApiError(400, 'INVALID_ENVIRONMENT', 'Choose staging or production.');
+  return value as DeployEnvironment;
+}
+
+function chooseEnvironment(value: unknown, settings: DeploySettings | null): DeployEnvironment {
+  if (value !== undefined) return parseEnvironment(value);
+  const configured = DEPLOY_ENVIRONMENTS.filter((environment) => settings?.environments[environment]);
+  if (configured.length === 1) return configured[0];
+  if (!configured.length) throw new ApiError(409, 'DEPLOY_NOT_CONFIGURED', 'Choose target Workers in deployment settings first.');
+  throw new ApiError(400, 'ENVIRONMENT_REQUIRED', 'This repository deploys to staging and production. Choose the environment.');
+}
+
+function environmentSettings(settings: DeploySettings | null, environment: DeployEnvironment): DeployEnvironmentSettings {
+  const value = settings?.environments[environment];
+  if (!value) throw new ApiError(409, 'DEPLOY_NOT_CONFIGURED', `Choose target Workers for ${environment} in deployment settings first.`);
+  return value;
+}
+
+function environmentRecord(repositoryId: string, environment: DeployEnvironment, value: DeployEnvironmentSettings, actorId: string, fields: Pick<DeploymentRecord, 'commitSha' | 'trigger' | 'status'> & Partial<DeploymentRecord>): DeploymentRecord {
+  const now = new Date().toISOString();
+  return {
+    id: deploymentId(), attemptId: crypto.randomUUID(), repositoryId, workerName: value.workerName, accountId: value.accountId, environment, rollout: value.rollout, mode: value.mode ?? 'deploy',
+    percentage: 0, actorId, createdAt: now, updatedAt: now,
+    ...(value.targets?.length ? { targets: targetRuns(value.targets) } : {}),
+    ...fields,
+  };
+}
+
+function selectedWorkers(value: unknown, settings: DeployEnvironmentSettings): string[] | undefined {
+  if (value === undefined || value === 'all') return undefined;
+  if (!Array.isArray(value) || !value.length || value.length > DEPLOY_TARGETS_MAX || !value.every((name) => typeof name === 'string' && workerNamePattern.test(name)) || new Set(value).size !== value.length) throw new ApiError(400, 'INVALID_DEPLOY_TARGETS', 'targets must be "all" or a list of Worker names from the deploy targets.');
+  const configured = settingsTargets(settings).map((target) => target.workerName);
+  if (settings.targets?.length) {
+    const unknown = (value as string[]).filter((name) => !configured.includes(name));
+    if (unknown.length) throw new ApiError(400, 'DEPLOY_TARGET_NOT_CONFIGURED', `${unknown.join(', ')} ${unknown.length === 1 ? 'is' : 'are'} not deploy targets of this environment.`);
+    if (configured.every((name) => value.includes(name))) return undefined;
+  }
+  return value as string[];
+}
+
+function promotedConfigs(source: DeploymentRecord): string[] | undefined {
+  return source.targets?.length && source.targets.every((target) => target.configPath) ? source.targets.map((target) => target.configPath) : undefined;
+}
+
+function productionStatus(production: DeployEnvironmentSettings, principal: Principal, confirmed: unknown): DeploymentStatus {
+  return production.trigger === 'auto' || (principal.role === 'Owner' && !principal.credentialId && confirmed === true) ? 'queued' : 'awaiting_confirmation';
+}
 
 export async function deploymentsApi(request: Request, context: DeployApiContext): Promise<Response> {
   const { principal } = context;
   await context.authorizeRead();
   if (request.method === 'GET') {
     const [state, mapping] = await Promise.all([context.ledger.state(), context.mappedWorkers()]);
-    const targets = state.settings ? settingsTargets(state.settings) : [];
-    const canDeploy = targets.length ? (await Promise.all(targets.map((target) => context.canDeploy(target.workerName)))).every(Boolean) : false;
-    return Response.json({ settings: publicSettings(state.settings), deployments: state.deployments, workers: mapping?.workers ?? [], canDeploy, requiredScope: SCOPE_WORKERS_SCRIPTS_WRITE });
+    const publicValue = publicSettings(state.settings);
+    const environments = Object.fromEntries(await Promise.all(DEPLOY_ENVIRONMENTS.map(async (environment) => {
+      const value = state.settings?.environments[environment];
+      const canDeploy = value ? (await Promise.all(settingsTargets(value).map((target) => context.canDeploy(target.workerName)))).every(Boolean) : false;
+      return [environment, { settings: publicValue?.environments[environment] ?? null, ...environmentStatus(state.deployments, environment), canDeploy, ...(environment === 'production' ? { canConfirm: canDeploy && principal.role === 'Owner' && !principal.credentialId } : {}) }];
+    })));
+    const canDeploy = DEPLOY_ENVIRONMENTS.some((environment) => environments[environment].canDeploy);
+    return Response.json({ settings: publicValue, environments, deployments: state.deployments, workers: mapping?.workers ?? [], canDeploy, requiredScope: SCOPE_WORKERS_SCRIPTS_WRITE });
   }
   if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use GET or POST.');
   assertMutationOrigin(request);
@@ -526,52 +685,90 @@ export async function deploymentsApi(request: Request, context: DeployApiContext
   const action = body.action;
   const now = new Date().toISOString();
   if (action === 'settings') {
+    const environment = parseEnvironment(body.environment);
     const targets = body.targets !== undefined ? parseDeployTargets(body.targets) : undefined;
     const workerName = targets ? targets[0].workerName : requireString(body.workerName, 'Worker', 63);
     const mapping = await context.mappedWorkers();
     for (const name of targets ? targets.map((target) => target.workerName) : [workerName]) if (!mapping?.workers.some((worker) => worker.id === name)) throw new ApiError(400, 'WORKER_NOT_MAPPED', `Choose Workers linked to this repository in its Cloudflare tab (${name} is not linked).`);
-    if (!ENVIRONMENTS.includes(body.environment as DeployEnvironment)) throw new ApiError(400, 'INVALID_ENVIRONMENT', 'Choose production or staging.');
+    const trigger = body.trigger ?? body.confirmation ?? DEFAULT_TRIGGER[environment];
     if (!['immediate', 'gradual'].includes(String(body.rollout))) throw new ApiError(400, 'INVALID_ROLLOUT', 'Choose immediate (100%) or gradual (10% then 100%).');
-    if (!['manual', 'auto'].includes(String(body.confirmation))) throw new ApiError(400, 'INVALID_CONFIRMATION', 'Choose manual or automatic deployment after landing.');
+    if (!['manual', 'auto'].includes(String(trigger))) throw new ApiError(400, 'INVALID_TRIGGER', 'Choose manual or automatic deployment.');
     if (body.mode !== undefined && !['deploy', 'upload-only'].includes(String(body.mode))) throw new ApiError(400, 'INVALID_DEPLOY_MODE', 'Choose deploy or upload-only.');
     if (typeof body.enabled !== 'boolean') throw new ApiError(400, 'INVALID_INPUT', 'Set enabled to true or false.');
     if (principal.credentialId || !['Owner', 'Deployer'].includes(principal.role)) throw new ApiError(403, 'DEPLOYER_REQUIRED', 'Only an Owner or Deployer can change deployment settings.');
-    if (body.environment === 'production' && body.confirmation === 'auto' && principal.role !== 'Owner') throw new ApiError(403, 'OWNER_REQUIRED', 'Only an Owner can turn on automatic production deployment after landing.');
+    if (environment === 'production' && trigger === 'auto' && principal.role !== 'Owner') throw new ApiError(403, 'OWNER_REQUIRED', 'Only an Owner can turn on automatic production deployment.');
     for (const name of targets ? targets.map((target) => target.workerName) : [workerName]) await context.authorizeDeploy(name);
-    const settings: DeploySettings = { enabled: body.enabled, workerName, accountId: mapping!.accountId, environment: body.environment as DeployEnvironment, rollout: body.rollout as DeployRollout, confirmation: body.confirmation as DeployConfirmation, mode: (body.mode as DeployMode | undefined) ?? 'deploy', ...(targets ? { targets } : {}), authorizedBy: backgroundPrincipal(principal), updatedAt: now };
-    await context.audit?.(`repository.deploy-settings.${settings.environment}.${settings.confirmation}.${settings.mode}${settings.enabled ? '' : '.disabled'}`);
-    return Response.json({ settings: publicSettings(await context.ledger.saveSettings(settings)) });
+    const value: DeployEnvironmentSettings = { enabled: body.enabled, workerName, accountId: mapping!.accountId, rollout: body.rollout as DeployRollout, trigger: trigger as DeployTrigger, mode: (body.mode as DeployMode | undefined) ?? 'deploy', ...(targets ? { targets } : {}), authorizedBy: backgroundPrincipal(principal), updatedAt: now };
+    await context.audit?.(`repository.deploy-settings.${environment}.${value.trigger}.${value.mode}${value.enabled ? '' : '.disabled'}`);
+    return Response.json({ settings: publicSettings(await context.ledger.saveEnvironment(environment, value)) });
   }
-  if (action !== 'deploy' && action !== 'rollback') throw new ApiError(400, 'INVALID_DEPLOY_ACTION', 'Choose settings, deploy or rollback.');
-  const state = await context.ledger.state();
-  const settings = state.settings;
-  if (!settings) throw new ApiError(409, 'DEPLOY_NOT_CONFIGURED', 'Choose a target Worker in deployment settings first.');
+  if (action !== 'deploy' && action !== 'rollback' && action !== 'promote') throw new ApiError(400, 'INVALID_DEPLOY_ACTION', 'Choose settings, deploy, promote or rollback.');
   if (principal.credentialId) throw new ApiError(403, 'DEPLOYER_REQUIRED', 'Task credentials cannot deploy.');
-  for (const target of settingsTargets(settings)) await context.authorizeDeploy(target.workerName);
-  const base = { repositoryId: context.repository.id, workerName: settings.workerName, accountId: settings.accountId, environment: settings.environment, rollout: settings.rollout, mode: settings.mode ?? 'deploy', actorId: principal.userId, createdAt: now, updatedAt: now, percentage: 0 };
+  const state = await context.ledger.state();
   let record: DeploymentRecord;
   if (action === 'deploy' && body.deploymentId !== undefined) {
     const id = requireString(body.deploymentId, 'Deployment', 80);
+    const pending = await context.ledger.get(id);
+    if (!pending) throw new ApiError(404, 'DEPLOYMENT_NOT_FOUND', 'This deployment could not be found.');
+    if (body.environment !== undefined && parseEnvironment(body.environment) !== pending.environment) throw new ApiError(409, 'ENVIRONMENT_MISMATCH', `This deployment targets ${pending.environment}.`);
+    if (pending.environment === 'production' && pending.status === 'awaiting_confirmation' && principal.role !== 'Owner') throw new ApiError(403, 'OWNER_REQUIRED', 'Only an Owner can confirm a production deployment.');
+    const workers = pending.targets?.length ? pending.targets.map((target) => target.workerName) : [pending.workerName];
+    for (const name of workers) await context.authorizeDeploy(name);
     record = await context.ledger.confirm(id, principal.userId);
   } else if (action === 'deploy') {
+    const environment = chooseEnvironment(body.environment, state.settings);
+    const value = environmentSettings(state.settings, environment);
+    for (const target of settingsTargets(value)) await context.authorizeDeploy(target.workerName);
     const commitSha = requireString(body.commitSha, 'Commit', 40, 40);
     if (!sha.test(commitSha)) throw new ApiError(400, 'INVALID_COMMIT', 'Commit identifiers must be 40 lowercase hexadecimal characters.');
     if (await context.headSha() !== commitSha) throw new ApiError(409, 'DEPLOY_COMMIT_NOT_HEAD', `Only the current ${context.repository.defaultBranch} head can be deployed. Refresh and try again.`);
-    record = await context.ledger.create(key, JSON.stringify(['deploy', commitSha, settings.workerName]), { ...base, id: deploymentId(), attemptId: crypto.randomUUID(), commitSha, trigger: 'manual', status: 'queued', ...(settings.targets?.length ? { targets: targetRuns(settings.targets) } : {}) });
+    const selection = selectedWorkers(body.targets, value);
+    const status = environment === 'production' ? productionStatus(value, principal, body.confirm) : 'queued';
+    record = await context.ledger.create(key, JSON.stringify(['deploy', environment, commitSha, value.workerName, selection ?? 'all']), environmentRecord(context.repository.id, environment, value, principal.userId, { commitSha, trigger: 'manual', status, ...(selection ? { selectedWorkers: selection } : {}) }));
+  } else if (action === 'promote') {
+    if (body.environment !== undefined && parseEnvironment(body.environment) !== 'production') throw new ApiError(400, 'INVALID_ENVIRONMENT', 'Promotion deploys a staging deployment to production.');
+    const production = environmentSettings(state.settings, 'production');
+    const source = body.deploymentId !== undefined ? await context.ledger.get(requireString(body.deploymentId, 'Deployment', 80)) : state.deployments.find(isPromotable);
+    if (!source) throw new ApiError(404, 'DEPLOYMENT_NOT_FOUND', 'No successful staging deployment is recorded to promote.');
+    if (!isPromotable(source)) throw new ApiError(409, 'DEPLOYMENT_NOT_PROMOTABLE', 'Only a staging deployment of a landed commit that succeeded can be promoted to production.');
+    for (const target of settingsTargets(production)) await context.authorizeDeploy(target.workerName);
+    record = await context.ledger.create(key, JSON.stringify(['promote', source.id]), environmentRecord(context.repository.id, 'production', production, principal.userId, {
+      commitSha: source.commitSha, trigger: 'promote', status: productionStatus(production, principal, body.confirm), promotedFrom: source.id,
+      ...(promotedConfigs(source) ? { selectedConfigs: promotedConfigs(source) } : {}),
+      ...(source.baseSha ? { baseSha: source.baseSha } : {}), ...(source.missionId ? { missionId: source.missionId } : {}),
+    }));
   } else {
-    const target = rollbackTarget(state.deployments);
+    const environment = chooseEnvironment(body.environment, state.settings);
+    const value = environmentSettings(state.settings, environment);
+    for (const target of settingsTargets(value)) await context.authorizeDeploy(target.workerName);
+    const target = rollbackTarget(state.deployments.filter((item) => item.environment === environment));
     for (const item of target.targets) await context.authorizeDeploy(item.workerName);
-    record = await context.ledger.create(key, JSON.stringify(['rollback', target.current.id, target.versionId]), { ...base, mode: 'deploy', id: deploymentId(), attemptId: crypto.randomUUID(), commitSha: target.commitSha, trigger: 'rollback', status: 'queued', versionId: target.versionId, rollbackOf: target.current.id, targets: target.targets });
+    record = await context.ledger.create(key, JSON.stringify(['rollback', target.current.id, target.versionId]), { ...environmentRecord(context.repository.id, environment, value, principal.userId, { commitSha: target.commitSha, trigger: 'rollback', status: 'queued' }), mode: 'deploy', versionId: target.versionId, rollbackOf: target.current.id, targets: target.targets });
   }
   if (record.status === 'queued' && await context.dispatch(record) === 'missing') {
     await context.failDispatch(record);
     throw new ApiError(503, 'DEPLOYMENT_NOT_STARTED', 'The deployment could not be scheduled. Nothing was deployed; try again.');
   }
-  return Response.json({ deployment: record }, { status: 202 });
+  return Response.json({ deployment: record, ...(record.status === 'awaiting_confirmation' ? { confirmationRequired: 'Owner' } : {}) }, { status: 202 });
 }
 
-export function landedDeployment(settings: DeploySettings | null, repositoryId: string, missionId: string, commitSha: string, baseSha?: string): DeploymentRecord | null {
-  if (!settings?.enabled || !sha.test(commitSha)) return null;
-  const now = new Date().toISOString();
-  return { id: deploymentId(), attemptId: crypto.randomUUID(), repositoryId, workerName: settings.workerName, accountId: settings.accountId, environment: settings.environment, rollout: settings.rollout, mode: settings.mode ?? 'deploy', commitSha, ...(baseSha && sha.test(baseSha) ? { baseSha } : {}), missionId, trigger: 'land', status: settings.confirmation === 'auto' ? 'queued' : 'awaiting_confirmation', percentage: 0, ...(settings.targets?.length ? { targets: targetRuns(settings.targets) } : {}), actorId: settings.authorizedBy.userId, createdAt: now, updatedAt: now };
+export function landedDeployments(settings: DeploySettings | null, repositoryId: string, missionId: string, commitSha: string, baseSha?: string): DeploymentRecord[] {
+  if (!settings || !sha.test(commitSha)) return [];
+  const fields = { commitSha, missionId, trigger: 'land' as const, ...(baseSha && sha.test(baseSha) ? { baseSha } : {}) };
+  const staging = settings.environments.staging?.enabled ? settings.environments.staging : undefined;
+  const production = settings.environments.production?.enabled ? settings.environments.production : undefined;
+  const drafts: DeploymentRecord[] = [];
+  if (staging) drafts.push(environmentRecord(repositoryId, 'staging', staging, staging.authorizedBy.userId, { ...fields, status: staging.trigger === 'auto' ? 'queued' : 'awaiting_confirmation' }));
+  else if (production) drafts.push(environmentRecord(repositoryId, 'production', production, production.authorizedBy.userId, { ...fields, status: production.trigger === 'auto' ? 'queued' : 'awaiting_confirmation' }));
+  return drafts;
+}
+
+export function automaticPromotion(settings: DeploySettings | null, staging: DeploymentRecord | undefined): DeploymentRecord | null {
+  const production = settings?.environments.production;
+  if (!staging || !isPromotable(staging) || !production?.enabled || production.trigger !== 'auto') return null;
+  return environmentRecord(staging.repositoryId, 'production', production, production.authorizedBy.userId, {
+    commitSha: staging.commitSha, trigger: 'promote', status: 'queued', promotedFrom: staging.id,
+    ...(promotedConfigs(staging) ? { selectedConfigs: promotedConfigs(staging) } : {}),
+    ...(staging.baseSha ? { baseSha: staging.baseSha } : {}), ...(staging.missionId ? { missionId: staging.missionId } : {}),
+  });
 }
