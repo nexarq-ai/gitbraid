@@ -38,7 +38,49 @@ import { DependencyApprovalControl, DependencyChangesPanel } from "./DependencyC
 import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 
-type PreviewResult = { status?: "starting" | "ready"; message?: string; kind?: "worker"; previewUrl?: string; deploymentUrl?: string | null; notes?: string[]; candidateSha: string; expiresAt?: string };
+type PreviewHost =
+  | { kind: "connection"; source: "repository" | "workspace"; accountId: string; workerName: string; access: "link" | "cloudflare-access" }
+  | { kind: "installation"; accountId: string; workerName: string; access: "link" };
+type PreviewAccess = "link" | "cloudflare-access" | "members";
+type PreviewResult = { status?: "starting" | "ready"; message?: string; kind?: "worker" | "container"; previewUrl?: string; deploymentUrl?: string | null; notes?: string[]; candidateSha: string; expiresAt?: string; linkExpiresAt?: string; host?: PreviewHost; access?: PreviewAccess; extended?: boolean };
+type PreviewState = {
+  previewUrl: string;
+  candidateSha: string;
+  expiresAt: string;
+  linkExpiresAt?: string;
+  extended: boolean;
+  access: PreviewAccess;
+  worker?: { deploymentUrl: string | null; notes: string[]; host?: PreviewHost };
+};
+
+function remaining(until: string, now: number): string {
+  const seconds = Math.max(0, Math.round((Date.parse(until) - now) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = String(seconds % 60).padStart(2, "0");
+  return hours ? `${hours} h ${String(minutes).padStart(2, "0")} min` : `${minutes}:${rest}`;
+}
+
+function PreviewCountdown({ until }: { until: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [until]);
+  return <span className="preview-countdown" aria-live="off">{remaining(until, now)} left</span>;
+}
+
+function previewHostLabel(host: PreviewHost | undefined): string {
+  if (!host) return "Cloudflare Worker Preview";
+  if (host.kind === "connection") return `Worker Preview of ${host.workerName} on account ${host.accountId} (${host.source} Cloudflare connection)`;
+  return `Worker Preview of the installation previews Worker ${host.workerName} on account ${host.accountId}`;
+}
+
+const PREVIEW_ACCESS_TEXT: Record<PreviewAccess, string> = {
+  link: "Public link: anyone with the link can open it. Search engines are asked not to index it.",
+  "cloudflare-access": "Protected by Cloudflare Access: only allowed workspace members or email domains can sign in.",
+  members: "Members only: the link works for signed-in workspace members and expires with the preview.",
+};
 
 type Props = {
   id: string;
@@ -83,12 +125,7 @@ export default function MissionDetail({
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
-  const [preview, setPreview] = useState<{
-    previewUrl: string;
-    candidateSha: string;
-    expiresAt: string;
-    worker?: { deploymentUrl: string | null; notes: string[] };
-  } | null>(null);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewStarting, setPreviewStarting] = useState(false);
   const [previewNote, setPreviewNote] = useState("");
   const mutation = useRef<{ signature: string; key: string } | null>(null);
@@ -381,7 +418,33 @@ export default function MissionDetail({
         "The preview does not match this candidate or has expired. Create a new preview.",
       );
     }
-    setPreview({ previewUrl: result.previewUrl, candidateSha: result.candidateSha, expiresAt: result.expiresAt!, ...(result.kind === "worker" ? { worker: { deploymentUrl: result.deploymentUrl ?? null, notes: result.notes ?? [] } } : {}) });
+    setPreview({
+      previewUrl: result.previewUrl,
+      candidateSha: result.candidateSha,
+      expiresAt: result.expiresAt!,
+      ...(result.linkExpiresAt ? { linkExpiresAt: result.linkExpiresAt } : {}),
+      extended: !!result.extended,
+      access: result.access ?? (result.kind === "worker" ? "link" : "members"),
+      ...(result.kind === "worker" ? { worker: { deploymentUrl: result.deploymentUrl ?? null, notes: result.notes ?? [], ...(result.host ? { host: result.host } : {}) } } : {}),
+    });
+  }
+
+  async function extendPreview() {
+    if (!preview || busy) return;
+    setBusy("preview-extend");
+    setError("");
+    try {
+      const status = await request<{ expiresAt?: string; extended?: boolean }>(
+        `/api/missions/${encodeURIComponent(id)}/preview-extend`,
+        {},
+        crypto.randomUUID(),
+      );
+      if (status.expiresAt) setPreview({ ...preview, expiresAt: status.expiresAt, extended: true });
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "The preview could not be extended.");
+    } finally {
+      setBusy("");
+    }
   }
 
   async function preparePreview() {
@@ -670,10 +733,16 @@ export default function MissionDetail({
               Cloudflare preview ready for{" "}
               <code>{currentPreview.candidateSha.slice(0, 12)}</code>.
             </strong>{" "}
-            Available until{" "}
-            {new Date(currentPreview.expiresAt).toLocaleTimeString()}.
-            <small className="candidate-preview-provider">{currentPreview.worker ? "Cloudflare Worker Preview" : "Isolated Container"} · {new URL(currentPreview.previewUrl).hostname}</small>
-            {currentPreview.worker && <small className="candidate-preview-provider">Public link: anyone with the link can open it. Search engines are asked not to index it.{currentPreview.worker.deploymentUrl && <> <a href={currentPreview.worker.deploymentUrl} target="_blank" rel="noreferrer" className="text-link">This exact deployment</a></>}</small>}
+            Retired automatically at{" "}
+            {new Date(currentPreview.expiresAt).toLocaleTimeString()} ({<PreviewCountdown until={currentPreview.expiresAt} />}).
+            <small className="candidate-preview-provider">{currentPreview.worker ? previewHostLabel(currentPreview.worker.host) : "Isolated container on Gitflare’s preview origin"} · {new URL(currentPreview.previewUrl).hostname}</small>
+            <small className="candidate-preview-provider">{PREVIEW_ACCESS_TEXT[currentPreview.access]}{currentPreview.worker?.deploymentUrl && <> <a href={currentPreview.worker.deploymentUrl} target="_blank" rel="noreferrer" className="text-link">This exact deployment</a></>}</small>
+            {currentPreview.linkExpiresAt && currentPreview.linkExpiresAt < currentPreview.expiresAt && <small className="candidate-preview-provider">This link works until {new Date(currentPreview.linkExpiresAt).toLocaleTimeString()}; choose Refresh preview for a new one.</small>}
+            {permissions.includes("land") && !currentPreview.extended && (
+              <small className="candidate-preview-provider">
+                <button className="text-link" disabled={!!busy} onClick={() => void extendPreview()}>Extend once</button> keeps it for one more preview lifetime.
+              </small>
+            )}
             {currentPreview.worker?.notes.map((note) => <small key={note} className="candidate-preview-provider">{note}</small>)}
           </div>
           <a

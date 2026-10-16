@@ -32,7 +32,7 @@ export const mcpToolNames = [
   'gitflare_list_docs', 'gitflare_read_doc', 'gitflare_public_source', 'gitflare_ai_settings', 'gitflare_access_status', 'gitflare_manage_access', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_deployments', 'gitflare_deploy',
   'gitflare_list_issues', 'gitflare_read_issue', 'gitflare_create_issue', 'gitflare_comment_issue', 'gitflare_update_issue',
   'gitflare_list_branches', 'gitflare_create_branch', 'gitflare_delete_branch', 'gitflare_create_pull_request', 'gitflare_update_pull_request', 'gitflare_branch_protection',
-  'gitflare_check_settings', 'gitflare_retry_checks',
+  'gitflare_check_settings', 'gitflare_retry_checks', 'gitflare_preview_settings',
 ] as const;
 
 const identifier = z.string().min(1).max(100).regex(/^[a-zA-Z0-9-]+$/);
@@ -51,12 +51,13 @@ const external = { ...mutation, openWorldHint: true };
 const commit = z.string().regex(/^[a-f0-9]{40}$/).describe('Exact 40-character commit SHA observed in current evidence.');
 const evidenceInput = { view: z.enum(['summary', 'context', 'runs', 'changes', 'checks', 'events', 'reviews']).default('summary').describe('Evidence to return.'), offset, limit: z.number().int().min(1).max(20).default(5).describe('Items per page.'), detail_offset: offset.describe('Start character within each long text field.'), detail_limit: z.number().int().min(1).max(8000).default(3000).describe('Characters per long text field.') };
 const LAND_TOOLS = new Set(['gitflare_check_settings', 'gitflare_retry_checks', 'gitflare_deploy', 'gitflare_approve_mission', 'gitflare_integrate_mission', 'gitflare_revoke_approval', 'gitflare_create_release', 'gitflare_update_release', 'gitflare_import_repository_archive', 'gitflare_import_repository_url']);
-const ADMIN_TOOLS = new Set(['gitflare_manage_access', 'gitflare_manage_model_connection', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_ai_settings', 'gitflare_branch_protection', 'gitflare_manage_ai_key', 'gitflare_manage_ai_gateway']);
+const ADMIN_TOOLS = new Set(['gitflare_preview_settings', 'gitflare_manage_access', 'gitflare_manage_model_connection', 'gitflare_cloudflare_connection', 'gitflare_cloudflare_project', 'gitflare_ai_settings', 'gitflare_branch_protection', 'gitflare_manage_ai_key', 'gitflare_manage_ai_gateway']);
 
 export function requiredAccess(name: string, annotations: { readOnlyHint?: boolean } | undefined, input: Record<string, unknown>): AccessLevel {
   if (annotations?.readOnlyHint) return 'read';
   if (name === 'gitflare_ai_settings' && input.enabled === undefined) return 'read';
-  if ((name === 'gitflare_branch_protection' || name === 'gitflare_check_settings') && input.action !== 'set') return 'read';
+  if ((name === 'gitflare_branch_protection' || name === 'gitflare_check_settings' || name === 'gitflare_preview_settings') && input.action !== 'set') return 'read';
+  if (name === 'gitflare_preview_mission' && input.action === 'extend') return 'land';
   if (name === 'gitflare_cloudflare_connection' && ['status', 'accounts', 'resources', 'installation-credential'].includes(String(input.action))) return 'read';
   if (name === 'gitflare_cloudflare_project' && ['get', 'usage'].includes(String(input.action))) return 'read';
   if (name === 'gitflare_import_repository_url' && input.action === 'status') return 'read';
@@ -422,10 +423,14 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${action}`, { candidateSha: input.candidate_sha, baseSha: input.base_sha }, input.idempotency_key))));
   }
   server.registerTool('gitflare_preview_mission', {
-    title: 'Open a checked candidate preview', description: 'Preview the current passing candidate. Runs in the background: start returns starting, then ready; status reads progress or the failure. Worker projects become a public Cloudflare Worker Preview (anyone with the link can open it; only vars and isolated Durable Objects are bound; notes list dropped bindings). Others run in a container behind a short-lived secret URL. Limited per workspace. Needs write access.',
-    inputSchema: z.object({ mission_id: missionId, action: z.enum(['start', 'status']).default('start'), idempotency_key: requestKey.optional() }).strict(), annotations: { ...mutation, idempotentHint: false },
+    title: 'Open a checked candidate preview', description: 'Preview the current passing candidate in the background; status reads progress, host, access, expiresAt or the failure. Worker projects become a Cloudflare Worker Preview of the repository’s own Worker (access link: public to anyone with the link). Others run in a members-only container. Previews retire after the repository lifetime (default 15 min); extend adds one lifetime once (Owner or Maintainer, land access).',
+    inputSchema: z.object({ mission_id: missionId, action: z.enum(['start', 'status', 'extend']).default('start'), idempotency_key: requestKey.optional() }).strict(), annotations: { ...mutation, idempotentHint: false },
   }, (input) => guarded(async () => {
     if (input.action === 'status') return call<Record<string, unknown>>(`/api/missions/${input.mission_id}/preview`);
+    if (input.action === 'extend') {
+      if (!input.idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Extending a preview requires an idempotency_key.');
+      return call<Record<string, unknown>>(`/api/missions/${input.mission_id}/preview-extend`, {}, input.idempotency_key);
+    }
     if (!input.idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Starting a preview requires an idempotency_key.');
     return call<Record<string, unknown>>(`/api/missions/${input.mission_id}/preview`, {}, input.idempotency_key);
   }));
@@ -478,6 +483,15 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     if (input.action === 'read') return call<Record<string, unknown>>(path);
     if (!input.idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Setting check settings requires an idempotency key.');
     return call<Record<string, unknown>>(path, { testTimeoutSeconds: input.test_timeout_seconds ?? null, runner: input.runner ?? null, autoIncrease: input.auto_increase ? { enabled: input.auto_increase.enabled, maxTimeoutSeconds: input.auto_increase.max_timeout_seconds, maxRunner: input.auto_increase.max_runner } : null }, input.idempotency_key);
+  }));
+  server.registerTool('gitflare_preview_settings', {
+    title: 'Read or set preview lifetime and access', description: 'Read preview settings, or change them with action set (audited). Lifetime 15, 60, 240 or 1440 minutes, capped by the installation. access link: public to anyone with the link; cloudflare-access: Cloudflare Access app on the preview Worker’s workers.dev preview hostnames, refused without the Access scope. Reading needs read access; set needs the Owner role and admin access.',
+    inputSchema: z.object({ repository_id: repositoryId, action: z.enum(['read', 'set']).default('read'), lifetime_minutes: z.union([z.literal(15), z.literal(60), z.literal(240), z.literal(1440)]).optional(), access: z.enum(['link', 'cloudflare-access']).optional(), access_email_domains: z.array(z.string().min(1).max(253)).max(20).optional().describe('Email domains allowed through Cloudflare Access instead of member emails; empty list uses member emails.'), target_worker: z.string().max(63).optional().describe('Worker name whose Previews host this repository; empty string clears it.'), idempotency_key: requestKey.optional().describe('Required for set.') }).strict(), annotations: { ...mutation, openWorldHint: true },
+  }, input => guarded(async () => {
+    const path = `/api/repositories/${input.repository_id}/preview-settings`;
+    if (input.action === 'read') return call<Record<string, unknown>>(path);
+    if (!input.idempotency_key) throw new ApiError(400, 'INVALID_INPUT', 'Setting preview settings requires an idempotency key.');
+    return call<Record<string, unknown>>(path, { ...(input.lifetime_minutes !== undefined ? { lifetimeMinutes: input.lifetime_minutes } : {}), ...(input.access ? { access: input.access } : {}), ...(input.access_email_domains ? { accessEmailDomains: input.access_email_domains } : {}), ...(input.target_worker !== undefined ? { targetWorker: input.target_worker } : {}) }, input.idempotency_key);
   }));
   server.registerTool('gitflare_retry_checks', {
     title: 'Retry a timed-out check with more time or a larger runner', description: 'After a check timed out, raise the repository check time limit to 10 minutes (15 if it had 10) with adjustment timeout, or use the next larger runner with adjustment runner, then start a new attempt (proposals update from their stream). A gitflare.json value can be overridden only by an Owner, for this proposal, audited. Uses billed compute. Needs the Owner or Maintainer role and land access.',
