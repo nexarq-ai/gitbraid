@@ -10,13 +10,14 @@ import { deleteWorkerPreview, previewAlias, upsertWorkerPreview, WorkerPreviewEr
 import { WorkerBuildFailure } from './worker-bundle';
 import { deployWorkflowId, landedDeployment, policyDeployTargets, runDeployment, type DeploymentRecord, type DeployParams } from './deployments';
 import { cloudflareDeployClient } from './cloudflare-deploy';
+import { deletePreviewD1, provisionPreviewD1 } from './preview-d1';
 import { cloudflareWorkerDeployer } from './cloudflare';
 import { POLICY_FILE } from './repository-policy';
 import type { ProjectSnapshot } from './cloudflare-projects';
 
 export interface LandingParams { kind: 'land'; repositoryId: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimId: string; principal: Principal }
 export interface PreviewParams { kind: 'preview'; repositoryId: string; missionId: string; epoch: number; candidateSha: string; claimId: string; principal: Principal }
-export interface PreviewRetireParams { kind: 'preview-retire'; repositoryId: string; missionId: string; previewName: string; workspaceId: string }
+export interface PreviewRetireParams { kind: 'preview-retire'; repositoryId: string; missionId: string; previewName: string; workspaceId: string; d1DatabaseIds?: string[] }
 export interface StepConfig { retries?: { limit: number; delay: string | number; backoff?: 'constant' | 'linear' | 'exponential' }; timeout?: string | number }
 export interface StepRunner { do<T>(name: string, config: StepConfig, callback: () => Promise<T>): Promise<T>; sleep?(name: string, duration: number): Promise<void> }
 interface WorkflowBinding<P> {
@@ -108,7 +109,7 @@ export async function retireWorkerPreview(env: AppEnv, repositoryId: string, mis
   if (!env.MISSION_WORKFLOW) return;
   const record = await env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`).retireWorkerPreview(missionId);
   if (!record) return;
-  if (await dispatchBackground(env.MISSION_WORKFLOW, previewRetireWorkflowId(record.claimId), { kind: 'preview-retire', repositoryId, missionId, previewName: record.previewName, workspaceId }) === 'missing') console.error('preview.retire.dispatch.failed', missionId);
+  if (await dispatchBackground(env.MISSION_WORKFLOW, previewRetireWorkflowId(record.claimId), { kind: 'preview-retire', repositoryId, missionId, previewName: record.previewName, workspaceId, ...(record.d1DatabaseIds?.length ? { d1DatabaseIds: record.d1DatabaseIds } : {}) }) === 'missing') console.error('preview.retire.dispatch.failed', missionId);
 }
 
 export async function scheduleLandedDeployment(env: AppEnv, repositoryId: string, missionId: string, epoch: number, commitSha: string, baseSha?: string): Promise<void> {
@@ -129,10 +130,16 @@ export async function scheduleLandedDeployment(env: AppEnv, repositoryId: string
   }
 }
 
+function previewsCall(config: { token: string; accountId: string }) {
+  return cloudflareDeployClient({ accessToken: config.token, accountId: config.accountId, scopes: [], source: 'workspace' }).call;
+}
+
 export async function retirePreview(env: AppEnv, params: PreviewRetireParams, step: StepRunner): Promise<void> {
   const config = workerPreviewsConfig(env);
   if (!config) return;
   await step.do('delete worker preview', { retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => deleteWorkerPreview(config, params.previewName));
+  const d1DatabaseIds = params.d1DatabaseIds ?? [];
+  if (d1DatabaseIds.length) await step.do('delete preview D1 databases', { retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => deletePreviewD1(previewsCall(config), config.accountId, d1DatabaseIds));
   await step.do('release preview capacity', { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '1 minute' }, async () => {
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${params.repositoryId}`);
     if (!await coordinator.workerPreview(params.missionId)) await env.GITFLARE_COORDINATOR.getByName(catalogName(params.workspaceId)).releasePreviewSlot(params.missionId);
@@ -191,25 +198,33 @@ export async function preparePreview(env: AppEnv, params: PreviewParams, step: S
       if (!env.SANDBOX) throw new PreviewFailure('The preview runner is unavailable.');
       const previews = workerPreviewsConfig(env);
       const alias = previews ? previewAlias(missionId, previews.workerName) : '';
-      const assetsCall = previews ? cloudflareDeployClient({ accessToken: previews.token, accountId: previews.accountId, scopes: [], source: 'workspace' }).call : null;
+      const previewCall = previews ? previewsCall(previews) : null;
       const prepared = await prepareCandidatePreview(env, {
         repository, mission, previewAttemptId: claimId, workerPreviews: !!previews,
         assertAuthority: () => access.check(principal, 'read', 'repository', repositoryId, missionId),
         publishWorker: async (built) => {
-          if (!previews || !assetsCall) throw new PreviewFailure('Worker previews are not configured for this installation.');
+          if (!previews || !previewCall) throw new PreviewFailure('Worker previews are not configured for this installation.');
           const { uploadAssets } = built;
-          return upsertWorkerPreview(previews, {
-            alias,
-            bundle: built.bundle,
-            annotations: { 'workers/commit_sha': candidateSha, 'workers/message': mission.title.slice(0, 100), 'workers/pull_request_title': mission.title.slice(0, 100) },
-            ...(uploadAssets ? { uploadAssets: () => uploadAssets(assetsCall, previews.accountId, previews.workerName) } : {}),
-          });
+          const created: string[] = [];
+          try {
+            const d1 = built.d1?.length ? await provisionPreviewD1(previewCall, previews.accountId, alias, built.d1, created) : undefined;
+            return await upsertWorkerPreview(previews, {
+              alias,
+              bundle: built.bundle,
+              annotations: { 'workers/commit_sha': candidateSha, 'workers/message': mission.title.slice(0, 100), 'workers/pull_request_title': mission.title.slice(0, 100) },
+              ...(uploadAssets ? { uploadAssets: () => uploadAssets(previewCall, previews.accountId, previews.workerName) } : {}),
+              ...(d1 ? { d1 } : {}),
+            });
+          } catch (error) {
+            if (created.length) await deletePreviewD1(previewCall, previews.accountId, created).catch(() => {});
+            throw error;
+          }
         },
       });
       if (prepared.kind === 'worker') {
         const result = prepared.published;
         if (!result) throw new PreviewFailure('The Worker preview was not published.');
-        const expiresAt = await coordinator.workerPreviewReady(missionId, epoch, candidateSha, claimId, { previewName: alias, previewUrl: result.previewUrl, deploymentUrl: result.deploymentUrl, notes: result.notes.slice(0, 50) });
+        const expiresAt = await coordinator.workerPreviewReady(missionId, epoch, candidateSha, claimId, { previewName: alias, previewUrl: result.previewUrl, deploymentUrl: result.deploymentUrl, notes: result.notes.slice(0, 50), ...(result.d1Databases?.length ? { d1Databases: result.d1Databases } : {}) });
         await catalog.holdPreviewSlot(missionId, expiresAt);
         return { worker: true };
       }
@@ -230,5 +245,5 @@ export async function preparePreview(env: AppEnv, params: PreviewParams, step: S
   if (!prepared.worker || !step.sleep) return;
   await step.sleep('hold worker preview until expiry', WORKER_PREVIEW_TTL_MS);
   const expired = await step.do('retire expired worker preview', { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '1 minute' }, async () => coordinator.retireWorkerPreview(missionId, claimId));
-  if (expired) await retirePreview(env, { kind: 'preview-retire', repositoryId, missionId, previewName: expired.previewName, workspaceId: principal.workspaceId }, step);
+  if (expired) await retirePreview(env, { kind: 'preview-retire', repositoryId, missionId, previewName: expired.previewName, workspaceId: principal.workspaceId, ...(expired.d1DatabaseIds?.length ? { d1DatabaseIds: expired.d1DatabaseIds } : {}) }, step);
 }

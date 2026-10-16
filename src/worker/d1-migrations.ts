@@ -7,14 +7,14 @@ export const D1_MIGRATIONS_MAX_FILES = 500;
 export const D1_MIGRATIONS_MAX_BYTES = 5 * 1024 * 1024;
 const SENTINEL = 'GITFLARE_D1_MIGRATIONS ';
 
-export interface D1MigrationDatabase { binding: string; databaseName: string; databaseId?: string; directory: string; table: string }
+export interface D1MigrationDatabase { binding: string; databaseName: string; databaseId?: string; directory: string; table: string; optional?: boolean }
 export interface D1MigrationFile { name: string; sql: string }
 export interface D1MigrationSet extends D1MigrationDatabase { files: D1MigrationFile[] }
 export interface D1MigrationEvidence { binding: string; databaseName: string; databaseId: string; table: string; pending: string[]; applied: string[]; failed?: { name: string; error: string } }
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
-const repoPath = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)*$/;
-const tableName = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+export const migrationsPathPattern = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)*$/;
+export const migrationsTablePattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 
 export function migrationDatabases(d1Databases: unknown): D1MigrationDatabase[] {
   if (!Array.isArray(d1Databases)) return [];
@@ -24,9 +24,9 @@ export function migrationDatabases(d1Databases: unknown): D1MigrationDatabase[] 
     if (entry.migrations_pattern !== undefined) throw new WorkerBuildFailure('D1_MIGRATIONS_PATTERN_UNSUPPORTED', `D1 binding ${String(entry.binding)} sets migrations_pattern, which Gitflare does not apply yet. Use the default <migrations_dir>/*.sql layout.`);
     if (typeof entry.binding !== 'string' || typeof entry.database_name !== 'string') throw new WorkerBuildFailure('D1_MIGRATIONS_CONFIG_INVALID', 'A D1 database with migrations_dir needs binding and database_name.');
     const directory = entry.migrations_dir.replace(/\/+$/, '') || '.';
-    if (directory !== '.' && !repoPath.test(directory)) throw new WorkerBuildFailure('D1_MIGRATIONS_CONFIG_INVALID', `D1 binding ${entry.binding} has a migrations_dir outside the repository.`);
+    if (directory !== '.' && !migrationsPathPattern.test(directory)) throw new WorkerBuildFailure('D1_MIGRATIONS_CONFIG_INVALID', `D1 binding ${entry.binding} has a migrations_dir outside the repository.`);
     const table = typeof entry.migrations_table === 'string' ? entry.migrations_table : D1_MIGRATIONS_TABLE;
-    if (!tableName.test(table)) throw new WorkerBuildFailure('D1_MIGRATIONS_CONFIG_INVALID', `D1 binding ${entry.binding} has an unsupported migrations_table name.`);
+    if (!migrationsTablePattern.test(table)) throw new WorkerBuildFailure('D1_MIGRATIONS_CONFIG_INVALID', `D1 binding ${entry.binding} has an unsupported migrations_table name.`);
     databases.push({ binding: entry.binding, databaseName: entry.database_name, ...(typeof entry.database_id === 'string' ? { databaseId: entry.database_id } : {}), directory, table });
   }
   return databases;
@@ -79,6 +79,7 @@ export function parseMigrationFiles(stdout: string, databases: D1MigrationDataba
   if (!record(value)) throw new WorkerBuildFailure('D1_MIGRATIONS_OUTPUT_INVALID', 'The D1 migration files could not be read.');
   return databases.map((database) => {
     const files = value[database.directory];
+    if ((files === null || files === undefined) && database.optional) return { ...database, files: [] };
     if (files === null || files === undefined) throw new WorkerBuildFailure('D1_MIGRATIONS_DIRECTORY_MISSING', `No migrations present at ${database.directory} for D1 binding ${database.binding}.`);
     if (!Array.isArray(files)) throw new WorkerBuildFailure('D1_MIGRATIONS_OUTPUT_INVALID', 'The D1 migration files could not be read.');
     const parsed = files.filter((file): file is D1MigrationFile => record(file) && typeof file.name === 'string' && /^[A-Za-z0-9._@+-]{1,200}\.sql$/.test(file.name) && typeof file.sql === 'string');

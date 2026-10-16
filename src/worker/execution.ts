@@ -11,7 +11,8 @@ export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { classifyPreview, previewPlan, workerPreviewBuildCommand } from './preview-plan';
 import { buildWorkerBundle, DEPLOY_BUILD_TIMEOUT_MS, deployBuildScript, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type BundleSandbox, type ResolvedWorkerConfig, type WorkerBundle } from './worker-bundle';
 import { collectAndUploadAssets, type AssetsOptions } from './worker-assets';
-import { migrationDatabases, readMigrationFiles } from './d1-migrations';
+import { migrationDatabases, readMigrationFiles, type D1MigrationSet } from './d1-migrations';
+import { previewD1Migrations } from './preview-d1';
 import type { BuiltTarget } from './deployments';
 import { AGENT_BUDGET_MS, AGENT_CONCURRENCY } from './budgets';
 import { MAX_MISSION_AGENTS } from '../shared/mission-draft';
@@ -1124,7 +1125,7 @@ export class PreviewFailure extends Error {
   }
 }
 
-export interface BuiltPreview { bundle: WorkerBundle; uploadAssets?: BuiltTarget['uploadAssets'] }
+export interface BuiltPreview { bundle: WorkerBundle; uploadAssets?: BuiltTarget['uploadAssets']; d1?: D1MigrationSet[] }
 export type PreparedPreview<T = undefined> = { kind: 'container'; sandboxName: string; candidateSha: string } | { kind: 'worker'; bundle: WorkerBundle; candidateSha: string; published?: T };
 
 function workerAssetsOptions(config: ResolvedWorkerConfig): AssetsOptions | null {
@@ -1175,7 +1176,9 @@ export async function prepareCandidatePreview<T = undefined>(env: ExecutionEnv, 
         if (config && classifyPreview(files, config, { workerPreviews, configuredCommand: policy?.previewCommand }) === 'worker') {
           const assets = workerAssetsOptions(config);
           await assertAuthority();
+          const d1 = previewD1Migrations(config);
           built = { bundle: await buildWorkerBundle(sandbox, config), ...uploadsAssets(sandbox, assets) };
+          if (d1.length) built.d1 = await readMigrationFiles(sandbox, d1);
         }
       } catch (error) {
         throw new PreviewFailure(`Worker preview could not be built. ${error instanceof Error ? error.message : 'The Worker build failed.'}`);

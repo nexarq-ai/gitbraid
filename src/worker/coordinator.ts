@@ -20,6 +20,7 @@ import { missionStepTimeoutMs } from './budgets';
 import { AUTO_INCREASE_ACTOR, checkDurations, checkPlan, DURATION_SAMPLES, normalizeCheckSettings, withLearnedLimits, type CheckSettingsInput, type LearnedLimits } from './check-settings';
 import { DeploymentLedger, type DeploymentRecord, type DeploymentStatus, type DeploySettings, type DeployState } from './deployments';
 import type { AiCredentials, OperatorModelGrant, OperatorUsageKind, StoredAiGateway, StoredAiKey } from './ai-keys';
+import type { PreviewD1Database } from './worker-bundle';
 
 interface Receipt<T> { fingerprint: string; result: T }
 export interface MissionSummaryCache { repositoryId: string; summaries: MissionSummary[]; cachedAt: string }
@@ -31,9 +32,9 @@ function eligibleRaceRuns(mission: Mission): Mission['runs'] {
   return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
 }
 export interface PreviewCapability { workspaceId?: string; principal?: import('./security').Principal; repositoryId: string; missionId: string; epoch: number; candidateSha: string; sandboxName: string; expiresAt: number; host?: string; isolated?: boolean }
-export interface WorkerPreviewInfo { previewName: string; previewUrl: string | null; deploymentUrl: string | null; notes: string[] }
+export interface WorkerPreviewInfo { previewName: string; previewUrl: string | null; deploymentUrl: string | null; notes: string[]; d1Databases?: PreviewD1Database[] }
 interface PreviewState { claimId: string; epoch: number; candidateSha: string; phase: 'preparing' | 'ready'; expiresAt: number; sandboxName?: string; worker?: WorkerPreviewInfo }
-interface WorkerPreviewRecord { previewName: string; claimId: string; expiresAt: number }
+interface WorkerPreviewRecord { previewName: string; claimId: string; expiresAt: number; d1DatabaseIds?: string[] }
 export const PREVIEW_LEASE_MS = 120_000;
 export const PREVIEW_HEARTBEAT_MS = 30_000;
 export const PREVIEW_READY_MS = 900_000;
@@ -492,7 +493,9 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const state = this.previewClaim(id, epoch, candidateSha, claimId);
       const expiresAt = Date.now() + WORKER_PREVIEW_TTL_MS;
       this.store.put(`preview-state:${id}`, { ...state, phase: 'ready', worker, expiresAt } satisfies PreviewState);
-      this.store.put(`worker-preview:${id}`, { previewName: worker.previewName, claimId, expiresAt } satisfies WorkerPreviewRecord);
+      const previous = this.store.get<WorkerPreviewRecord>(`worker-preview:${id}`);
+      const d1DatabaseIds = [...new Set([...(previous?.previewName === worker.previewName ? previous.d1DatabaseIds ?? [] : []), ...(worker.d1Databases ?? []).map((database) => database.databaseId)])];
+      this.store.put(`worker-preview:${id}`, { previewName: worker.previewName, claimId, expiresAt, ...(d1DatabaseIds.length ? { d1DatabaseIds } : {}) } satisfies WorkerPreviewRecord);
       return expiresAt;
     });
   }
