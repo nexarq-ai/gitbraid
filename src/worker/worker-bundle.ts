@@ -10,10 +10,12 @@ const SENTINEL = 'GITFLARE_WORKER_BUNDLE ';
 export interface WorkerModule { name: string; contentType: string; content: Uint8Array<ArrayBuffer> }
 export interface BindingRef { name: string; type: string }
 export interface DurableObjectBinding { name: string; class_name: string; script_name?: string }
+export interface D1DatabaseSource { binding: string; migrationsDir: string | null; migrationsDirSet: boolean; migrationsTable?: string; migrationsPattern?: boolean }
 export interface WorkerBindingSource {
   vars: Record<string, unknown>;
   durableObjects: DurableObjectBinding[];
   bindings: BindingRef[];
+  d1Databases?: D1DatabaseSource[];
 }
 export interface MigrationStep { tag: string; new_classes?: string[]; new_sqlite_classes?: string[]; renamed_classes?: { from: string; to: string }[]; deleted_classes?: string[] }
 export interface ResolvedWorkerConfig {
@@ -157,7 +159,14 @@ const source = (block) => {
     ...single(block.stream, 'stream'), ...single(block.media, 'media'),
   ];
   const durableObjects = (block.durable_objects?.bindings ?? []).map((item) => ({ name: item.name, class_name: item.class_name, ...(item.script_name ? { script_name: item.script_name } : {}) }));
-  return { vars: block.vars ?? {}, durableObjects, bindings };
+  const d1Databases = (Array.isArray(block.d1_databases) ? block.d1_databases : []).filter((item) => typeof item?.binding === 'string').map((item) => ({
+    binding: item.binding,
+    migrationsDir: repoRelative(typeof item.migrations_dir === 'string' ? item.migrations_dir : 'migrations'),
+    migrationsDirSet: typeof item.migrations_dir === 'string',
+    ...(typeof item.migrations_table === 'string' ? { migrationsTable: item.migrations_table } : {}),
+    ...(item.migrations_pattern !== undefined ? { migrationsPattern: true } : {}),
+  }));
+  return { vars: block.vars ?? {}, durableObjects, bindings, d1Databases };
 };
 const output = {
   configPath,
@@ -215,7 +224,14 @@ function bindingSource(value: unknown): WorkerBindingSource | null {
   const vars = record(value.vars) ? value.vars : {};
   const durableObjects = Array.isArray(value.durableObjects) ? value.durableObjects.filter((item): item is DurableObjectBinding => record(item) && typeof item.name === 'string' && bindingName.test(item.name) && typeof item.class_name === 'string' && bindingName.test(item.class_name) && (item.script_name === undefined || typeof item.script_name === 'string')) : [];
   const bindings = Array.isArray(value.bindings) ? value.bindings.filter((item): item is BindingRef => record(item) && typeof item.name === 'string' && typeof item.type === 'string').map((item) => ({ name: item.name.slice(0, 64), type: item.type.slice(0, 40) })) : [];
-  return { vars: Object.fromEntries(Object.entries(vars).filter(([name]) => bindingName.test(name))), durableObjects, bindings };
+  const d1Databases = Array.isArray(value.d1Databases) ? value.d1Databases.filter((item): item is D1DatabaseSource => record(item) && typeof item.binding === 'string' && bindingName.test(item.binding) && (item.migrationsDir === null || typeof item.migrationsDir === 'string')).map((item) => ({
+    binding: item.binding,
+    migrationsDir: item.migrationsDir,
+    migrationsDirSet: item.migrationsDirSet === true,
+    ...(typeof item.migrationsTable === 'string' ? { migrationsTable: item.migrationsTable } : {}),
+    ...(item.migrationsPattern === true ? { migrationsPattern: true } : {}),
+  })) : [];
+  return { vars: Object.fromEntries(Object.entries(vars).filter(([name]) => bindingName.test(name))), durableObjects, bindings, ...(d1Databases.length ? { d1Databases } : {}) };
 }
 
 export function parseWorkerConfig(stdout: string): ResolvedWorkerConfig | null {
@@ -305,7 +321,8 @@ export async function buildWorkerBundle(sandbox: BundleSandbox, config: Resolved
   return parseWorkerBundle(output.stdout, config);
 }
 
-export type PreviewBinding = { type: 'plain_text'; text: string } | { type: 'json'; json: unknown } | { type: 'durable_object_namespace'; class_name: string } | { type: 'assets' };
+export type PreviewBinding = { type: 'plain_text'; text: string } | { type: 'json'; json: unknown } | { type: 'durable_object_namespace'; class_name: string } | { type: 'assets' } | { type: 'd1'; database_id: string; database_name: string };
+export interface PreviewD1Database { binding: string; databaseName: string; databaseId: string; migrationsApplied: number }
 export interface PreviewBindingPlan { env: Record<string, PreviewBinding>; notes: string[] }
 
 export function declaredDurableObjectClasses(config: ResolvedWorkerConfig): Set<string> {
@@ -319,7 +336,7 @@ export function declaredDurableObjectClasses(config: ResolvedWorkerConfig): Set<
   return declared;
 }
 
-export function hostedPreviewBindings(config: ResolvedWorkerConfig): PreviewBindingPlan {
+export function hostedPreviewBindings(config: ResolvedWorkerConfig, d1: PreviewD1Database[] = []): PreviewBindingPlan {
   const source = config.previews ?? config.production;
   const env: Record<string, PreviewBinding> = {};
   const notes: string[] = [];
@@ -333,7 +350,12 @@ export function hostedPreviewBindings(config: ResolvedWorkerConfig): PreviewBind
     else if (!declared.has(binding.class_name)) notes.push(`Binding ${binding.name} (Durable Object ${binding.class_name}) has no migration or export and is not available in hosted previews.`);
     else env[binding.name] = { type: 'durable_object_namespace', class_name: binding.class_name };
   }
-  for (const binding of source.bindings) notes.push(`Binding ${binding.name} (${binding.type}) is not available in hosted previews.`);
+  for (const binding of source.bindings) {
+    const database = binding.type === 'd1' ? d1.find((item) => item.binding === binding.name) : undefined;
+    if (!database) { notes.push(`Binding ${binding.name} (${binding.type}) is not available in hosted previews.`); continue; }
+    env[binding.name] = { type: 'd1', database_id: database.databaseId, database_name: database.databaseName };
+    notes.push(`D1 ${binding.name} → isolated preview database ${database.databaseName}, migrations applied: ${database.migrationsApplied}`);
+  }
   const assetsBinding = config.assets && record(config.deploy?.assets) ? config.deploy.assets.binding : undefined;
   if (typeof assetsBinding === 'string' && bindingName.test(assetsBinding)) env[assetsBinding] = { type: 'assets' };
   if (config.containers.length) notes.push('Containers are not available in hosted previews.');

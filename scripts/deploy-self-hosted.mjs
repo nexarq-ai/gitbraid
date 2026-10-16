@@ -127,7 +127,7 @@ export async function deploySelfHosted() {
   for (const secret of ['ADMIN_EMAIL', 'ADMIN_PASSWORD']) if (process.env[secret]) await api('PUT', `/workers/scripts/${config.name}/secrets`, { name: secret, type: 'secret_text', text: process.env[secret] });
   const previewEnv = { ...authEnv, WRANGLER_CI_OVERRIDE_NAME: preview.name };
   await run([wrangler, 'deploy', '--config', 'wrangler.preview.jsonc', '--name', preview.name], { env: previewEnv });
-  if (!previewsToken) console.log(`Worker Previews stay off until you create an API token limited to Workers Scripts Write on this account and run: npx wrangler secret put PREVIEWS_API_TOKEN --name ${config.name}`);
+  if (!previewsToken) console.log(`Worker Previews stay off until you create an API token limited to this account with Workers Scripts Edit and D1 Edit (D1 Edit gives previews of apps that bind D1 their own isolated databases) and run: npx wrangler secret put PREVIEWS_API_TOKEN --name ${config.name}`);
   console.log(`Deployed ${config.name} and ${preview.name} in the selected account. Sign in with the administrator credentials configured during deployment, then enroll MFA. Configure your provider BYOK inside Cloudflare AI Gateway before executing agents.`);
 }
 

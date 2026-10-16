@@ -1,5 +1,5 @@
 import { ApiError } from './domain';
-import { hostedPreviewBindings, previewExports, previewMigrations, type WorkerBundle } from './worker-bundle';
+import { hostedPreviewBindings, previewExports, previewMigrations, type PreviewD1Database, type WorkerBundle } from './worker-bundle';
 
 // Worker Previews REST endpoints are not in the public API reference yet; paths and payloads mirror Wrangler 4.149 (deploy-helpers/src/preview/api.ts)
 const API_ORIGIN = 'https://api.cloudflare.com/client/v4';
@@ -8,7 +8,7 @@ const WORKER_NOT_FOUND = [10007, 10090];
 
 export interface WorkerPreviewsEnv { PREVIEWS_API_TOKEN?: string; PREVIEWS_ACCOUNT_ID?: string; PREVIEWS_WORKER_NAME?: string }
 export interface WorkerPreviewsConfig { accountId: string; workerName: string; token: string }
-export interface WorkerPreviewResult { previewName: string; previewId: string; previewUrl: string | null; deploymentId: string; deploymentUrl: string | null; notes: string[] }
+export interface WorkerPreviewResult { previewName: string; previewId: string; previewUrl: string | null; deploymentId: string; deploymentUrl: string | null; notes: string[]; d1Databases?: PreviewD1Database[] }
 export type Fetcher = (input: Request) => Promise<Response>;
 interface Envelope<T> { success?: boolean; errors?: { code?: number; message?: string }[]; result?: T }
 interface PreviewResource { id?: string; name?: string; slug?: string; urls?: string[] }
@@ -83,7 +83,7 @@ export function previewDeploymentForm(bundle: WorkerBundle, metadata: Record<str
   return form;
 }
 
-export interface UpsertPreviewInput { alias: string; bundle: WorkerBundle; annotations?: Record<string, string>; uploadAssets?: () => Promise<PreviewAssets> }
+export interface UpsertPreviewInput { alias: string; bundle: WorkerBundle; annotations?: Record<string, string>; uploadAssets?: () => Promise<PreviewAssets>; d1?: PreviewD1Database[] }
 
 export async function upsertWorkerPreview(config: WorkerPreviewsConfig, input: UpsertPreviewInput, fetcher: Fetcher = (request) => fetch(request)): Promise<WorkerPreviewResult> {
   if (!validPreviewAlias(input.alias, config.workerName)) throw new WorkerPreviewError('PREVIEW_NAME_INVALID', 'The preview name is not a valid hostname label.');
@@ -98,7 +98,7 @@ export async function upsertWorkerPreview(config: WorkerPreviewsConfig, input: U
     try { latest = await call<PreviewDeployment>(config, fetcher, `/previews/${encodeURIComponent(preview.id)}/deployments/latest`); }
     catch (error) { if (!notFound(error)) throw error; }
   }
-  const plan = hostedPreviewBindings(input.bundle.config);
+  const plan = hostedPreviewBindings(input.bundle.config, input.d1);
   const migrations = previewMigrations(input.bundle.config, latest?.migration_tag);
   const exported = previewExports(input.bundle.config);
   const assets = input.uploadAssets ? previewAssetsMetadata(await input.uploadAssets()) : null;
@@ -114,7 +114,7 @@ export async function upsertWorkerPreview(config: WorkerPreviewsConfig, input: U
   const deployment = await call<PreviewDeployment>(config, fetcher, `/previews/${encodeURIComponent(preview.id)}/deployments`, { method: 'POST', body: previewDeploymentForm(input.bundle, metadata, assets?.rules) });
   if (!deployment?.id) throw new WorkerPreviewError('PREVIEWS_REJECTED', 'Cloudflare did not return a preview deployment.');
   const https = (urls?: string[]) => urls?.find((url) => { try { return new URL(url).protocol === 'https:'; } catch { return false; } }) ?? null;
-  return { previewName: input.alias, previewId: preview.id, previewUrl: https(preview.urls), deploymentId: deployment.id, deploymentUrl: https(deployment.urls), notes: plan.notes };
+  return { previewName: input.alias, previewId: preview.id, previewUrl: https(preview.urls), deploymentId: deployment.id, deploymentUrl: https(deployment.urls), notes: plan.notes, ...(input.d1?.length ? { d1Databases: input.d1 } : {}) };
 }
 
 export async function deleteWorkerPreview(config: WorkerPreviewsConfig, alias: string, fetcher: Fetcher = (request) => fetch(request)): Promise<'deleted' | 'missing'> {

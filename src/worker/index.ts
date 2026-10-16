@@ -694,7 +694,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       try { claim = await coordinator.claimPreview(key, mission.id, mission.epoch, mission.candidateSha); }
       catch (error) { if (reserved) await catalog.releasePreviewSlot(mission.id); throw error; }
       if (claim.previous) await env.SANDBOX.getByName(claim.previous).destroy().catch(() => {});
-      if (claim.worker) return Response.json({ status: 'ready', kind: 'worker', candidateSha: mission.candidateSha, expiresAt: new Date(claim.expiresAt ?? Date.now()).toISOString(), previewUrl: claim.worker.previewUrl ?? claim.worker.deploymentUrl, deploymentUrl: claim.worker.deploymentUrl, previewName: claim.worker.previewName, notes: claim.worker.notes, access: 'public' });
+      if (claim.worker) return Response.json({ status: 'ready', kind: 'worker', candidateSha: mission.candidateSha, expiresAt: new Date(claim.expiresAt ?? Date.now()).toISOString(), previewUrl: claim.worker.previewUrl ?? claim.worker.deploymentUrl, deploymentUrl: claim.worker.deploymentUrl, previewName: claim.worker.previewName, notes: claim.worker.notes, ...(claim.worker.d1Databases?.length ? { d1Databases: claim.worker.d1Databases } : {}), access: 'public' });
       const sandboxName = claim.sandboxName;
       if (!sandboxName) {
         if (claim.claimed && await dispatchBackground(env.MISSION_WORKFLOW, previewWorkflowId(claim.claimId), { kind: 'preview', repositoryId: repository.id, missionId: mission.id, epoch: mission.epoch, candidateSha: mission.candidateSha, claimId: claim.claimId, principal }) === 'missing') {
