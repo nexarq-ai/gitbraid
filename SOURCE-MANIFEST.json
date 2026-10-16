@@ -510,8 +510,8 @@
     },
     {
       "path": "src/worker/budgets.ts",
-      "size": 2286,
-      "sha256": "e8c0375010ec8da19d1d7de5d23c827681e2b215ab3434db58817c18e2a7ad8a"
+      "size": 2451,
+      "sha256": "38cb803a0ff421195a4b0a191f7939b3c4e05f3b08975d1e1935e162c72af85b"
     },
     {
       "path": "src/worker/capacity.ts",
@@ -595,8 +595,8 @@
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 89314,
-      "sha256": "451f32c84db99897afcba27844e5acb5500be3ee9fc36bf43fec99735e89627e"
+      "size": 94146,
+      "sha256": "27e798b216b9789e444209611aaeb3b9523bfe2665b9c274166e20f615f0b1c2"
     },
     {
       "path": "src/worker/gateway-routing.ts",
