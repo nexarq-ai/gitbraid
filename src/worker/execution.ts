@@ -320,10 +320,10 @@ async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string
   await checked(sandbox, ['git', 'config', 'core.hooksPath', '/dev/null']);
 }
 
-async function fetchRef(sandbox: SandboxRunner, remote: string, ref: string): Promise<string> {
+async function fetchRef(sandbox: SandboxRunner, remote: string, ref: string, options: string[] = []): Promise<string> {
   for (let attempt = 1; ; attempt++) {
     const started = Date.now();
-    const result = await sandbox.command(['git', 'fetch', '--', remote, ref], '/workspace/repo', CLONE_TIMEOUT_MS);
+    const result = await sandbox.command(['git', 'fetch', ...options, '--', remote, ref], '/workspace/repo', CLONE_TIMEOUT_MS);
     if (result.exitCode === 0) return checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
     const failure = gitNetworkFailure('fetch', result, attempt);
     console.warn(JSON.stringify({ event: 'git_fetch_failed', attempt, attempts: CLONE_ATTEMPTS, exitCode: result.exitCode, timedOut: !!result.timedOut, transient: failure.transient, durationMs: Date.now() - started }));
@@ -586,8 +586,7 @@ export type BranchMergeResult = { mode: 'fast-forward' | 'merge' } | { mode: 'co
 export async function applyBranchMerge(sandbox: SandboxRunner, remote: string, change: BranchChange): Promise<BranchMergeResult> {
   if (!validGitSha(change.headSha)) throw new Error('A pull request needs the exact branch head commit');
   const branch = branchName(change.branch);
-  await checked(sandbox, ['git', 'fetch', '--no-tags', '--', remote, `refs/heads/${branch}`]);
-  const fetched = await checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
+  const fetched = await fetchRef(sandbox, remote, `refs/heads/${branch}`, ['--no-tags']);
   if (fetched !== change.headSha) throw new Error(`Branch ${branch} moved to ${fetched.slice(0, 12)} after this proposal recorded ${change.headSha.slice(0, 12)}. Use Update from stream to check the new head.`);
   const target = await checked(sandbox, ['git', 'rev-parse', 'HEAD']);
   if ((await sandbox.command(['git', 'merge-base', '--is-ancestor', change.headSha, target], '/workspace/repo')).exitCode === 0) throw new Error(`Branch ${branch} has no commits that are not already on ${change.targetBranch}`);
@@ -903,8 +902,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     let keptLockfile: string | null = null;
     for (const run of included) {
       const candidate = forks.get(run.id)!;
-      await checked(sandbox, ['git', 'fetch', '--', candidate.remote, 'refs/heads/gitflare-candidate']);
-      const fetched = await checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
+      const fetched = await fetchRef(sandbox, candidate.remote, 'refs/heads/gitflare-candidate');
       if (fetched !== run.commitSha) throw new Error('Candidate changed after verification');
       const merged = await sandbox.command(['git', '-c', 'core.hooksPath=/dev/null', 'merge', '--no-ff', '--no-edit', fetched], '/workspace/repo');
       if (merged.exitCode === 0) continue;
