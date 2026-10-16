@@ -57,7 +57,7 @@ export function requiredAccess(name: string, annotations: { readOnlyHint?: boole
   if (annotations?.readOnlyHint) return 'read';
   if (name === 'gitflare_ai_settings' && input.enabled === undefined) return 'read';
   if ((name === 'gitflare_branch_protection' || name === 'gitflare_check_settings') && input.action !== 'set') return 'read';
-  if (name === 'gitflare_cloudflare_connection' && ['status', 'accounts', 'resources'].includes(String(input.action))) return 'read';
+  if (name === 'gitflare_cloudflare_connection' && ['status', 'accounts', 'resources', 'installation-credential'].includes(String(input.action))) return 'read';
   if (name === 'gitflare_cloudflare_project' && ['get', 'usage'].includes(String(input.action))) return 'read';
   if (name === 'gitflare_import_repository_url' && input.action === 'status') return 'read';
   return LAND_TOOLS.has(name) ? 'land' : ADMIN_TOOLS.has(name) ? 'admin' : 'write';
@@ -156,9 +156,15 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     return response.json() as Promise<T>;
   }
   server.registerTool('gitflare_cloudflare_connection', {
-    title: 'Connect and manage Cloudflare', description: 'Check or change the workspace Cloudflare connection, or with repository_id that repository’s own one (else it uses the workspace one; status reports source): status, accounts, resources, select-account, disconnect. connect returns a browser URL for the Owner to finish; credentials are never returned. Reads need read access; changes need the Owner role and admin access.',
-    inputSchema: z.object({ action: z.enum(['status', 'connect', 'accounts', 'resources', 'select-account', 'disconnect']), accountId: z.string().regex(/^[a-f0-9]{32}$/).optional().describe('Cloudflare account ID for select-account.'), repository_id: repositoryId.optional().describe('Act on this repository’s own Cloudflare connection instead of the workspace connection.') }).strict(), annotations: { ...external, destructiveHint: true },
+    title: 'Connect and manage Cloudflare', description: 'Workspace (or with repository_id, repository) Cloudflare connection: status, accounts, resources, select-account, disconnect; connect returns a browser URL. installation-credential* read or remove the installation’s previews token status; setup returns a browser URL, since tokens never pass through MCP. Credentials are never returned. Reads need read access; changes need Owner and admin access.',
+    inputSchema: z.object({ action: z.enum(['status', 'connect', 'accounts', 'resources', 'select-account', 'disconnect', 'installation-credential', 'installation-credential-setup', 'installation-credential-remove']), accountId: z.string().regex(/^[a-f0-9]{32}$/).optional().describe('Cloudflare account ID for select-account.'), repository_id: repositoryId.optional().describe('Act on this repository’s own Cloudflare connection instead of the workspace connection.') }).strict(), annotations: { ...external, destructiveHint: true },
   }, (input) => guarded(async () => {
+    if (input.action.startsWith('installation-credential')) {
+      if (input.action === 'installation-credential') return call<Record<string, unknown>>('/api/cloudflare/installation-credential');
+      if (input.action === 'installation-credential-remove') return call<Record<string, unknown>>('/api/cloudflare/installation-credential/remove', {});
+      const status = await call<Record<string, unknown>>('/api/cloudflare/installation-credential');
+      return { browserStartUrl: `${origin}/settings/cloudflare`, browserEntryRequired: true, manageable: status.manageable, state: status.state };
+    }
     const base = input.repository_id ? `/api/repositories/${encodeURIComponent(input.repository_id)}/cloudflare/connection` : '/api/cloudflare';
     if (input.action === 'connect') {
       await call<Record<string, unknown>>(base);

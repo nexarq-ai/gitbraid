@@ -25,7 +25,8 @@ interface Credential { id: string; workspaceId: string; userId: string; name: st
 interface Protection { requiredApprovals: number; requiredChecks: string[]; preventSelfApproval: boolean }
 export interface ReviewRule { requiredApprovals: number; requiredCheckNames: string[]; preventSelfApproval: boolean; restrictLanders: Role[] }
 interface Audit { id: string; workspaceId: string; actorId: string; action: string; timestamp: string; resourceId?: string; sequence?: number }
-export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string }
+export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string; INSTALLATION_OWNER_WORKSPACES?: string }
+export interface InstallationCredentialRecord { version: string; encrypted: string; accountId: string; workerName: string; permissions: string[]; missing: string[]; verifiedAt: string; setBy: string }
 interface MfaRecord { id: string; encryptedSecret: string; enabled: boolean; lastStep: number; recoveryHashes: string[] }
 interface AuthChallenge { id: string; userId: string; kind: 'setup' | 'enroll' | 'login'; workspaceId?: string; expiresAt: number; used?: boolean; linkId?: string }
 export interface CloudflareSigninState { id: string; browserHash: string; expiresAt: number; encrypted: string }
@@ -135,7 +136,7 @@ const key = {
   failures: (id: string) => `id:fail:${enc(id)}`, limit: (id: string) => `id:limit:${enc(id)}`, installation: (id: string) => `id:install:${enc(id)}`, machine: (id: string) => `id:machine:${enc(id)}`, machineClaim: (hash: string) => `id:mclaim:${enc(hash)}`,
   signin: (id: string) => `id:cfsignin:${enc(id)}`, link: (id: string) => `id:cflink:${enc(id)}`, linkEmail: (email: string) => `id:cflinkemail:${enc(email)}`,
   route: (hash: string) => `id:route:${enc(hash)}`, sessionHome: (id: string) => `id:sesshome:${enc(id)}`, invite: (hash: string) => `id:invite:${enc(hash)}`, oauthState: (id: string) => `id:cfstate:${enc(id)}`,
-  outbox: (id: string) => `id:outbox:${enc(id)}`, legacyWorkspace: (id: string) => `id:legacy-ws:${enc(id)}`, migration: 'id:migration',
+  outbox: (id: string) => `id:outbox:${enc(id)}`, legacyWorkspace: (id: string) => `id:legacy-ws:${enc(id)}`, migration: 'id:migration', installationCredential: 'id:install-cf',
 };
 
 class Records {
@@ -272,6 +273,14 @@ export class IdentityStore {
   addHint(userId: string, workspaceId: string) { return this.write(unit => this.addHintTo(unit, userId, workspaceId)); }
   removeHint(userId: string, workspaceId: string) { return this.write(async unit => { const hints = await this.hintList(unit, userId); if (hints.includes(workspaceId)) unit.put(key.hints(userId), hints.filter(id => id !== workspaceId)); }); }
   mfaEnabled(userId: string) { return this.read(async unit => !!(await unit.get<MfaRecord>(key.mfa(userId)))?.enabled); }
+  installationCredential(operation: 'get' | 'put' | 'delete', value?: InstallationCredentialRecord) {
+    if (operation === 'get') return this.read(async unit => await unit.get<InstallationCredentialRecord>(key.installationCredential) ?? null);
+    return this.write(async unit => {
+      const existing = await unit.get<InstallationCredentialRecord>(key.installationCredential) ?? null;
+      if (operation === 'put') unit.put(key.installationCredential, value); else unit.delete(key.installationCredential);
+      return existing;
+    });
+  }
   installationWorkspace() { return this.read(async unit => (await unit.get<Installation>(key.installation('self')))?.workspaceId ?? null); }
   selfHostedAllowed(userId: string, workspaceId: string) { return this.read(async unit => (await unit.get<Installation>(key.installation('self')))?.workspaceId === workspaceId && !!(await unit.get<MfaRecord>(key.mfa(userId)))?.enabled); }
   lookup(kind: 'route' | 'sessionHome' | 'invite' | 'oauthState', id: string) { return this.read(async unit => { const entry = await unit.get<IndexEntry>(key[kind](id)); return entry && (kind === 'invite' || entry.expiresAt > Date.now()) ? entry.workspaceId : null; }); }
@@ -1047,7 +1056,7 @@ function validActions(value: unknown): Action[] { if (!Array.isArray(value) || !
 
 type Remote<T> = { [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never };
 export interface SecurityPeer { identityCall(op: string, args: unknown[]): Promise<unknown>; shardCall(workspaceId: string, op: string, args: unknown[]): Promise<unknown> }
-const IDENTITY_OPS = new Set(['rateLimit', 'users', 'account', 'accountByEmail', 'hints', 'addHint', 'removeHint', 'mfaEnabled', 'installationWorkspace', 'selfHostedAllowed', 'lookup', 'index', 'loginAttempt', 'loginFinish', 'applyLink', 'beginMfa', 'challenge', 'verifyChallenge', 'finishOutbox', 'revokeAccount', 'startSetup', 'createUser', 'deleteUser', 'verifyEmail', 'resendVerification', 'requestReset', 'confirmReset', 'cloudflareSigninState', 'cloudflareLookup', 'cloudflareLinkRequest', 'reviewerCreate', 'reviewerUpdate', 'machine', 'createMachine', 'claimMachine', 'legacyWorkspace', 'legacyImported', 'migrationStatus']);
+const IDENTITY_OPS = new Set(['rateLimit', 'users', 'account', 'accountByEmail', 'hints', 'addHint', 'removeHint', 'mfaEnabled', 'installationCredential', 'installationWorkspace', 'selfHostedAllowed', 'lookup', 'index', 'loginAttempt', 'loginFinish', 'applyLink', 'beginMfa', 'challenge', 'verifyChallenge', 'finishOutbox', 'revokeAccount', 'startSetup', 'createUser', 'deleteUser', 'verifyEmail', 'resendVerification', 'requestReset', 'confirmReset', 'cloudflareSigninState', 'cloudflareLookup', 'cloudflareLinkRequest', 'reviewerCreate', 'reviewerUpdate', 'machine', 'createMachine', 'claimMachine', 'legacyWorkspace', 'legacyImported', 'migrationStatus']);
 const SHARD_OPS = new Set(['ensureImported', 'authenticateToken', 'sessionPrincipal', 'sessionState', 'isMember', 'validatePrincipal', 'enrollmentAllowed', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshotPart', 'membership', 'bootstrapAllowed', 'createSession', 'clientSession', 'revokeSession', 'revokeUserSessions', 'revokeUserCredentials', 'audit', 'auditMember', 'initWorkspace', 'peekInvite', 'acceptInvite', 'addMember', 'claimAgent', 'action', 'connectionStore', 'projectStore', 'clearApprovals', 'recordApproval', 'assertLand']);
 function remote<T>(call: (op: string, args: unknown[]) => Promise<unknown>, inDurableObject: boolean): Remote<T> {
   return new Proxy({}, {
@@ -1119,6 +1128,18 @@ export class SecurityService {
       return result;
     }
     return this.shard(p.workspaceId).connectionStore(p, operation, body);
+  }
+  async installationCredentialAdmin(p: Principal): Promise<boolean> {
+    await this.shard(p.workspaceId).validatePrincipal(p, { owner: true });
+    if (this.options.EDITION === 'self-hosted') return await this.identity().installationWorkspace() === p.workspaceId;
+    return (this.options.INSTALLATION_OWNER_WORKSPACES ?? '').split(',').map(value => value.trim()).filter(Boolean).includes(p.workspaceId);
+  }
+  installationCredential(): Promise<InstallationCredentialRecord | null> { return this.identity().installationCredential('get') as Promise<InstallationCredentialRecord | null>; }
+  async changeInstallationCredential(p: Principal, value: InstallationCredentialRecord | null): Promise<void> {
+    if (!await this.installationCredentialAdmin(p)) fail('INSTALLATION_OWNER_REQUIRED', 'Only an owner of the installation workspace can change its Cloudflare credential.');
+    if (value && (typeof value.encrypted !== 'string' || !/^[a-f0-9]+$/.test(value.encrypted) || !/^[a-f0-9]{32}$/.test(value.accountId) || !/^[a-z0-9][a-z0-9-]{0,52}$/.test(value.workerName) || value.setBy !== p.userId)) throw new ApiError(400, 'INVALID_CREDENTIAL', 'The installation credential record is invalid.');
+    const previous = value ? await this.identity().installationCredential('put', value) : await this.identity().installationCredential('delete');
+    if (value || previous) await this.shard(p.workspaceId).audit([{ actorId: p.userId, action: value ? 'installation.cloudflare_credential.set' : 'installation.cloudflare_credential.removed', resourceId: (value ?? previous as InstallationCredentialRecord).accountId }]);
   }
   projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}): Promise<unknown> { return this.shard(p.workspaceId).projectStore(p, repositoryId, operation, body); }
   async rateLimit(key: string, max = 15, windowMs = 900000): Promise<void> {

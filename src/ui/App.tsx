@@ -57,6 +57,7 @@ import WorkspaceLoader, { RouteProgress } from "./WorkspaceLoader";
 import AiSettingsPanel from "./AiSettingsPanel";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
 import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
+import { InstallationCredentialPrompt } from "./InstallationCredential";
 
 const loadMissionDetail = () => import("./MissionDetail");
 const MissionDetail = lazy(loadMissionDetail);
@@ -1059,6 +1060,7 @@ function Workspace() {
                 )}
                 {page === "settings" && (
                   <>
+                    {authConfig.edition === "self-hosted" && permissions.includes("manage") && <InstallationCredentialPrompt onOpen={() => navigate("settings/cloudflare")} />}
                     <section className="panel settings-cloudflare"><div className="settings-cloudflare-heading"><img src={cloudflareIcon} alt="" /><div><h2>Cloudflare account and resources</h2><p>Connect your account and manage the services used by your repositories.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/cloudflare")}>Manage Cloudflare</Button></section>
                     <section className="panel settings-cloudflare ai-only"><div className="settings-cloudflare-heading"><RobotIcon size={27} /><div><h2>AI models</h2><p>Choose available Workers AI models and manage provider connections.</p></div></div><Button variant="secondary" size="base" onClick={() => navigate("settings/models")}>Manage AI models</Button></section>
                     <AiSettingsPanel settings={workspace.ai} canManage={permissions.includes("manage")} onChanged={load} />

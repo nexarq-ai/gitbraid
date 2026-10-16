@@ -6,7 +6,8 @@ import { LANDING_STEP_MS, PREVIEW_STEP_MS } from './budgets';
 import { catalogName } from './capacity';
 import { PREVIEW_HEARTBEAT_MS, WORKER_PREVIEW_TTL_MS } from './coordinator';
 import { buildLandedWorker, integrateCandidate, IntegrationFailure, prepareCandidatePreview, PreviewFailure } from './execution';
-import { deleteWorkerPreview, previewAlias, upsertWorkerPreview, WorkerPreviewError, workerPreviewsConfig } from './worker-previews';
+import { deleteWorkerPreview, previewAlias, upsertWorkerPreview, WorkerPreviewError } from './worker-previews';
+import { resolveWorkerPreviewsConfig } from './installation-credential';
 import { WorkerBuildFailure } from './worker-bundle';
 import { deployWorkflowId, landedDeployment, policyDeployTargets, runDeployment, type DeploymentRecord, type DeployParams } from './deployments';
 import { cloudflareDeployClient } from './cloudflare-deploy';
@@ -135,7 +136,7 @@ function previewsCall(config: { token: string; accountId: string }) {
 }
 
 export async function retirePreview(env: AppEnv, params: PreviewRetireParams, step: StepRunner): Promise<void> {
-  const config = workerPreviewsConfig(env);
+  const config = await resolveWorkerPreviewsConfig(env);
   if (!config) return;
   await step.do('delete worker preview', { retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => deleteWorkerPreview(config, params.previewName));
   const d1DatabaseIds = params.d1DatabaseIds ?? [];
@@ -196,7 +197,7 @@ export async function preparePreview(env: AppEnv, params: PreviewParams, step: S
       const [mission, repository] = await Promise.all([coordinator.getMission(missionId), coordinator.getRepository(repositoryId)]);
       if (!mission || !repository || mission.epoch !== epoch || mission.candidateSha !== candidateSha) throw new PreviewFailure('The candidate changed before its preview started.');
       if (!env.SANDBOX) throw new PreviewFailure('The preview runner is unavailable.');
-      const previews = workerPreviewsConfig(env);
+      const previews = await resolveWorkerPreviewsConfig(env);
       const alias = previews ? previewAlias(missionId, previews.workerName) : '';
       const previewCall = previews ? previewsCall(previews) : null;
       const prepared = await prepareCandidatePreview(env, {

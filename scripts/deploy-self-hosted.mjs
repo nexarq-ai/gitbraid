@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
 const wrangler = resolve(root, 'node_modules/wrangler/bin/wrangler.js');
-const permissionHelp = 'In Cloudflare dashboard, select the deployment API token under Workers → Settings → Builds and grant AI Gateway Read/Write and Artifacts Read/Edit for the selected account, alongside the Workers, Containers, Workflows and KV permissions. Never paste a Cloudflare API token into the application.';
+const permissionHelp = 'In Cloudflare dashboard, select the deployment API token under Workers → Settings → Builds and grant AI Gateway Read/Write and Artifacts Read/Edit for the selected account, alongside the Workers, Containers, Workflows and KV permissions. Never paste this build credential into the application.';
 
 export class ProvisioningError extends Error {
   constructor(status, operation) { super(`${operation} failed (HTTP ${status}). ${status === 401 || status === 403 ? permissionHelp : 'Check account access and resource availability; no provider credential is substituted.'}`); this.status = status; }
@@ -39,6 +39,20 @@ export async function ensurePreviewsWorker(api, workerName) {
   if (await api('GET', `/workers/workers/${workerName}`, undefined, true)) return false;
   await api('POST', '/workers/workers', { name: workerName, subdomain: { enabled: true, previews_enabled: true } });
   return true;
+}
+
+export function installerPreviewsToken(env = process.env) {
+  return (env.GITBRAID_CLOUDFLARE_TOKEN || env.GITBRAID_PREVIEWS_API_TOKEN || '').trim() || undefined;
+}
+
+export async function checkInstallerToken(token, accountId, workerName, fetcher = fetch) {
+  const get = async (path) => {
+    const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+    const envelope = await response.json().catch(() => null);
+    return response.ok && envelope?.success !== false;
+  };
+  if (!await get(`/workers/workers/${workerName}/previews`)) throw new Error(`GITBRAID_CLOUDFLARE_TOKEN cannot manage Worker Previews on ${workerName}. Create it with Workers Scripts: Edit and D1: Edit on this account, or leave it unset and paste a token in Settings → Cloudflare after signing in.`);
+  return { d1: await get('/d1/database?per_page=1') };
 }
 
 export async function ensurePreviewsToken(api, worker, token) {
@@ -123,11 +137,14 @@ export async function deploySelfHosted() {
   await run([wrangler, 'deploy'], { env: authEnv });
   await ensureEncryptionKey(api, config.name, plan.encryptionKeyExists);
   await ensurePreviewsWorker(api, config.vars.PREVIEWS_WORKER_NAME);
-  const previewsToken = await ensurePreviewsToken(api, config.name, process.env.GITBRAID_PREVIEWS_API_TOKEN);
+  const installerToken = installerPreviewsToken();
+  const installerAccess = installerToken ? await checkInstallerToken(installerToken, accountId, config.vars.PREVIEWS_WORKER_NAME).catch(error => { console.error(error.message); return null; }) : null;
+  const previewsToken = await ensurePreviewsToken(api, config.name, installerAccess ? installerToken : undefined);
   for (const secret of ['ADMIN_EMAIL', 'ADMIN_PASSWORD']) if (process.env[secret]) await api('PUT', `/workers/scripts/${config.name}/secrets`, { name: secret, type: 'secret_text', text: process.env[secret] });
   const previewEnv = { ...authEnv, WRANGLER_CI_OVERRIDE_NAME: preview.name };
   await run([wrangler, 'deploy', '--config', 'wrangler.preview.jsonc', '--name', preview.name], { env: previewEnv });
-  if (!previewsToken) console.log(`Worker Previews stay off until you create an API token limited to this account with Workers Scripts Edit and D1 Edit (D1 Edit gives previews of apps that bind D1 their own isolated databases) and run: npx wrangler secret put PREVIEWS_API_TOKEN --name ${config.name}`);
+  if (!previewsToken) console.log('Worker Previews are off until an Owner opens Settings → Cloudflare after signing in and pastes an API token; the card opens Cloudflare with Workers Scripts: Edit and D1: Edit prefilled. No terminal step is needed.');
+  else if (!installerAccess?.d1) console.log('Worker Previews are on. The token cannot manage D1, so previews of apps that bind D1 fail until an Owner replaces it in Settings → Cloudflare.');
   console.log(`Deployed ${config.name} and ${preview.name} in the selected account. Sign in with the administrator credentials configured during deployment, then enroll MFA. Configure your provider BYOK inside Cloudflare AI Gateway before executing agents.`);
 }
 
