@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { BranchChangeResult, CheckOverride, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
-import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint } from './domain';
+import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint, failureLine } from './domain';
 import { repositoryLabel } from '../shared/repository-names';
 import type { AppEnv } from './env';
 import type { ExecutionResult } from './execution';
@@ -52,15 +52,7 @@ const APPROVAL_CLEAR_RETRY_MS = 30_000;
 const APPROVAL_CLEAR_MAX_BACKOFF_MS = 900_000;
 
 const minutes = (ms: number) => Math.ceil(ms / 60_000);
-
-export function failureLine(error: string): string {
-  const first = error.trim().split('\n').find((line) => line.trim()) ?? '';
-  return first
-    .replace(/(\bhttps?:\/\/)[^\s/@]+@/gi, '$1')
-    .replace(/\b(authorization|bearer|token|password|secret)([=:\s]+)\S+/gi, '$1$2[redacted]')
-    .trim()
-    .slice(0, 300);
-}
+const landingCause = (reason: string) => failureLine(reason).replace(/\.$/, '');
 
 export const EXECUTION_UPDATING_MESSAGE = 'Gitflare is finishing an update and could not start this proposal. Nothing was started. Retry in about a minute; if it still fails after 5 minutes, contact your Gitflare operator.';
 
@@ -1159,7 +1151,18 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     });
   }
 
-  integrationFailed(id: string, epoch: number, claimId: string, outcome: 'not_pushed' | 'unknown'): Mission {
+  retryIntegration(id: string, epoch: number, claimId: string, reason: string): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const mission = this.requiredMission(id);
+      const claim = this.store.get<IntegrationClaim>('integration:claim');
+      if (!claim || claim.claimId !== claimId || claim.missionId !== id || claim.epoch !== epoch || mission.epoch !== epoch || mission.status !== 'integrating' || claim.phase !== 'preparing') return false;
+      this.store.put('integration:claim', { ...claim, claimedAt: Date.now() });
+      this.saveMission(mission, `Landing attempt 1 stopped before the canonical push (${landingCause(reason)}). Nothing was pushed and the default branch is unchanged, so landing is retrying once on a fresh runner.`, 'warning');
+      return true;
+    });
+  }
+
+  integrationFailed(id: string, epoch: number, claimId: string, outcome: 'not_pushed' | 'unknown', reason?: string): Mission {
     return this.ctx.storage.transactionSync(() => {
       const mission = this.requiredMission(id);
       const claim = this.store.get<IntegrationClaim>('integration:claim');
@@ -1167,13 +1170,13 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (outcome === 'not_pushed') {
         this.store.delete('integration:claim');
         mission.status = 'approved';
-        mission.error = 'Integration stopped before attempting a canonical push. Retry integration, or revoke approval to rerun this mission.';
+        mission.error = `Integration stopped before attempting a canonical push${reason ? ` (${landingCause(reason)})` : ''}. Retry integration, or revoke approval to rerun this mission.`;
       } else {
         claim.phase = 'pushing';
         this.store.put('integration:claim', claim);
         mission.error = INTEGRATION_UNCONFIRMED_MESSAGE;
       }
-      this.saveMission(mission, mission.error, 'warning');
+      this.saveMission(mission, outcome === 'unknown' && reason ? `${mission.error} Cause: ${landingCause(reason)}.` : mission.error, 'warning');
       this.archive(mission, outcome === 'not_pushed' ? 'integration_failed' : 'integration_uncertain');
       return mission;
     });

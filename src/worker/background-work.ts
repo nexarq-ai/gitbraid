@@ -23,7 +23,7 @@ interface WorkflowBinding<P> {
   create(options: { id: string; params: P }): Promise<unknown>;
   get(id: string): Promise<{ status(): Promise<{ status: string }> }>;
 }
-type LandingOutcome = { kind: 'stale' } | { kind: 'pushed'; sha: string } | { kind: 'failed'; outcome: 'not_pushed' | 'unknown' };
+type LandingOutcome = { kind: 'stale' } | { kind: 'pushed'; sha: string } | { kind: 'failed'; outcome: 'not_pushed' | 'unknown'; reason: string };
 export type BackgroundState = 'running' | 'finished' | 'missing';
 
 const ACTIVE = ['queued', 'running', 'paused', 'waiting', 'waitingForPause'];
@@ -50,14 +50,14 @@ export async function landCandidate(env: AppEnv, params: LandingParams, step: St
   const { repositoryId, missionId, epoch, candidateSha, baseSha, claimId, principal } = params;
   const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
   const access = securityClient(env);
-  const outcome = await step.do('push approved candidate', { retries: { limit: 0, delay: '1 second' }, timeout: LANDING_STEP_MS }, async (): Promise<LandingOutcome> => {
+  const push = (name: string, integrationAttemptId: string) => step.do(name, { retries: { limit: 0, delay: '1 second' }, timeout: LANDING_STEP_MS }, async (): Promise<LandingOutcome> => {
     const [claim, mission, repository] = await Promise.all([coordinator.integrationClaim(), coordinator.getMission(missionId), coordinator.getRepository(repositoryId)]);
     if (claim?.claimId !== claimId || !mission || !repository || mission.status !== 'integrating') return { kind: 'stale' };
     // A replayed step must not push again once the claim recorded a push attempt
-    if (claim.phase === 'pushing') return { kind: 'failed', outcome: 'unknown' };
+    if (claim.phase === 'pushing') return { kind: 'failed', outcome: 'unknown', reason: 'An earlier landing step had already started the canonical push' };
     try {
       const result = await integrateCandidate(env, {
-        repository, mission, integrationAttemptId: claimId,
+        repository, mission, integrationAttemptId,
         beforePush: () => coordinator.claimIntegrationPush(missionId, epoch, claimId),
         assertAuthority: async () => {
           await access.check(principal, 'land', 'repository', repositoryId, missionId);
@@ -66,14 +66,23 @@ export async function landCandidate(env: AppEnv, params: LandingParams, step: St
       });
       return { kind: 'pushed', sha: result.sha };
     } catch (error) {
-      return { kind: 'failed', outcome: error instanceof IntegrationFailure ? error.outcome : 'unknown' };
+      return error instanceof IntegrationFailure ? { kind: 'failed', outcome: error.outcome, reason: error.message } : { kind: 'failed', outcome: 'unknown', reason: 'Landing failed with an unexpected error' };
     }
   });
-  if (outcome.kind === 'stale') return;
+  const first = await push('push approved candidate', claimId);
+  if (first.kind === 'stale') return;
+  const retrying = first.kind === 'failed' && first.outcome === 'not_pushed' && await step.do('retry landing that pushed nothing', { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => {
+    const repository = await coordinator.getRepository(repositoryId);
+    if (!repository || !env.ARTIFACTS) throw new Error('Repository services are unavailable');
+    if (await repositoryHead(env.ARTIFACTS, repository.name, repository.defaultBranch) !== baseSha) return false;
+    return coordinator.retryIntegration(missionId, epoch, claimId, first.reason);
+  });
+  const settled = retrying ? await push('push approved candidate on a fresh runner', `${claimId}-retry`) : first;
+  if (settled.kind === 'stale') return;
   const landed = await step.do('record landing outcome', { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => {
     const repository = await coordinator.getRepository(repositoryId);
     if (!repository || !env.ARTIFACTS) throw new Error('Repository services are unavailable');
-    const head = outcome.kind === 'pushed' ? outcome.sha : await repositoryHead(env.ARTIFACTS, repository.name, repository.defaultBranch).catch(() => null);
+    const head = settled.kind === 'pushed' ? settled.sha : await repositoryHead(env.ARTIFACTS, repository.name, repository.defaultBranch).catch(() => null);
     try {
       if (head === candidateSha) {
         await coordinator.completeIntegration(missionId, epoch, candidateSha, claimId);
@@ -82,7 +91,8 @@ export async function landCandidate(env: AppEnv, params: LandingParams, step: St
         if (listed) await catalog.saveRepository({ ...listed, headSha: candidateSha, updatedAt: new Date().toISOString() });
         return true;
       }
-      await coordinator.integrationFailed(missionId, epoch, claimId, outcome.kind === 'failed' ? outcome.outcome : 'unknown');
+      const failure = settled.kind === 'failed' ? settled : { outcome: 'unknown' as const, reason: `The default branch did not show pushed commit ${candidateSha.slice(0, 12)}` };
+      await coordinator.integrationFailed(missionId, epoch, claimId, failure.outcome, failure.reason);
     } catch (error) { if (!staleExecution(error)) throw error; }
     return false;
   });
