@@ -759,7 +759,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
         throw new ApiError(409, 'INTEGRATION_PENDING', integrationPendingMessage(candidateSha));
       }
       if (await dispatchBackground(env.MISSION_WORKFLOW, landingWorkflowId(claim.claimId), { kind: 'land', repositoryId: repository.id, missionId: mission.id, epoch: claim.mission.epoch, candidateSha, baseSha, claimId: claim.claimId, principal }) === 'missing') {
-        await coordinator.integrationFailed(mission.id, claim.mission.epoch, claim.claimId, 'not_pushed');
+        await coordinator.integrationFailed(mission.id, claim.mission.epoch, claim.claimId, 'not_pushed', 'the landing Workflow could not be scheduled');
         throw new ApiError(503, 'INTEGRATION_NOT_STARTED', 'Landing could not be scheduled and nothing was pushed. Retry landing.');
       }
       return Response.json(claim.mission, { status: 202 });

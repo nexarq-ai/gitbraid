@@ -1,6 +1,7 @@
 import type { AgentRun, BranchChange, Check, CheckPlan, FileChange, Mission, MissionEvent, Repository, RepositorySkillChange, RevertChange, ModelConnection, ModelUsage } from '../shared/types';
 import { branchName } from './branch-protection';
 import { forkRepository, validGitSha, type ArtifactInfo, type ArtifactsBinding } from './artifacts';
+import { failureLine } from './domain';
 import type { CommandResult, GitPermission, PrepareOptions } from '../../runner/sandbox';
 import { loadRepositorySkillContext } from './repository-skills';
 import { validateRepositorySkillChange } from './skill-edit';
@@ -295,11 +296,11 @@ const TRANSIENT_CLONE = /Could not resolve host|Connection (?:reset|refused|time
 
 export type CloneRetry = (message: string) => Promise<void>;
 
-function cloneFailure(result: CommandResult, attempt: number): { message: string; transient: boolean } {
+function gitNetworkFailure(operation: 'clone' | 'fetch', result: CommandResult, attempt: number): { message: string; transient: boolean } {
   const timedOut = !!result.timedOut || TIMEOUT_EXIT_CODES.includes(result.exitCode);
   const detail = (result.stderr.trim() || result.stdout.trim()).split('\n').slice(-6).join('\n').slice(-800);
   const outcome = timedOut ? `timed out after ${Math.round(CLONE_TIMEOUT_MS / 1000)} s (exit ${result.exitCode})` : `failed (exit ${result.exitCode})`;
-  return { message: `Git clone ${outcome} on attempt ${attempt} of ${CLONE_ATTEMPTS}${detail ? `: ${detail}` : ''}`, transient: timedOut || TRANSIENT_CLONE.test(detail) };
+  return { message: `Git ${operation} ${outcome} on attempt ${attempt} of ${CLONE_ATTEMPTS}${detail ? `: ${detail}` : ''}`, transient: timedOut || TRANSIENT_CLONE.test(detail) };
 }
 
 async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string, onRetry: CloneRetry = async () => {}): Promise<void> {
@@ -307,7 +308,7 @@ async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string
     const started = Date.now();
     const result = await sandbox.command(['git', 'clone', '--', fork.remote, '/workspace/repo'], '/workspace', CLONE_TIMEOUT_MS);
     if (result.exitCode === 0) break;
-    const failure = cloneFailure(result, attempt);
+    const failure = gitNetworkFailure('clone', result, attempt);
     console.warn(JSON.stringify({ event: 'git_clone_failed', attempt, attempts: CLONE_ATTEMPTS, exitCode: result.exitCode, timedOut: !!result.timedOut, transient: failure.transient, durationMs: Date.now() - started }));
     if (!failure.transient || attempt >= CLONE_ATTEMPTS) throw new Error(failure.message);
     await onRetry(`${failure.message}. Retrying the clone in a clean directory`);
@@ -317,6 +318,17 @@ async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string
   await checked(sandbox, ['git', 'config', 'user.name', 'Gitflare']);
   await checked(sandbox, ['git', 'config', 'user.email', 'agent@gitflare.invalid']);
   await checked(sandbox, ['git', 'config', 'core.hooksPath', '/dev/null']);
+}
+
+async function fetchRef(sandbox: SandboxRunner, remote: string, ref: string): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const started = Date.now();
+    const result = await sandbox.command(['git', 'fetch', '--', remote, ref], '/workspace/repo', CLONE_TIMEOUT_MS);
+    if (result.exitCode === 0) return checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']);
+    const failure = gitNetworkFailure('fetch', result, attempt);
+    console.warn(JSON.stringify({ event: 'git_fetch_failed', attempt, attempts: CLONE_ATTEMPTS, exitCode: result.exitCode, timedOut: !!result.timedOut, transient: failure.transient, durationMs: Date.now() - started }));
+    if (!failure.transient || attempt >= CLONE_ATTEMPTS) throw new Error(failure.message);
+  }
 }
 
 export async function writeRepositorySkill(sandbox: SandboxRunner, input: RepositorySkillChange): Promise<void> {
@@ -950,6 +962,8 @@ export interface IntegrationInput {
   assertAuthority?: AuthorityGuard;
 }
 
+const RUNNER_FAILURE = /^(?:Runner preparation failed|Git (?:clone|fetch) |Command failed \(\d+\)|Sandbox (?:command exceeded|is not)|Container stopped)/;
+
 export class IntegrationFailure extends Error {
   constructor(public readonly outcome: 'not_pushed' | 'unknown', message: string) {
     super(message);
@@ -983,8 +997,7 @@ export async function integrateCandidate(env: ExecutionEnv, { repository, missio
     await sandbox.prepare([{ ...info, write: true }, { ...fork, write: false }]);
     phase = 'candidate fetch';
     await clone(sandbox, info, baseSha);
-    await checked(sandbox, ['git', 'fetch', '--', fork.remote, 'refs/heads/gitflare-candidate']);
-    if (await checked(sandbox, ['git', 'rev-parse', 'FETCH_HEAD']) !== candidateSha) throw new IntegrationFailure('not_pushed', 'Candidate fork changed after approval');
+    if (await fetchRef(sandbox, fork.remote, 'refs/heads/gitflare-candidate') !== candidateSha) throw new IntegrationFailure('not_pushed', 'Candidate fork changed after approval');
     phase = 'ancestry verification';
     await checked(sandbox, ['git', 'merge-base', '--is-ancestor', baseSha, candidateSha]);
     phase = 'authorization';
@@ -1003,7 +1016,8 @@ export async function integrateCandidate(env: ExecutionEnv, { repository, missio
     return { sha: candidateSha, branch: repository.defaultBranch, integratedAt: new Date().toISOString() };
   } catch (error) {
     if (error instanceof IntegrationFailure) throw error;
-    throw new IntegrationFailure(pushAttempted ? 'unknown' : 'not_pushed', `Integration failed during ${phase}.`);
+    const detail = error instanceof Error && RUNNER_FAILURE.test(error.message) ? `: ${failureLine(error.message)}` : '';
+    throw new IntegrationFailure(pushAttempted ? 'unknown' : 'not_pushed', `Integration failed during ${phase}${detail}.`);
   } finally {
     try { await sandbox?.destroy(); }
     catch { console.error('runner.integration.cleanup.failed', mission.id); }

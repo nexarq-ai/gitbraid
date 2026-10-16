@@ -188,6 +188,15 @@ export function assertApproval(input: {
   }
 }
 
+export function failureLine(error: string): string {
+  const first = error.trim().split('\n').find((line) => line.trim()) ?? '';
+  return first
+    .replace(/(\bhttps?:\/\/)[^\s/@]+@/gi, '$1')
+    .replace(/\b(authorization|bearer|token|password|secret)([=:\s]+)\S+/gi, '$1$2[redacted]')
+    .trim()
+    .slice(0, 300);
+}
+
 export function assertReplayFingerprint(stored: string, incoming: string): void {
   if (stored !== incoming) throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'This request key has already been used for a different action.');
 }
