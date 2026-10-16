@@ -9,7 +9,8 @@ import { buildLandedWorker, integrateCandidate, IntegrationFailure, prepareCandi
 import { deleteWorkerPreview, previewAlias, upsertWorkerPreview, WorkerPreviewError } from './worker-previews';
 import { resolveWorkerPreviewsConfig } from './installation-credential';
 import { WorkerBuildFailure } from './worker-bundle';
-import { deployWorkflowId, landedDeployment, policyDeployTargets, runDeployment, type DeploymentRecord, type DeployParams } from './deployments';
+import { changedPaths } from './deploy-changes';
+import { automaticPromotion, deployWorkflowId, landedDeployments, policyDeployTargets, runDeployment, wranglerEnvironment, type DeploymentRecord, type DeployParams } from './deployments';
 import { cloudflareDeployClient } from './cloudflare-deploy';
 import { deletePreviewD1, provisionPreviewD1 } from './preview-d1';
 import { cloudflareWorkerDeployer } from './cloudflare';
@@ -116,17 +117,21 @@ export async function retireWorkerPreview(env: AppEnv, repositoryId: string, mis
 export async function scheduleLandedDeployment(env: AppEnv, repositoryId: string, missionId: string, epoch: number, commitSha: string, baseSha?: string): Promise<void> {
   const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
   const { settings } = await coordinator.deployState();
-  const draft = landedDeployment(settings, repositoryId, missionId, commitSha, baseSha);
-  if (!draft || !settings) return;
-  const key = `land-${missionId}-${epoch}`;
-  const fingerprint = JSON.stringify(['land', missionId, epoch, commitSha]);
+  for (const draft of landedDeployments(settings, repositoryId, missionId, commitSha, baseSha)) {
+    const principal = settings?.environments[draft.environment]?.authorizedBy;
+    if (!principal) continue;
+    await createAndDispatchDeployment(env, coordinator, draft, principal, `land-${missionId}-${epoch}${draft.environment === 'production' ? '' : `-${draft.environment}`}`, JSON.stringify(['land', missionId, epoch, commitSha, draft.environment]));
+  }
+}
+
+async function createAndDispatchDeployment(env: AppEnv, coordinator: ReturnType<AppEnv['GITFLARE_COORDINATOR']['getByName']>, draft: DeploymentRecord, principal: DeployParams['principal'], key: string, fingerprint: string): Promise<void> {
   let record;
   try { record = await coordinator.createDeployment(key, fingerprint, draft); }
   catch (error) {
     if (!(error instanceof Error && /DEPLOYMENT_IN_PROGRESS/.test(error.message))) throw error;
     record = await coordinator.createDeployment(key, fingerprint, { ...draft, status: 'awaiting_confirmation' });
   }
-  if (record.status === 'queued' && env.MISSION_WORKFLOW && await dispatchBackground(env.MISSION_WORKFLOW, deployWorkflowId(record.id), { kind: 'deploy', repositoryId, deploymentId: record.id, principal: settings.authorizedBy } satisfies DeployParams) === 'missing') {
+  if (record.status === 'queued' && env.MISSION_WORKFLOW && await dispatchBackground(env.MISSION_WORKFLOW, deployWorkflowId(record.id), { kind: 'deploy', repositoryId: draft.repositoryId, deploymentId: record.id, principal } satisfies DeployParams) === 'missing') {
     await coordinator.updateDeployment(record.id, ['queued'], { status: 'failed', errorCode: 'DEPLOYMENT_NOT_STARTED', error: 'The deployment could not be scheduled. Deploy it manually.' });
   }
 }
@@ -163,19 +168,31 @@ export async function deployLandedWorker(env: AppEnv, params: DeployParams, step
     coordinator,
     authorize: (principal, workerName) => access.check(principal, 'deploy', 'environment', workerName),
     deployer: (principal, record, workerName) => cloudflareWorkerDeployer(env, principal, workerName, record.accountId, undefined, record.repositoryId),
-    build: (repository, record, target, index, assertAuthority, publish) => buildLandedWorker(env, { repository, commitSha: record.commitSha!, attemptId: record.attemptId, assertAuthority, ...(target.inheritBindings ? {} : { target }), index }, publish),
+    build: (repository, record, target, index, assertAuthority, publish) => buildLandedWorker(env, { repository, commitSha: record.commitSha!, attemptId: record.attemptId, assertAuthority, ...(target.inheritBindings ? {} : { target }), index, environment: wranglerEnvironment(record.environment) }, publish),
     policyTargets: async (repository, record) => {
       if (!env.ARTIFACTS) return null;
       const base = await policyBase(env, repository.name, record);
       if (!base) return null;
       using source = await env.ARTIFACTS.get(repository.name);
       const file = await source.readFile({ ref: base, path: POLICY_FILE });
-      return policyDeployTargets(file ? await file.text() : null);
+      return policyDeployTargets(file ? await file.text() : null, record.environment);
+    },
+    changedPaths: async (repository, record) => {
+      if (!env.ARTIFACTS || !record.baseSha || !record.commitSha) return null;
+      using source = await env.ARTIFACTS.get(repository.name);
+      return changedPaths(source, record.baseSha, record.commitSha);
     },
     mappedWorkers: async (principal, repositoryId) => {
       const { mapping } = await access.projectStore(principal, repositoryId, 'get') as ProjectSnapshot;
       return mapping ? { accountId: mapping.accountId, workers: (mapping.resources ?? []).filter((resource) => resource.type === 'worker').map((resource) => resource.id) } : null;
     },
+  });
+  await step.do('promote to production', { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => {
+    const [staging, { settings }] = await Promise.all([coordinator.getDeployment(params.deploymentId), coordinator.deployState()]);
+    const draft = automaticPromotion(settings, staging);
+    const principal = settings?.environments.production?.authorizedBy;
+    if (draft && principal) await createAndDispatchDeployment(env, coordinator, draft, principal, `promote-${params.deploymentId}`, JSON.stringify(['promote', params.deploymentId]));
+    return true;
   });
 }
 

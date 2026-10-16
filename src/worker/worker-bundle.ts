@@ -21,6 +21,7 @@ export interface MigrationStep { tag: string; new_classes?: string[]; new_sqlite
 export interface ResolvedWorkerConfig {
   configPath: string;
   userConfigPath?: string;
+  environment?: string;
   deploy?: Record<string, unknown>;
   name?: string;
   main: string;
@@ -57,7 +58,7 @@ const CREDENTIAL_GUARD = 'unset CLOUDFLARE_API_TOKEN CLOUDFLARE_API_KEY CLOUDFLA
 const WRANGLER_LOOKUP = 'wrangler_bin() { local dir; dir=$(dirname "$1"); while :; do if [ -x "$dir/node_modules/.bin/wrangler" ]; then printf %s "$dir/node_modules/.bin/wrangler"; return 0; fi; if [ "$dir" = "." ] || [ "$dir" = "/" ]; then return 1; fi; dir=$(dirname "$dir"); done; }';
 
 // No Cloudflare credential is present in the sandbox; these unset lines guard against an image that sets one
-export function workerBuildScript(configPath: string): string {
+export function workerBuildScript(configPath: string, environment?: string): string {
   return [
     'set -euo pipefail',
     CREDENTIAL_GUARD,
@@ -65,7 +66,7 @@ export function workerBuildScript(configPath: string): string {
     WRANGLER_LOOKUP,
     `WRANGLER=$(wrangler_bin ${quote(configPath)}) || { echo 'Wrangler is not a dependency of this repository. Add wrangler 4.135 or later to devDependencies.' >&2; exit 64; }`,
     `rm -rf ${OUTPUT_DIR}`,
-    `"$WRANGLER" deploy --dry-run --config ${quote(configPath)} --outdir ${OUTPUT_DIR} > /tmp/gitflare-worker-build.log 2>&1 || { tail -c 3000 /tmp/gitflare-worker-build.log >&2; exit 65; }`,
+    `"$WRANGLER" deploy --dry-run --config ${quote(configPath)}${environment ? ` --env ${quote(environment)}` : ''} --outdir ${OUTPUT_DIR} > /tmp/gitflare-worker-build.log 2>&1 || { tail -c 3000 /tmp/gitflare-worker-build.log >&2; exit 65; }`,
   ].join('\n');
 }
 
@@ -75,18 +76,23 @@ export function validBuildCommand(value: unknown): value is string {
   return typeof value === 'string' && !!value.trim() && value.length <= 500 && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
-export function deployBuildScript(command: string): string {
+export const environmentName = /^[a-z][a-z0-9_-]{0,31}$/;
+
+export function deployBuildScript(command: string, environment?: string): string {
   if (!validBuildCommand(command)) throw new WorkerBuildFailure('DEPLOY_BUILD_COMMAND_INVALID', 'The build command must be a single line of at most 500 characters.');
+  if (environment !== undefined && !environmentName.test(environment)) throw new WorkerBuildFailure('DEPLOY_ENVIRONMENT_INVALID', 'Invalid deploy environment.');
   return [
     'set -euo pipefail',
     CREDENTIAL_GUARD,
     'export WRANGLER_SEND_METRICS=false NO_COLOR=1 CI=true',
+    environment ? `export CLOUDFLARE_ENV=${quote(environment)}` : 'unset CLOUDFLARE_ENV',
     `( ${command.trim()} ) > /tmp/gitflare-deploy-build.log 2>&1 || { status=$?; tail -c 3000 /tmp/gitflare-deploy-build.log >&2; exit $status; }`,
   ].join('\n');
 }
 
-export function workerConfigScript(configPath: string, redirect = false): string {
-  return `node --input-type=module -e ${quote(CONFIG_PROGRAM)} ${quote(configPath)}${redirect ? ' redirect' : ''}`;
+export function workerConfigScript(configPath: string, redirect = false, environment?: string): string {
+  if (environment !== undefined && !environmentName.test(environment)) throw new WorkerBuildFailure('DEPLOY_ENVIRONMENT_INVALID', 'Invalid deploy environment.');
+  return `env -u CLOUDFLARE_ENV node --input-type=module -e ${quote(CONFIG_PROGRAM)} ${quote(configPath)} ${redirect ? 'redirect' : 'direct'}${environment ? ` ${quote(environment)}` : ''}`;
 }
 
 export function workerBundleScript(configPath: string): string {
@@ -103,6 +109,7 @@ console.log = console.info = console.warn = console.debug = write;
 const root = process.cwd();
 const inside = (path) => { const rel = relative(root, path); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); };
 const userConfigPath = process.argv[1];
+const environment = process.argv[3];
 let configPath = userConfigPath;
 if (process.argv[2] === 'redirect') {
   const redirectFile = join(root, dirname(userConfigPath), '.wrangler', 'deploy', 'config.json');
@@ -118,7 +125,21 @@ const require = createRequire(join(root, dirname(configPath)) + '/');
 let entry;
 try { entry = require.resolve('wrangler'); } catch { process.exit(64); }
 const wrangler = await import(pathToFileURL(entry).href);
-const config = wrangler.unstable_readConfig({ config: configPath }, { hideWarnings: true });
+const redirected = configPath !== userConfigPath;
+const missingEnvironment = (detail) => { process.stderr.write(detail); process.exit(68); };
+let config;
+if (redirected) {
+  config = wrangler.unstable_readConfig({ config: configPath }, { hideWarnings: true });
+  let built;
+  try { built = JSON.parse(readFileSync(join(root, configPath), 'utf8')).targetEnvironment; } catch {}
+  if ((built ?? undefined) !== environment) missingEnvironment(environment ? 'built without env.' + environment + (built ? ' (built for env.' + built + ')' : '') : 'built for env.' + built);
+} else {
+  config = wrangler.unstable_readConfig({ config: configPath }, { hideWarnings: true });
+  if (environment) {
+    if (!(config.definedEnvironments ?? []).includes(environment)) missingEnvironment('no env.' + environment);
+    config = wrangler.unstable_readConfig({ config: configPath, env: environment }, { hideWarnings: true });
+  }
+}
 const configDir = join(root, dirname(configPath));
 const repoRelative = (value) => { if (typeof value !== 'string') return value; const absolute = resolve(configDir, value); return inside(absolute) ? (relative(root, absolute) || '.') : null; };
 const DEPLOY_KEYS = ['name', 'compatibility_date', 'compatibility_flags', 'vars', 'kv_namespaces', 'd1_databases', 'r2_buckets', 'services', 'queues', 'workflows', 'durable_objects', 'migrations', 'exports', 'ai', 'send_email', 'browser', 'images', 'version_metadata', 'analytics_engine_datasets', 'hyperdrive', 'vectorize', 'ratelimits', 'secrets_store_secrets', 'dispatch_namespaces', 'mtls_certificates', 'pipelines', 'worker_loaders', 'artifacts', 'ai_search', 'ai_search_namespaces', 'flagship', 'vpc_services', 'vpc_networks', 'logfwdr', 'unsafe', 'assets', 'observability', 'workers_dev', 'preview_urls', 'routes', 'route', 'triggers', 'placement', 'limits', 'logpush', 'tail_consumers', 'streaming_tail_consumers', 'containers'];
@@ -171,6 +192,7 @@ const source = (block) => {
 const output = {
   configPath,
   userConfigPath,
+  ...(environment ? { environment } : {}),
   deploy,
   name: config.name,
   main: config.main,
@@ -243,6 +265,7 @@ export function parseWorkerConfig(stdout: string): ResolvedWorkerConfig | null {
   return {
     configPath: String(value.configPath),
     ...(typeof value.userConfigPath === 'string' ? { userConfigPath: value.userConfigPath } : {}),
+    ...(typeof value.environment === 'string' && environmentName.test(value.environment) ? { environment: value.environment } : {}),
     ...(record(value.deploy) ? { deploy: value.deploy } : {}),
     ...(typeof value.name === 'string' ? { name: value.name } : {}),
     main: value.main,
@@ -297,22 +320,30 @@ export function parseWorkerBundle(stdout: string, config: ResolvedWorkerConfig):
   return { config, mainModule, modules: [main, ...modules.filter((module) => module !== main)], totalBytes };
 }
 
+function environmentMissing(configPath: string, environment: string | undefined, detail: string): string {
+  if (!environment) return `The build output of ${configPath} was built for a Wrangler environment (${detail.replace(/\s+/g, ' ').trim().slice(-120)}), but this deployment targets production. Unset CLOUDFLARE_ENV in the build command.`;
+  if (/^built/.test(detail.trim())) return `The build output of ${configPath} was not built for env.${environment} (${detail.replace(/\s+/g, ' ').trim().slice(-120)}). Gitflare sets CLOUDFLARE_ENV=${environment} for the build command; make sure the build tool reads it.`;
+  return `${configPath} has no env.${environment} block. Add "env": { "${environment}": { ... } } to ${configPath} with the ${environment} Worker name and bindings, as wrangler deploy --env ${environment} requires.`;
+}
+
 function failureDetail(result: CommandResult): string {
   return (result.stderr || result.stdout).replace(/\s+/g, ' ').trim().slice(-500);
 }
 
-export async function readWorkerConfig(sandbox: BundleSandbox, configPath: string, redirect = false): Promise<ResolvedWorkerConfig | null> {
+export async function readWorkerConfig(sandbox: BundleSandbox, configPath: string, redirect = false, environment?: string): Promise<ResolvedWorkerConfig | null> {
   if (!sandbox.collect) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot build Worker bundles.');
-  const result = await sandbox.collect(workerConfigScript(configPath, redirect), 60_000, 1024 * 1024);
+  const result = await sandbox.collect(workerConfigScript(configPath, redirect, environment), 60_000, 1024 * 1024);
   if (result.exitCode === 64) return null;
   if (result.exitCode === 67) throw new WorkerBuildFailure('WRANGLER_REDIRECT_INVALID', 'The build wrote .wrangler/deploy/config.json pointing outside the repository or at a missing file.');
+  if (result.exitCode === 68) throw new WorkerBuildFailure('DEPLOY_ENVIRONMENT_MISSING', environmentMissing(configPath, environment, result.stderr));
   if (result.exitCode !== 0) throw new WorkerBuildFailure('WORKER_CONFIG_INVALID', `The Wrangler configuration could not be read. ${failureDetail(result)}`);
   return parseWorkerConfig(result.stdout);
 }
 
 export async function buildWorkerBundle(sandbox: BundleSandbox, config: ResolvedWorkerConfig): Promise<WorkerBundle> {
   if (!sandbox.check || !sandbox.collect) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot build Worker bundles.');
-  const build = await sandbox.check(workerBuildScript(config.configPath), WORKER_BUILD_TIMEOUT_MS);
+  const redirected = !!config.userConfigPath && config.userConfigPath !== config.configPath;
+  const build = await sandbox.check(workerBuildScript(config.configPath, redirected ? undefined : config.environment), WORKER_BUILD_TIMEOUT_MS);
   if (build.exitCode === 64) throw new WorkerBuildFailure('WRANGLER_DEPENDENCY_REQUIRED', 'Wrangler is not a dependency of this repository. Add wrangler 4.135 or later to devDependencies.');
   if (build.exitCode !== 0) throw new WorkerBuildFailure('WORKER_BUILD_FAILED', `wrangler deploy --dry-run failed (exit ${build.exitCode}). ${failureDetail(build)}`);
   const output = await sandbox.collect(workerBundleScript(config.configPath), 60_000, Math.ceil(WORKER_BUNDLE_MAX_BYTES * 1.4) + 65_536);

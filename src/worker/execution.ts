@@ -1213,9 +1213,9 @@ export async function prepareCandidatePreview<T = undefined>(env: ExecutionEnv, 
 }
 
 export interface DeployBuildTarget { configPath: string; buildCommand?: string; d1Migrations: boolean }
-export interface LandedWorkerInput { repository: Repository; commitSha: string; attemptId: string; assertAuthority: AuthorityGuard; target?: DeployBuildTarget; index?: number }
+export interface LandedWorkerInput { repository: Repository; commitSha: string; attemptId: string; assertAuthority: AuthorityGuard; target?: DeployBuildTarget; index?: number; environment?: string }
 
-export async function buildLandedWorker<T = BuiltTarget>(env: ExecutionEnv, { repository, commitSha, attemptId, assertAuthority, target, index = 0 }: LandedWorkerInput, publish: (built: BuiltTarget) => Promise<T> = async (built) => built as T): Promise<T> {
+export async function buildLandedWorker<T = BuiltTarget>(env: ExecutionEnv, { repository, commitSha, attemptId, assertAuthority, target, index = 0, environment }: LandedWorkerInput, publish: (built: BuiltTarget) => Promise<T> = async (built) => built as T): Promise<T> {
   if (!/^[a-f0-9-]{36}$/.test(attemptId)) throw new Error('Invalid deployment attempt ID');
   if (!validGitSha(commitSha)) throw new WorkerBuildFailure('DEPLOY_COMMIT_INVALID', 'Deployments need an exact landed commit.');
   if (!env.ARTIFACTS || !env.SANDBOX) throw new WorkerBuildFailure('DEPLOY_RUNNER_UNAVAILABLE', 'Artifacts and the sandbox runner are required to build a deployment.');
@@ -1235,10 +1235,10 @@ export async function buildLandedWorker<T = BuiltTarget>(env: ExecutionEnv, { re
     if (target?.buildCommand) {
       if (!sandbox.check) throw new WorkerBuildFailure('WORKER_BUILD_UNAVAILABLE', 'The runner cannot run build commands.');
       await assertAuthority();
-      const built = await sandbox.check(deployBuildScript(target.buildCommand), DEPLOY_BUILD_TIMEOUT_MS);
+      const built = await sandbox.check(deployBuildScript(target.buildCommand, environment), DEPLOY_BUILD_TIMEOUT_MS);
       if (built.exitCode !== 0) throw new WorkerBuildFailure('DEPLOY_BUILD_FAILED', `${target.buildCommand} failed (exit ${built.exitCode}${built.timedOut ? ', timed out' : ''}). ${(built.stderr || built.stdout).replace(/\s+/g, ' ').trim().slice(-500)}`);
     }
-    const config = await readWorkerConfig(sandbox, configPath, !!target);
+    const config = await readWorkerConfig(sandbox, configPath, !!target, target ? environment : undefined);
     if (!config) throw new WorkerBuildFailure('WORKER_MAIN_REQUIRED', 'The Wrangler configuration has no main entry, or wrangler is not a dependency of the repository.');
     await assertAuthority();
     const bundle = await buildWorkerBundle(sandbox, config);

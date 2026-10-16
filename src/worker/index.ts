@@ -381,7 +381,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
     return deploymentsApi(request, {
       repository, principal,
-      ledger: { state: () => coordinator.deployState(), saveSettings: (settings) => coordinator.saveDeploySettings(settings), create: (key, fingerprint, record) => coordinator.createDeployment(key, fingerprint, record), confirm: (id, actorId) => coordinator.confirmDeployment(id, actorId) },
+      ledger: { state: () => coordinator.deployState(), get: (id) => coordinator.getDeployment(id), saveEnvironment: (environment, settings) => coordinator.saveDeployEnvironment(environment, settings), create: (key, fingerprint, record) => coordinator.createDeployment(key, fingerprint, record), confirm: (id, actorId) => coordinator.confirmDeployment(id, actorId) },
       authorizeRead: () => access.authorize(principal, 'read', 'repository', repository.id),
       authorizeDeploy: (workerName) => access.authorize(principal, 'deploy', 'environment', workerName),
       canDeploy: async (workerName) => (await access.checkMany(principal, 'deploy', [{ resourceType: 'environment', resourceId: workerName }]))[0] === true,
