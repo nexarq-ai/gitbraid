@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
 import { createArtifactsRepository, repositoryHead } from './artifacts';
+import { assertDependencyApproval } from './dependency-changes';
 import { agentRunIds, ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
 import { repositoryLabel } from '../shared/repository-names';
 import { checkSettingsSnapshot, normalizeCheckSettings, retryPlan } from './check-settings';
@@ -765,10 +766,14 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       return Response.json(claim.mission, { status: 202 });
     }
     assertReviewClear(mission);
+    if (body.approveDependencies !== undefined && typeof body.approveDependencies !== 'boolean') throw new ApiError(400, 'INVALID_INPUT', 'approveDependencies must be true or false.');
+    const approveDependencies = body.approveDependencies === true;
+    assertDependencyApproval(mission, principal.role, approveDependencies);
     await coordinator.settleApprovalClears(mission.id, principal);
     const approval = await access.recordApproval(principal, mission.id, candidateSha, baseSha, mission.epoch, mission.checks, mission.authorization?.creatorId, await landingReviewRule(env, repository));
+    if (mission.dependencyChanges?.length) await access.auditRepositoryChange(principal, 'mission.dependencies.approved', mission.id);
     if (!approval.ready) return Response.json({ ...mission, approval });
-    return Response.json(await coordinator.approveMission(key, mission.id, candidateSha, baseSha, principal.userId));
+    return Response.json(await coordinator.approveMission(key, mission.id, candidateSha, baseSha, principal.userId, principal.role === 'Owner' && approveDependencies));
   }
   throw new ApiError(404, 'NOT_FOUND', 'This API route could not be found.');
 }

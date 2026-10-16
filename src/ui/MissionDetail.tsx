@@ -34,6 +34,7 @@ import DiffView, {
   type LineCommentKind,
 } from "./DiffView";
 import { PullRequestPanel } from "./PullRequests";
+import { DependencyApprovalControl, DependencyChangesPanel } from "./DependencyChanges";
 import { navigate as goTo } from "./router";
 import { RouteProgress } from "./WorkspaceLoader";
 
@@ -93,6 +94,7 @@ export default function MissionDetail({
   const mutation = useRef<{ signature: string; key: string } | null>(null);
   const revision = useRef(0);
   const [confirming, setConfirming] = useState<"approve" | "integrate" | null>(null);
+  const [dependencyAck, setDependencyAck] = useState({ candidateSha: "", checked: false });
   const pollSequence = useRef(0);
   const repository = workspace.repositories.find(
     (item) => item.id === mission?.repositoryId,
@@ -147,7 +149,7 @@ export default function MissionDetail({
     setError("");
     const body =
       action === "approve" || action === "integrate" || action === "revoke"
-        ? { candidateSha: mission.candidateSha, baseSha: mission.baseSha }
+        ? { candidateSha: mission.candidateSha, baseSha: mission.baseSha, ...(action === "approve" && mission.dependencyChanges?.length ? { approveDependencies: dependenciesAcknowledged } : {}) }
         : {};
     const signature = JSON.stringify({
       id,
@@ -481,6 +483,9 @@ export default function MissionDetail({
           };
         })
     : [];
+  const isOwner = permissions.includes("manage");
+  const dependencyGate = !!mission.dependencyChanges?.length;
+  const dependenciesAcknowledged = isOwner && dependencyAck.checked && dependencyAck.candidateSha === mission.candidateSha;
   const readyForReview =
     unresolvedRequests.length === 0 &&
     mission.status === "needs_review" &&
@@ -639,13 +644,16 @@ export default function MissionDetail({
                   : "Land approved changes"}
             </Button>
           )}
+          {readyForReview && dependencyGate && (
+            <DependencyApprovalControl isOwner={isOwner} checked={dependenciesAcknowledged} onChange={(checked) => setDependencyAck({ candidateSha: mission.candidateSha ?? "", checked })} />
+          )}
           {readyForReview && (
             <Button
               variant="primary"
               size="base"
               icon={ShieldCheckIcon}
               loading={busy === "approve"}
-              disabled={!!busy || !permissions.includes("review")}
+              disabled={!!busy || !permissions.includes("review") || (dependencyGate && !dependenciesAcknowledged)}
               onClick={() => setConfirming("approve")}
             >
               Approve candidate
@@ -860,6 +868,7 @@ export default function MissionDetail({
         <>
           {tab === "overview" && (
           <>
+            <DependencyChangesPanel mission={mission} />
             {((mission as { attachments?: { name: string; content: string }[] }).attachments ?? []).length > 0 && (
               <section className="panel mission-attachments"><div className="panel-header"><h2>Context files</h2></div><div className="panel-body">{((mission as { attachments?: { name: string; content: string }[] }).attachments ?? []).map(item => <details key={item.name}><summary><code>{item.name}</code></summary><pre>{item.content.slice(0, 2000)}{item.content.length > 2000 ? "\n…" : ""}</pre></details>)}</div></section>
             )}
@@ -1402,7 +1411,7 @@ export default function MissionDetail({
           </Dialog.Title>
           <Dialog.Description className="dialog-description">
             {confirming === "approve"
-              ? <>Approve revision <code>{mission.candidateSha?.slice(0, 12)}</code> after {mission.checks.length} passing check{mission.checks.length === 1 ? "" : "s"}. Approval does not change the repository; landing is a separate step.</>
+              ? <>Approve revision <code>{mission.candidateSha?.slice(0, 12)}</code> after {mission.checks.length} passing check{mission.checks.length === 1 ? "" : "s"}. Approval does not change the repository; landing is a separate step.{dependencyGate && <> You also approve the dependency changes listed on the Overview tab.</>}</>
               : <>Land revision <code>{mission.candidateSha?.slice(0, 12)}</code> on <strong>{repository?.defaultBranch ?? "the main stream"}</strong> of <strong>{repository ? repositoryLabel(repository) : "this repository"}</strong>. You can undo it later with Restore.</>}
           </Dialog.Description>
           <div className="dialog-actions">

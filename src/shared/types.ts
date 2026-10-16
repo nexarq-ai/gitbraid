@@ -52,6 +52,11 @@ export interface AgentUsage {
   unreportedCalls: number;
 }
 
+export type DependencySection = 'dependencies' | 'devDependencies' | 'optionalDependencies' | 'peerDependencies';
+export interface DependencyChange { section: DependencySection; name: string; change: 'added' | 'removed' | 'changed'; from?: string; to?: string }
+export interface ManifestDependencyChanges { path: string; changes: DependencyChange[] }
+export interface DependencyApproval { approvedBy: string; approvedAt: string; candidateSha: string; baseSha: string; epoch: number }
+
 export interface AgentRun {
   id: string;
   name: string;
@@ -77,6 +82,7 @@ export interface AgentRun {
   reusedFromEpoch?: number;
   candidateBaseSha?: string;
   skipReason?: string;
+  dependencyChanges?: ManifestDependencyChanges[];
 }
 
 export type RunnerSize = 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';
@@ -210,6 +216,8 @@ export interface Mission {
   updatedAt: string;
   approvedAt?: string;
   approvedBy?: string;
+  dependencyChanges?: ManifestDependencyChanges[];
+  dependencyApproval?: DependencyApproval;
   error?: string;
 }
 

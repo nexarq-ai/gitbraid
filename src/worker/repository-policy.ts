@@ -200,6 +200,15 @@ export function protectedChanges(changes: PathChange[], policy: Pick<RepositoryP
   return changes.filter(({ path, status }) => status !== 'A' ? isProtectedPath(path, policy.editable) : policy.starter ? STARTER_PROTECTED.test(path) : ALWAYS_PROTECTED.test(path)).map(({ path }) => path);
 }
 
+export interface ManifestPaths { blocked: string[]; manifests: { path: string; added: boolean }[] }
+
+export function dependencyManifestPaths(changes: PathChange[], policy: Pick<RepositoryPolicy, 'editable' | 'starter'>): ManifestPaths {
+  const reviewable = ({ path, status }: PathChange) => MANIFESTS.test(path) && !TEST_PATHS.test(path) && !/^\.(git|github)(\/|$)|(^|\/)\.yarn\//.test(path) && (status === 'M' || status === 'A' && policy.starter);
+  const manifests = changes.filter(reviewable);
+  const reviewed = new Set(manifests.map(({ path }) => path));
+  return { blocked: protectedChanges(changes, policy).filter((path) => !reviewed.has(path)), manifests: manifests.map(({ path, status }) => ({ path, added: status === 'A' })) };
+}
+
 export function parseNameStatus(output: string): PathChange[] {
   return output.split('\n').filter(Boolean).map((line) => {
     const [status, ...rest] = line.split('\t');

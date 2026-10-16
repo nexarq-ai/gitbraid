@@ -97,6 +97,7 @@ function missionSummary(mission: Mission) {
     reviewCount: mission.reviews?.length ?? 0,
     skillChange: mission.skillChange ? { action: mission.skillChange.action, path: mission.skillChange.path, baseSha: mission.skillChange.baseSha } : undefined,
     approvedAt: mission.approvedAt, approvedBy: mission.approvedBy,
+    dependencyChanges: mission.dependencyChanges ?? [], dependencyApproval: mission.dependencyApproval,
     pullRequest: mission.branchChange ? { ...mission.branchChange, description: mission.branchChange.description ? excerpt(mission.branchChange.description, 0, 1600) : undefined, state: pullRequestState(mission) } : undefined,
     review: 'Owner UI and authenticated owner MCP clients share exact-candidate approval and integration checks.',
   };
@@ -398,12 +399,17 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     title: 'Select a race candidate for review', description: 'In a race mission, choose which passing agent candidate goes to review. Clears earlier approvals; can change until approval. Compare raceCandidates, changes and checks first. Needs review permission and write access.',
     inputSchema: z.object({ mission_id: missionId, run_id: identifier.describe('Run ID from raceCandidates.'), epoch: z.number().int().min(1).describe('Current mission epoch.'), idempotency_key: requestKey }).strict(), annotations: mutation,
   }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/select`, { runId: input.run_id, epoch: input.epoch }, input.idempotency_key))));
-  for (const action of ['approve', 'integrate', 'revoke'] as const) {
+  server.registerTool('gitflare_approve_mission', {
+    title: 'Approve an exact checked candidate',
+    description: 'Approve the exact checked candidate and base SHAs of a mission. Requires passing checks and an unchanged base; does not land. Inspect diffs and checks first and act only on the user’s instruction. If dependencyChanges is not empty, only an Owner can approve, and approve_dependencies must be true after the user explicitly accepts those package changes. Needs review permission and land access.',
+    inputSchema: z.object({ mission_id: missionId, candidate_sha: commit, base_sha: commit, approve_dependencies: z.boolean().optional().describe('Owner acknowledgement of the candidate’s dependencyChanges. Required when dependencyChanges is not empty.'), idempotency_key: requestKey }).strict(), annotations: mutation,
+  }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/approve`, { candidateSha: input.candidate_sha, baseSha: input.base_sha, ...(input.approve_dependencies !== undefined ? { approveDependencies: input.approve_dependencies } : {}) }, input.idempotency_key))));
+  for (const action of ['integrate', 'revoke'] as const) {
     const name = action === 'revoke' ? 'gitflare_revoke_approval' : `gitflare_${action}_mission`;
     server.registerTool(name, {
-      title: action === 'approve' ? 'Approve an exact checked candidate' : action === 'integrate' ? 'Integrate an approved candidate' : 'Revoke an exact approval',
-      description: action === 'approve' ? 'Approve the exact checked candidate and base SHAs of a mission. Requires passing checks and an unchanged base; does not land. Inspect diffs and checks first and act only on the user’s instruction. Needs review permission and land access.' : action === 'integrate' ? 'Land an approved candidate on the default branch through the protected integration path. Writes the canonical branch and is undone only by a revert; deploys only if deploy on land is enabled. Runs in the background: status integrating means still running; repeat calls never push twice. Needs the exact candidate and base SHAs, a current approval, land permission and land access.' : 'Withdraw approval for the exact candidate and base, returning the mission to review. Not possible while landing or after landing. Needs review permission and land access.',
-      inputSchema: z.object({ mission_id: missionId, candidate_sha: commit, base_sha: commit, idempotency_key: requestKey }).strict(), annotations: action === 'approve' ? mutation : destructive,
+      title: action === 'integrate' ? 'Integrate an approved candidate' : 'Revoke an exact approval',
+      description: action === 'integrate' ? 'Land an approved candidate on the default branch through the protected integration path. Writes the canonical branch and is undone only by a revert; deploys only if deploy on land is enabled. Runs in the background: status integrating means still running; repeat calls never push twice. Needs the exact candidate and base SHAs, a current approval, land permission and land access.' : 'Withdraw approval for the exact candidate and base, returning the mission to review. Not possible while landing or after landing. Needs review permission and land access.',
+      inputSchema: z.object({ mission_id: missionId, candidate_sha: commit, base_sha: commit, idempotency_key: requestKey }).strict(), annotations: destructive,
     }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${action}`, { candidateSha: input.candidate_sha, baseSha: input.base_sha }, input.idempotency_key))));
   }
   server.registerTool('gitflare_preview_mission', {

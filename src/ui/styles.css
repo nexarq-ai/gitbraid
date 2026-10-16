@@ -2903,6 +2903,13 @@ a svg {
 .route-loading { min-height: 100vh; background: #fff; }
 .agent-usage{margin-top:8px;font-size:12px;color:var(--muted,#6b6b6b);overflow-wrap:anywhere}
 .mission-attachments pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.dependency-changes{margin-bottom:24px}
+.dependency-note{margin:0 0 12px;font-size:13px}
+.dependency-manifest h3{font-size:13px;margin:12px 0 6px}
+.dependency-manifest table{width:100%;border-collapse:collapse;font-size:13px}
+.dependency-manifest th,.dependency-manifest td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border,#e5e7eb);overflow-wrap:anywhere}
+.dependency-ack{display:inline-flex;align-items:center;gap:6px;font-size:13px}
+.dependency-ack.muted{color:var(--muted,#6b6b6b)}
 @media (max-width:768px){
   main,section,.panel,.page-heading,.proposal-create-layout,.summary-grid,.detail-summary,.agent-grid{min-width:0;max-width:100%}
   .proposal-create-layout,.detail-summary,.summary-grid{grid-template-columns:minmax(0,1fr)!important}
