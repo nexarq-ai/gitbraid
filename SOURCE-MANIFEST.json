@@ -545,8 +545,8 @@
     },
     {
       "path": "src/worker/cloudflare.ts",
-      "size": 31934,
-      "sha256": "a5c401e1ef71b29267d6fd24d74d75829f732683587737707c23e54bfc02a43a"
+      "size": 31933,
+      "sha256": "960a4f1a01395ad2ce914124b07da4aa15704b9bf9cab3b6d34f95481d7289bd"
     },
     {
       "path": "src/worker/coordinator.ts",
@@ -565,8 +565,8 @@
     },
     {
       "path": "src/worker/deployments.ts",
-      "size": 42884,
-      "sha256": "56149e76f562369b1346d95b8f6eb427cdbefbbca93c5aeb2a6f14f784414b52"
+      "size": 42917,
+      "sha256": "e6393674335dd8720b6e6f94ad0cb237decd00ee5200fd46d497dd79375f4c82"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -780,8 +780,8 @@
     },
     {
       "path": "src/worker/worker-provisioning.ts",
-      "size": 40733,
-      "sha256": "63684333d68400a2c35efcb38e13efdc84b7372187474ae19ddcdd569e1ecfaa"
+      "size": 41038,
+      "sha256": "31e6098396b69737731e7e28d82b6efc7422a7032a7b9b72c898497cf24e6748"
     },
     {
       "path": "src/worker/workflow.ts",

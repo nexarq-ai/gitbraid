@@ -8,9 +8,9 @@ export interface ScriptMigrations { old_tag?: string; new_tag: string; steps: un
 
 export const SCRIPT_UPLOAD_QUERY = { bindings_inherit: 'strict' } as const;
 export const SUBDOMAIN_API_DATE = '2025-08-01';
-export const SCOPE_WORKERS_SCRIPTS_WRITE = 'workers-scripts.write';
+export const SCOPE_WORKERS_SCRIPTS_WRITE = 'workers-scripts.edit';
 export const SCOPE_D1_WRITE = 'd1.write';
-export const SCOPE_R2_WRITE = 'workers-r2-storage.write';
+export const SCOPE_R2_WRITE = 'workers-r2.write';
 export const SCOPE_QUEUES_WRITE = 'queues.write';
 export const SCOPE_WORKERS_ROUTES_WRITE = 'workers-routes.write';
 export const SCOPE_ZONE_READ = 'zone.read';
@@ -545,7 +545,9 @@ async function resolveZone(call: CloudflareCall, accountId: string, route: Route
     return route.zoneId;
   }
   for (const name of route.zoneName ? [route.zoneName] : zoneCandidates(route.pattern)) {
-    const zones = await call<unknown>('/zones', { query: { name, 'account.id': accountId } });
+    let zones: unknown;
+    try { zones = await call<unknown>('/zones', { query: { name, 'account.id': accountId } }); }
+    catch (error) { throw new WorkerBuildFailure('CUSTOM_DOMAIN_ZONE_LOOKUP_FAILED', `Attaching the new custom domain ${route.pattern} needs its zone. Add "zone_id" to that route in the Wrangler configuration, or grant the Cloudflare connection ${SCOPE_ZONE_READ}. Cloudflare said: ${message(error)}`); }
     const zone = Array.isArray(zones) ? zones.find((item) => isRecord(item) && item.name === name && typeof item.id === 'string' && zoneIdPattern.test(item.id)) as Json | undefined : undefined;
     if (zone) return zone.id as string;
   }
@@ -658,6 +660,6 @@ export function requiredDeployScopes(config: WorkerDeployConfig, options: { d1Mi
   const queues = isRecord(config.queues) ? config.queues : {};
   if (nonEmptyList(queues.producers) || nonEmptyList(queues.consumers)) scopes.push(SCOPE_QUEUES_WRITE);
   const routeList = Array.isArray(config.routes) ? config.routes : config.route !== undefined ? [config.route] : [];
-  if (!options.uploadOnly && routeList.some((route) => isRecord(route) && route.custom_domain === true)) scopes.push(SCOPE_WORKERS_ROUTES_WRITE, SCOPE_ZONE_READ);
+  if (!options.uploadOnly && routeList.some((route) => isRecord(route) && route.custom_domain === true)) scopes.push(SCOPE_WORKERS_ROUTES_WRITE);
   return scopes;
 }

@@ -4,7 +4,7 @@ import type { Principal } from './security';
 import type { SqlStore } from './store';
 import type { CloudflareCall } from './cloudflare-deploy';
 import { applyD1Migrations, type D1MigrationEvidence, type D1MigrationSet } from './d1-migrations';
-import { applyTriggers, currentMigrationTag, ensureResources, requiredDeployScopes, scriptMetadata } from './worker-provisioning';
+import { applyTriggers, currentMigrationTag, ensureResources, requiredDeployScopes, SCOPE_WORKERS_SCRIPTS_WRITE, scriptMetadata } from './worker-provisioning';
 import { previewMigrations, validBuildCommand, WORKER_CONFIG_FILES, WorkerBuildFailure, type WorkerBundle } from './worker-bundle';
 
 export const DEPLOY_STEP_MS = 1_800_000;
@@ -517,7 +517,7 @@ export async function deploymentsApi(request: Request, context: DeployApiContext
     const [state, mapping] = await Promise.all([context.ledger.state(), context.mappedWorkers()]);
     const targets = state.settings ? settingsTargets(state.settings) : [];
     const canDeploy = targets.length ? (await Promise.all(targets.map((target) => context.canDeploy(target.workerName)))).every(Boolean) : false;
-    return Response.json({ settings: publicSettings(state.settings), deployments: state.deployments, workers: mapping?.workers ?? [], canDeploy, requiredScope: 'workers-scripts.write' });
+    return Response.json({ settings: publicSettings(state.settings), deployments: state.deployments, workers: mapping?.workers ?? [], canDeploy, requiredScope: SCOPE_WORKERS_SCRIPTS_WRITE });
   }
   if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use GET or POST.');
   assertMutationOrigin(request);

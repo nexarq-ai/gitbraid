@@ -33,7 +33,7 @@ function service(env: AppEnv): Store { return securityClient(env) as unknown as 
 function configured(env: AppEnv): boolean { return Boolean(env.CLOUDFLARE_CLIENT_ID && env.CLOUDFLARE_CLIENT_SECRET && env.AUTH_ENCRYPTION_KEY); }
 // The OAuth client rejects any unregistered scope (openid included), so deploy scopes stay opt-in; its id_token carries only `sub`
 export function requestedScopes(env: AppEnv, identity = false): string[] { return [...new Set(['offline_access',...`${env.CLOUDFLARE_OAUTH_SCOPES??defaultScopes} ${env.CLOUDFLARE_DEPLOY_SCOPES??''} ${identity?env.CLOUDFLARE_IDENTITY_SCOPES??defaultIdentityScopes:''}`.split(/\s+/).filter(scope=>scope&&scope!=='openid')])]; }
-export const CLOUDFLARE_DEPLOY_SCOPE = 'workers-scripts.write';
+export const CLOUDFLARE_DEPLOY_SCOPE = 'workers-scripts.edit';
 export function cloudflareSigninConfigured(env: AppEnv): boolean { return configured(env); }
 export function requestCookie(request: Request, name: string): string | undefined { return request.headers.get('Cookie')?.split(';').map(v=>v.trim()).find(v=>v.startsWith(`${name}=`))?.slice(name.length+1); }
 function requireConfiguration(env: AppEnv) { if (!configured(env)) throw new ApiError(503, 'CLOUDFLARE_NOT_CONFIGURED', 'Configure this installation’s Cloudflare OAuth client before connecting an account.'); }
