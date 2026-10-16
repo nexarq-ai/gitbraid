@@ -289,6 +289,11 @@
       "sha256": "13a0586504a274b622953569af4e3e34beaa5bd79d2ac1d1ea8ec3c2b4da2621"
     },
     {
+      "path": "src/ui/DependencyChanges.tsx",
+      "size": 2495,
+      "sha256": "4fc8a5306e113c6e93bc2748941833c53fc1ee04c514af7deab102295f6ad65d"
+    },
+    {
       "path": "src/ui/Deployments.tsx",
       "size": 13440,
       "sha256": "d4e6afb2c2d41b61f372d37f14bb1e2ccd8a852d9c8d76e6cea0d4f856f42fc6"
@@ -547,6 +552,11 @@
       "path": "src/worker/d1-migrations.ts",
       "size": 11129,
       "sha256": "2de8f5f2000ca90801a1c2b63a450d3e650e4cb7dbc31b08edbedd1ec962f039"
+    },
+    {
+      "path": "src/worker/dependency-changes.ts",
+      "size": 6283,
+      "sha256": "c76727820c039a3fb570948378d6d2827bf3ed270eb33d5e98d21cbb2af03475"
     },
     {
       "path": "src/worker/deployments.ts",
