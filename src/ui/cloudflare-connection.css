@@ -160,4 +160,3 @@
 .cf-detected .cf-target-runs { gap: 10px; margin: 10px 0; padding-left: 18px; list-style: decimal; font-size: 13px; }
 .cf-detected code { overflow-wrap: anywhere; }
 label.cf-warning { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; padding: 8px 10px; border-radius: 5px; background: var(--gf-color-accent-bg); color: var(--gf-color-accent); font-size: 12px; }
-@media (prefers-color-scheme: dark) { label.cf-warning { background: var(--gf-color-accent); color: var(--gf-color-accent); } }
