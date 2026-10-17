@@ -29,6 +29,11 @@ export interface MissionSummaryCache { repositoryId: string; summaries: MissionS
 export interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
 const INTEGRATION_PREPARATION_MS = 600_000;
 
+export function draftRuns(mission: Mission): Mission {
+  if (mission.status !== 'draft' || !mission.runs.some((run) => run.status === 'queued')) return mission;
+  return { ...mission, runs: mission.runs.map((run) => run.status === 'queued' ? { ...run, status: 'draft' } : run) };
+}
+
 function eligibleRaceRuns(mission: Mission): Mission['runs'] {
   const checks = mission.raceChecks ?? mission.checks;
   return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
@@ -603,11 +608,11 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   private readonly blobs: BlobStore = { get: (key) => this.store.get<string>(key), putIfAbsent: (key, value) => this.store.putIfAbsent(key, value) };
 
   listMissions(): Mission[] {
-    return this.store.list<Mission>('mission:').map((mission) => unpackMission(mission, this.blobs)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.list<Mission>('mission:').map((mission) => draftRuns(unpackMission(mission, this.blobs))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   listMissionSummaries(): MissionSummary[] {
-    return this.store.list<Mission>('mission:').map(summarizeMission).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.list<Mission>('mission:').map((mission) => summarizeMission(draftRuns(mission))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   getMission(id: string): Mission | undefined {
@@ -615,7 +620,16 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (!stored) return undefined;
     const mission = unpackMission(stored, this.blobs);
     if (needsPacking(stored)) this.store.put(`mission:${id}`, packMission(mission, this.blobs));
-    return mission;
+    return draftRuns(mission);
+  }
+
+  missionCandidate(commitSha: string): { missionId: string; forkName?: string } | undefined {
+    for (const mission of this.store.list<Mission>('mission:')) {
+      if (mission.candidateSha === commitSha) return { missionId: mission.id, ...(mission.integrationForkName ? { forkName: mission.integrationForkName } : {}) };
+      const run = mission.runs.find((item) => item.commitSha === commitSha);
+      if (run) return { missionId: mission.id, ...(run.forkName ? { forkName: run.forkName } : {}) };
+    }
+    return undefined;
   }
 
   missionRepository(id: string): string | undefined { return this.store.get<string>(`mission-repository:${id}`); }
@@ -679,7 +693,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         id, repositoryId: repository.id, title: input.title, prompt: input.prompt,
         acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(input.issueNumber !== undefined ? { issueNumber: input.issueNumber } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
-        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
+        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'draft', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
       };
       if (mission.issueNumber !== undefined) linkIssueMission(this.store, mission.issueNumber, mission.id, now);
@@ -710,6 +724,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         const mission = this.newMission(skillMissionInput(repositoryId, change), authorization, undefined, missionId);
         mission.status = 'queued';
         mission.epoch = 1;
+        mission.runs = mission.runs.map((run) => ({ ...run, status: 'queued' }));
         this.queueDispatch(mission);
         return this.saveMission(mission, 'Skill edit queued for exact-content execution and repository checks.');
       });

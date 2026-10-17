@@ -165,8 +165,8 @@
     },
     {
       "path": "src/shared/types.ts",
-      "size": 12631,
-      "sha256": "83c566f32fdb62b903dea3b10b1712110ce7c02b29341ab2a2f169a3a3175e3c"
+      "size": 12775,
+      "sha256": "7e573962d759d24924c41fc720ac0dd976600f1cdcffac0326c1e81a2b1c61a0"
     },
     {
       "path": "src/ui/AccessSettings.tsx",
@@ -585,8 +585,8 @@
     },
     {
       "path": "src/worker/capacity.ts",
-      "size": 1423,
-      "sha256": "e366090c95bebd646adde230811ac2c04eaa0764ea7963d72cd3cd119f76894c"
+      "size": 1472,
+      "sha256": "e7d5fd6c9297240632e0bc2502a72609041ed674fa204b45a6c09c390be64ea7"
     },
     {
       "path": "src/worker/check-settings.ts",
@@ -620,8 +620,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 92442,
-      "sha256": "ca17f2555a10c51614d7aaf4f5c142e0397a4f3920785b6a185bc130cfe60803"
+      "size": 93396,
+      "sha256": "b3ffb23b5276a26add7468066a60e3e7f0bb21b76a99729d9514a8af954f884a"
     },
     {
       "path": "src/worker/d1-migrations.ts",
@@ -710,8 +710,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 80260,
-      "sha256": "dd6a0f17530e9e5e882136b82347872f76a913ebc7b1f120f833d47a5d699fcd"
+      "size": 82882,
+      "sha256": "64df54f4c8ad159e9f9264396566ae8aea5621caaf1b9eb24568234b09e49cac"
     },
     {
       "path": "src/worker/installation-credential.ts",
@@ -725,8 +725,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 86714,
-      "sha256": "d29256c8b0f54e185bcd7eb30a9c5bb40a2a8a57560de325d4e3687e388002e8"
+      "size": 88551,
+      "sha256": "223097bbdd80b2286445252f6ccb168b0bfd807854ccf8db2b89799eac5ac654"
     },
     {
       "path": "src/worker/mfa.ts",
