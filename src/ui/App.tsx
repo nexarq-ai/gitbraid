@@ -60,6 +60,7 @@ import AiSettingsPanel from "./AiSettingsPanel";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
 import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange, isKnownAppRoute, isPublicDocumentationRoute, POLICY_ROUTES, PUBLIC_PRODUCT_ROUTES } from "./router";
 import ThemeToggle from "./ThemeToggle";
+import ConnectionError from "./ConnectionError";
 import "./policy-pages.css";
 import { InstallationCredentialPrompt } from "./InstallationCredential";
 
@@ -362,7 +363,7 @@ function Workspace() {
   if (isPublicDocumentationRoute(route) && authState !== "authenticated") return <main className="public-documentation"><Documentation publicMode id={route === "docs" ? "overview" : route.slice(5)} /></main>;
   if (route === "home" && (!authConfig || (authConfig.edition === "hosted" && !authConfig.setupRequired))) return <Homepage authenticated={authState === "authenticated"} />;
   if (!authConfig && !authConfigError) return <WorkspaceLoader />;
-  if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
+  if (!authConfig) return <ConnectionError error={authConfigError} onRetry={() => window.location.reload()} />;
   if (isAccountRoute(route) && !authConfig.setupRequired) return <AccountScreen key={route} route={route} config={authConfig} authenticated={authState === "authenticated"} onChanged={load}/>;
   if (route.startsWith("invite?")) return <InvitationScreen route={route} config={authConfig} state={authState} error={error} onRetry={load} onSignedIn={load} onFlowChange={(active) => {authFlowActive.current=active;}}/>;
 
