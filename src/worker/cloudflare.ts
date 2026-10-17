@@ -194,7 +194,8 @@ export async function cloudflareIdentity(env:AppEnv,vault:Vault):Promise<Cloudfl
   if(typeof value.id!=='string'||!/^[A-Za-z0-9-]{8,64}$/.test(value.id)||email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ApiError(502,'CLOUDFLARE_IDENTITY_UNAVAILABLE','Cloudflare did not return a usable user identity.');
   if(value.suspended===true) throw new ApiError(403,'CLOUDFLARE_USER_SUSPENDED','This Cloudflare user is suspended.');
   const name=[value.first_name,value.last_name].filter(part=>typeof part==='string'&&part.trim()).join(' ').trim().slice(0,100)||email.split('@')[0].slice(0,100);
-  return {id:value.id,email,name};
+  // Owner decision (Oct 17): a Cloudflare account email counts as verified; Cloudflare's /user has no verification flag
+  return {id:value.id,email,name,emailVerified:true};
 }
 export async function cloudflareAccounts(env:AppEnv,vault:Vault):Promise<Account[]> { return accountsValue(await api(env,vault,'/accounts')); }
 export async function revokeCloudflareTokens(env:AppEnv,vault:Pick<Vault,'accessToken'|'refreshToken'>):Promise<boolean> {
