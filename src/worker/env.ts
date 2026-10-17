@@ -22,6 +22,7 @@ export type AppEnv = Omit<Env, 'CLOUDFLARE_CLIENT_ID' | 'CLOUDFLARE_CLIENT_SECRE
   PREVIEWS_ACCOUNT_ID?: string;
   PREVIEWS_WORKER_NAME?: string;
   INSTALLATION_OWNER_WORKSPACES?: string;
+  SUPER_ADMIN_EMAILS?: string;
   CLOUDFLARE_CLIENT_AUTH_METHOD?: 'client_secret_post' | 'client_secret_basic';
   EDITION?: 'hosted' | 'self-hosted';
   SETUP_TOKEN?: string;

@@ -14,7 +14,11 @@ export interface CloudflareApiOptions { method?: 'GET' | 'POST' | 'PUT' | 'DELET
 interface Store { connectionStore(p: Principal | null, operation: CloudflareStoreOperation, body: Record<string, unknown>): Promise<unknown>; check(p: Principal, action: Action, resourceType?: string, resourceId?: string): Promise<void>; rateLimit(key: string, max?: number, windowMs?: number): Promise<void> }
 interface Account { id: string; name: string }
 export type CloudflareVault = Vault;
-export interface CloudflareIdentity { id: string; email: string; name: string }
+export interface CloudflareIdentity {
+  id: string; email: string; name: string;
+  // GET /user and the id_token carry no email-verification claim, so nothing sets this until Cloudflare provides one
+  emailVerified?: boolean;
+}
 interface Vault { accessToken: string; refreshToken?: string; expiresAt: number; account?: Account; scopes: string[]; clientId: string }
 interface TokenResponse { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; scope?: unknown; token_type?: unknown }
 interface Pending { verifier: string; redirectUri: string; expectedVersion: string | null; repositoryId?: string }

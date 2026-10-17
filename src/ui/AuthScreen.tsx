@@ -7,7 +7,7 @@ import "./auth-loading.css";
 import "./public-install.css";
 import { navigate as goTo } from "./router";
 
-export type AuthConfig = { edition: "hosted" | "self-hosted"; setupRequired: boolean; publicSignup: boolean; mfaRequired: boolean; passwordReset?: boolean; emailVerification?: boolean; setupMode?: "admin-credentials" | "setup-token" | "unconfigured" };
+export type AuthConfig = { edition: "hosted" | "self-hosted"; setupRequired: boolean; publicSignup: boolean; mfaRequired: boolean; passwordReset?: boolean; emailVerification?: boolean; cloudflareSignin?: boolean; setupMode?: "admin-credentials" | "setup-token" | "unconfigured" };
 type Challenge = { challengeId: string; enrollmentRequired: boolean; secret?: string; otpauthUri?: string; expiresAt: number };
 type AuthResult = { mfaRequired?: boolean; recoveryCodes?: string[] } & Partial<Challenge>;
 type Props = { state: "checking" | "required" | "configuration" | "unavailable"; error: string; onRetry: () => Promise<void>; onSignedIn: () => Promise<void>; mode?: string; invitationToken?: string; config: AuthConfig; onFlowChange: (active: boolean) => void };

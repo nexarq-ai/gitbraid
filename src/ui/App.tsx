@@ -53,6 +53,8 @@ import {
 import QuickSearch from "./QuickSearch";
 import InvitationScreen from "./InvitationScreen";
 import AuthScreen, { AccountScreen, isAccountRoute, type AuthConfig } from "./AuthScreen";
+import OwnerTokenNotice from "./OwnerTokenNotice";
+import { showOwnerTokenNotice } from "./owner-token-notice";
 import WorkspaceLoader, { RouteProgress } from "./WorkspaceLoader";
 import AiSettingsPanel from "./AiSettingsPanel";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
@@ -1144,6 +1146,7 @@ function Workspace() {
       />
       <CreationDialog
         modal={modal}
+        cloudflareAvailable={authConfig.cloudflareSignin === true}
         onClose={() => setModal(null)}
         workspace={workspace}
         onCreated={async (item, importCode) => {
@@ -1463,8 +1466,10 @@ function CreationDialog({
   workspace,
   onCreated,
   onSignedIn,
+  cloudflareAvailable,
 }: {
   modal: Modal;
+  cloudflareAvailable: boolean;
   onClose: () => void;
   workspace: Workspace;
   onCreated: (item: Repository, importCode?: boolean) => Promise<void>;
@@ -1484,6 +1489,7 @@ function CreationDialog({
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [ownerNotice, setOwnerNotice] = useState(false);
   const mutation = useRef<{ signature: string; key: string } | null>(null);
 
   useEffect(() => {
@@ -1510,7 +1516,8 @@ function CreationDialog({
       if (modal === "session") {
         await request("/api/session", body, mutation.current.key);
         setToken("");
-        await onSignedIn();
+        if (showOwnerTokenNotice(true)) setOwnerNotice(true);
+        else await onSignedIn();
       } else if (modal === "repository" || modal === "connect") {
         const result = await request<Repository>(
           modal === "connect"
@@ -1551,8 +1558,14 @@ function CreationDialog({
   }[modal ?? "repository"];
 
   return (
+    <>
+    <OwnerTokenNotice
+      open={ownerNotice}
+      cloudflareAvailable={cloudflareAvailable}
+      onContinue={() => { setOwnerNotice(false); void onSignedIn(); }}
+    />
     <Dialog.Root
-      open={modal !== null}
+      open={modal !== null && !ownerNotice}
       onOpenChange={(open) => {
         if (!open && !busy) onClose();
       }}
@@ -1710,5 +1723,6 @@ function CreationDialog({
         )}
       </Dialog>
     </Dialog.Root>
+    </>
   );
 }
