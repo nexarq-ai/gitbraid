@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
+import App, { isPublicRoute } from "./App";
 import "./repository-browser.css";
 import "./public-install.css";
 import "./auth-loading.css";
@@ -17,8 +17,9 @@ import "./pull-requests.css";
 import "./styles.css";
 import "./design-system.css";
 import { initializeTheme } from "./ThemeToggle";
+import { currentRoute } from "./router";
 
-initializeTheme();
+initializeTheme(isPublicRoute(currentRoute()));
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -114,7 +114,7 @@ const runningStates = ["queued", "running", "checking", "integrating"];
 
 const RETURN_ROUTE_KEY = "gitflare:return-route";
 
-function isPublicRoute(route: string): boolean {
+export function isPublicRoute(route: string): boolean {
   return ["home", "signin", "signup", "source/gitflare", "deploy", ...POLICY_ROUTES, ...PUBLIC_PRODUCT_ROUTES].includes(route) || isPublicDocumentationRoute(route) || !isKnownAppRoute(route) || route.startsWith("invite?") || isAccountRoute(route);
 }
 

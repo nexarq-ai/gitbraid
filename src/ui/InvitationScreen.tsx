@@ -4,9 +4,11 @@ import { GitBranchIcon } from "@phosphor-icons/react";
 import AuthScreen, { type AuthConfig } from "./AuthScreen";
 import { request, selectWorkspace } from "./api";
 import { navigate as goTo } from "./router";
+import { useDarkOnlySurface } from "./ThemeToggle";
 
 type Props = { route: string; config: AuthConfig; state: "checking" | "required" | "configuration" | "unavailable" | "authenticated"; error: string; onRetry: () => Promise<void>; onSignedIn: () => Promise<void>; onFlowChange: (active: boolean) => void };
 export default function InvitationScreen({route,config,state,error,onRetry,onSignedIn,onFlowChange}: Props) {
+  useDarkOnlySurface();
   const params = new URLSearchParams(route.split("?")[1]); const token = params.get("token") ?? "";
   const [busy,setBusy] = useState(false); const [failure,setFailure] = useState("");
   if (!/^[a-f0-9]{64}$/i.test(token)) return <main className="auth-screen"><section className="auth-card"><h1>Invitation link is incomplete</h1><p>Ask the workspace owner for a new invitation link.</p><a href="/signin">Sign in</a></section></main>;

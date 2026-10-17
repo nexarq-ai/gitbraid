@@ -1,8 +1,8 @@
-# Gitbraid
+# Gitflare (self-hosted)
 
 **Git collaboration for people and AI agents, running entirely on your Cloudflare account.**
 
-Gitbraid is the open-source, single-workspace edition of Gitflare. It gives every AI agent its own branch and sandbox, tests their changes together, and lands nothing until a person approves the exact commit.
+This is the open-source, single-workspace edition of Gitflare. It gives every AI agent its own branch and sandbox, tests their changes together, and lands nothing until a person approves the exact commit.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nexarq-ai/gitbraid)
 
@@ -35,7 +35,7 @@ Gitbraid is the open-source, single-workspace edition of Gitflare. It gives ever
 - A built-in MCP server exposes every action in the UI (61 tools) with the same permissions, so Claude, Codex, Cursor, OpenCode and any MCP client can create missions, review, approve and land.
 
 **Run without AI if you want**
-- Set `AI_FEATURES=disabled`, or turn AI off per workspace. AI tabs disappear and Gitbraid works as a plain Git host with pull requests, issues, releases and branch protection.
+- Set `AI_FEATURES=disabled`, or turn AI off per workspace. AI tabs disappear and Gitflare works as a plain Git host with pull requests, issues, releases and branch protection.
 
 **Security**
 - Administrator setup with MFA, roles (Owner, Deployer, Maintainer, Reviewer, Contributor, Viewer), repository scopes, invitations, session revocation and an audit log.
@@ -60,7 +60,7 @@ node scripts/install-self-hosted.mjs
 
 Supply `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` of at least 12 characters, sign in with them and enroll MFA. Deployment creates or reuses the AI Gateway and Artifacts namespace, derives the preview origin from your account, and deploys the application and preview Workers. The build credential needs AI Gateway Read/Write and Artifacts Read/Edit in addition to Workers, Containers, Workflows and KV permissions (Worker Settings → Builds).
 
-To turn on Worker Previews, open **Settings → Cloudflare** after signing in: the card opens Cloudflare's token page with Workers Scripts: Edit and D1: Edit prefilled, and you paste the token back. You can instead supply it once as `GITBRAID_CLOUDFLARE_TOKEN` when deploying.
+To turn on Worker Previews, open **Settings → Cloudflare** after signing in: the card opens Cloudflare's token page with Workers Scripts: Edit and D1: Edit prefilled, and you paste the token back. You can instead supply it once as `GITFLARE_CLOUDFLARE_TOKEN` when deploying.
 
 To use AI, configure provider keys (BYOK) or Unified Billing in AI Gateway, then enable models under **AI models** in the workspace. Email requires your own verified sender.
 

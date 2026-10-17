@@ -88,7 +88,7 @@ export default function InstallationCredential() {
   return <section className="panel">
     <div className="panel-header"><h2>{heading}</h2><span className={`cf-state${status.state === "configured" ? " cf-state-on" : ""}`}>{status.state === "configured" && <span className="cf-connected-dot" />}{stateLabel(status)}</span></div>
     <div className="panel-body">
-      <p className="cf-description">{hosted ? "The operator token that publishes Worker Previews and creates isolated preview D1 databases for every workspace on this hosted installation." : "One Cloudflare API token lets Gitbraid publish Worker Previews and create isolated D1 databases for previews. It is stored encrypted and never shown again."}</p>
+      <p className="cf-description">{hosted ? "The operator token that publishes Worker Previews and creates isolated preview D1 databases for every workspace on this hosted installation." : "One Cloudflare API token lets Gitflare publish Worker Previews and create isolated D1 databases for previews. It is stored encrypted and never shown again."}</p>
       {error && <ErrorNotice message={error} />}
       {message && <p className="cf-notice" role="status">{message}</p>}
       <dl className="cf-account-facts">

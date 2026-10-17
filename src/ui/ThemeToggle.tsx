@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useLayoutEffect, useSyncExternalStore } from "react";
 import { MoonIcon, SunIcon } from "@phosphor-icons/react";
 
 export type Theme = "light" | "dark";
@@ -14,12 +14,34 @@ function applyTheme(theme: Theme) {
   root.style.colorScheme = theme;
 }
 
-export function initializeTheme() {
-  let theme: Theme = "light";
+let darkOnlySurfaces = 0;
+
+function preferredTheme(): Theme {
   try {
-    if (localStorage.getItem(THEME_KEY) === "dark") theme = "dark";
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored === "dark" || stored === "light") return stored;
   } catch {}
-  applyTheme(theme);
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export function initializeTheme(darkOnly = false) {
+  applyTheme(darkOnly ? "dark" : preferredTheme());
+  window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+    if (darkOnlySurfaces > 0) return;
+    applyTheme(preferredTheme());
+    window.dispatchEvent(new Event(THEME_EVENT));
+  });
+}
+
+export function useDarkOnlySurface() {
+  useLayoutEffect(() => {
+    darkOnlySurfaces += 1;
+    applyTheme("dark");
+    return () => {
+      darkOnlySurfaces -= 1;
+      if (darkOnlySurfaces === 0) applyTheme(preferredTheme());
+    };
+  }, []);
 }
 
 export function setTheme(theme: Theme) {
@@ -30,10 +52,9 @@ export function setTheme(theme: Theme) {
 
 function subscribe(listener: () => void) {
   const onStorage = (event: StorageEvent) => {
-    if (event.key === THEME_KEY) {
-      applyTheme(event.newValue === "dark" ? "dark" : "light");
-      listener();
-    }
+    if (event.key !== THEME_KEY) return;
+    if (darkOnlySurfaces === 0) applyTheme(preferredTheme());
+    listener();
   };
   window.addEventListener(THEME_EVENT, listener);
   window.addEventListener("storage", onStorage);
@@ -48,6 +69,11 @@ export function useTheme() {
 }
 
 export function ThemeToggle({ className = "", compact = true }: { className?: string; compact?: boolean }) {
+  useLayoutEffect(() => {
+    if (darkOnlySurfaces > 0) return;
+    applyTheme(preferredTheme());
+    window.dispatchEvent(new Event(THEME_EVENT));
+  }, []);
   const theme = useTheme();
   const dark = theme === "dark";
   const label = `Switch to ${dark ? "light" : "dark"} theme`;

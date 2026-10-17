@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Gitbraid.
+Thanks for helping improve Gitflare.
 
 ## Before you start
 

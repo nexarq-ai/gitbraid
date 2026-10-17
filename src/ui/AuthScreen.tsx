@@ -1,4 +1,3 @@
-import ThemeToggle from "./ThemeToggle";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -7,6 +6,7 @@ import { request, selectWorkspace } from "./api";
 import "./auth-loading.css";
 import "./public-install.css";
 import { navigate as goTo } from "./router";
+import { useDarkOnlySurface } from "./ThemeToggle";
 
 export type AuthConfig = { edition: "hosted" | "self-hosted"; setupRequired: boolean; publicSignup: boolean; mfaRequired: boolean; passwordReset?: boolean; emailVerification?: boolean; cloudflareSignin?: boolean; setupMode?: "admin-credentials" | "setup-token" | "unconfigured" };
 type Challenge = { challengeId: string; enrollmentRequired: boolean; secret?: string; otpauthUri?: string; expiresAt: number };
@@ -14,6 +14,7 @@ type AuthResult = { mfaRequired?: boolean; recoveryCodes?: string[] } & Partial<
 type Props = { state: "checking" | "required" | "configuration" | "unavailable"; error: string; onRetry: () => Promise<void>; onSignedIn: () => Promise<void>; mode?: string; invitationToken?: string; config: AuthConfig; onFlowChange: (active: boolean) => void };
 
 export default function AuthScreen({ state, error, onRetry, onSignedIn, config, onFlowChange, invitationToken }: Props) {
+  useDarkOnlySurface();
   useEffect(() => () => onFlowChange(false), []);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState("");
@@ -79,6 +80,7 @@ const ACCOUNT_ROUTES = ["forgot-password", "reset-password", "verify-email"];
 export function isAccountRoute(route: string): boolean { return ACCOUNT_ROUTES.includes(route.split("/")[0]); }
 function failureMessage(failure: unknown, fallback: string): string { return failure instanceof Error ? failure.message : fallback; }
 export function AccountScreen({ route, config, authenticated, onChanged }: { route: string; config: AuthConfig; authenticated: boolean; onChanged: () => Promise<void> }) {
+  useDarkOnlySurface();
   const [kind, linkToken = ""] = route.split("/");
   const [token] = useState(linkToken);
   const [busy, setBusy] = useState(false);
@@ -117,7 +119,7 @@ export function AccountScreen({ route, config, authenticated, onChanged }: { rou
     description = done ? "Thanks. Your email address is confirmed." : validToken ? "Confirm that this email address belongs to you." : "Sign in and resend the verification email from your account settings.";
     if (!done && validToken) content = <>{failure && <div className="form-error" role="alert">{failure}</div>}<Button variant="primary" size="base" loading={busy} className="auth-submit" onClick={() => void verify()}>Verify email address</Button></>;
   }
-  return <main className="auth-screen"><div className="auth-theme"><ThemeToggle compact /></div><div className="auth-content"><a className="auth-brand" href={config.edition === "hosted" ? "/" : "/signin"}><span className="brand-icon"><GitBranchIcon size={20} weight="bold"/></span><span>gitflare</span></a><section className="auth-card" aria-labelledby="account-title"><h1 id="account-title">{title}</h1><p className="auth-description" role={done ? "status" : undefined}>{description}</p>{content}<p className="auth-switch"><a href={home}>{homeLabel}</a></p></section></div></main>;
+  return <main className="auth-screen"><div className="auth-content"><a className="auth-brand" href={config.edition === "hosted" ? "/" : "/signin"}><span className="brand-icon"><GitBranchIcon size={20} weight="bold"/></span><span>gitflare</span></a><section className="auth-card" aria-labelledby="account-title"><h1 id="account-title">{title}</h1><p className="auth-description" role={done ? "status" : undefined}>{description}</p>{content}<p className="auth-switch"><a href={home}>{homeLabel}</a></p></section></div></main>;
 }
 export function VerifyEmailNotice({ user }: { user: { email?: string; emailVerified?: boolean } }) {
   const [available, setAvailable] = useState(false);
