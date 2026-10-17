@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
 const wrangler = resolve(root, 'node_modules/wrangler/bin/wrangler.js');
+const INSTALLATION = { marker: 'GITFLARE_INSTALLATION', value: 'gitflare', primary: 'GITFLARE_PRIMARY_WORKER' };
+const DEPRECATED_INSTALLATION = { marker: 'GITBRAID_INSTALLATION', value: 'gitbraid', primary: 'GITBRAID_PRIMARY_WORKER' };
 const permissionHelp = 'In Cloudflare dashboard, select the deployment API token under Workers → Settings → Builds and grant AI Gateway Read/Write and Artifacts Read/Edit for the selected account, alongside the Workers, Containers, Workflows and KV permissions. Never paste this build credential into the application.';
 
 export class ProvisioningError extends Error {
@@ -20,14 +22,16 @@ export function deploymentConfiguration(input, accountId, subdomain, overrideNam
   config.account_id = accountId;
   config.name = name;
   config.vars.PREVIEW_ORIGIN = `https://${name}-preview.${subdomain}.workers.dev`;
-  config.vars.GITBRAID_INSTALLATION = 'gitbraid';
-  config.vars.GITBRAID_PRIMARY_WORKER = name;
+  delete config.vars[DEPRECATED_INSTALLATION.marker];
+  delete config.vars[DEPRECATED_INSTALLATION.primary];
+  config.vars[INSTALLATION.marker] = INSTALLATION.value;
+  config.vars[INSTALLATION.primary] = name;
   config.vars.PREVIEWS_ACCOUNT_ID = accountId;
   config.vars.PREVIEWS_WORKER_NAME = previewsWorkerName(name);
   for (const workflow of config.workflows ?? []) workflow.name = `${name}-missions`;
   for (const container of config.containers ?? []) container.name = `${name}-runner`;
-  for (const binding of config.artifacts ?? []) if (binding.namespace === 'gitbraid') binding.namespace = name;
-  const preview = { '$schema': 'node_modules/wrangler/config-schema.json', name: `${name}-preview`, account_id: accountId, main: 'src/preview/index.ts', compatibility_date: config.compatibility_date, workers_dev: true, services: [{ binding: 'GITFLARE', service: name, entrypoint: 'PreviewRelay' }], vars: { GITBRAID_INSTALLATION: 'gitbraid', GITBRAID_PRIMARY_WORKER: name }, observability: { enabled: false } };
+  for (const binding of config.artifacts ?? []) if ([INSTALLATION.value, DEPRECATED_INSTALLATION.value].includes(binding.namespace)) binding.namespace = name;
+  const preview = { '$schema': 'node_modules/wrangler/config-schema.json', name: `${name}-preview`, account_id: accountId, main: 'src/preview/index.ts', compatibility_date: config.compatibility_date, workers_dev: true, services: [{ binding: 'GITFLARE', service: name, entrypoint: 'PreviewRelay' }], vars: { [INSTALLATION.marker]: INSTALLATION.value, [INSTALLATION.primary]: name }, observability: { enabled: false } };
   return { config, preview };
 }
 
@@ -42,7 +46,7 @@ export async function ensurePreviewsWorker(api, workerName) {
 }
 
 export function installerPreviewsToken(env = process.env) {
-  return (env.GITBRAID_CLOUDFLARE_TOKEN || env.GITBRAID_PREVIEWS_API_TOKEN || '').trim() || undefined;
+  return (env.GITFLARE_CLOUDFLARE_TOKEN || env.GITBRAID_CLOUDFLARE_TOKEN || env.GITBRAID_PREVIEWS_API_TOKEN || '').trim() || undefined;
 }
 
 export async function checkInstallerToken(token, accountId, workerName, fetcher = fetch) {
@@ -51,7 +55,7 @@ export async function checkInstallerToken(token, accountId, workerName, fetcher 
     const envelope = await response.json().catch(() => null);
     return response.ok && envelope?.success !== false;
   };
-  if (!await get(`/workers/workers/${workerName}/previews`)) throw new Error(`GITBRAID_CLOUDFLARE_TOKEN cannot manage Worker Previews on ${workerName}. Create it with Workers Scripts: Edit and D1: Edit on this account, or leave it unset and paste a token in Settings → Cloudflare after signing in.`);
+  if (!await get(`/workers/workers/${workerName}/previews`)) throw new Error(`GITFLARE_CLOUDFLARE_TOKEN cannot manage Worker Previews on ${workerName}. Create it with Workers Scripts: Edit and D1: Edit on this account, or leave it unset and paste a token in Settings → Cloudflare after signing in.`);
   return { d1: await get('/d1/database?per_page=1') };
 }
 
@@ -70,7 +74,7 @@ export async function preflightDeployment(api, name, gatewayId, namespace) {
   for (const existing of [settings, preview]) {
     if (!existing) continue;
     const vars = Object.fromEntries((existing.bindings ?? []).filter(binding => binding.type === 'plain_text').map(binding => [binding.name, binding.text]));
-    if (vars.GITBRAID_INSTALLATION !== 'gitbraid' || vars.GITBRAID_PRIMARY_WORKER !== name) throw new Error('A selected Worker name already belongs to another application. Choose an unused dedicated name; it will not be overwritten.');
+    if (![INSTALLATION, DEPRECATED_INSTALLATION].some(owner => vars[owner.marker] === owner.value && vars[owner.primary] === name)) throw new Error('A selected Worker name already belongs to another application. Choose an unused dedicated name; it will not be overwritten.');
   }
   return { gatewayExists: !!gateway, namespaceExists: !!artifact, encryptionKeyExists: (settings?.bindings ?? []).some(binding => binding.type === 'secret_text' && binding.name === 'AUTH_ENCRYPTION_KEY') };
 }
