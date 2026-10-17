@@ -179,7 +179,7 @@ export default function MissionDetail({
   useEffect(() => { if (isActive) reschedule.current(); }, [isActive]);
 
   async function act(
-    action: "start" | "retry-agents" | "drop-failed-agents" | "cancel" | "approve" | "integrate" | "revoke",
+    action: "start" | "retry-agents" | "drop-failed-agents" | "address-review" | "cancel" | "approve" | "integrate" | "revoke",
   ) {
     if (!mission || busy) return;
     setBusy(action);
@@ -494,7 +494,7 @@ export default function MissionDetail({
     );
   const active = ["queued", "running", "checking"].includes(mission.status);
   const verifiedChecks = mission.raceChecks ?? mission.checks;
-  const verifiedRuns = mission.runs.filter((run) => run.status === "completed" && !!run.commitSha && !!run.forkName && verifiedChecks.some((check) => check.runId === run.id && check.status === "passed" && check.candidateSha === run.commitSha));
+  const verifiedRuns = mission.runs.filter((run) => run.status === "completed" && !!run.commitSha && !!run.forkName && verifiedChecks.some((check) => check.runId === run.id && check.status === "passed" && check.candidateSha === run.commitSha) && !run.collision);
   const unfinishedRuns = mission.runs.filter((run) => !verifiedRuns.includes(run));
   const canRetryAgents = mission.epoch > 0 && ["failed", "cancelled"].includes(mission.status) && !mission.skillChange && !mission.revertChange && !mission.branchChange && (unfinishedRuns.length > 0 || mission.mode !== "race");
   const landing = mission.status === "integrating" && !mission.error;
@@ -649,6 +649,18 @@ export default function MissionDetail({
               onClick={() => void act("drop-failed-agents")}
             >
               Continue without failed agents
+            </Button>
+          )}
+          {mission.status === "needs_review" && unresolvedRequests.length > 0 && !mission.skillChange && !mission.revertChange && !mission.branchChange && (mission.mode !== "race" || !!mission.selectedRunId) && (
+            <Button
+              variant="secondary"
+              size="base"
+              icon={ArrowCounterClockwiseIcon}
+              loading={busy === "address-review"}
+              disabled={!!busy || !permissions.includes("execute")}
+              onClick={() => void act("address-review")}
+            >
+              Send changes to agents ({unresolvedRequests.length})
             </Button>
           )}
           {active && (

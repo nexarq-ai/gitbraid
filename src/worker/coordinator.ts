@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { BranchChangeResult, CheckOverride, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
-import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint, failureLine } from './domain';
+import type { AgentRun, BranchChangeResult, CheckOverride, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint, failureLine, REVIEW_GUIDANCE_MAX } from './domain';
 import { assertDependenciesAcknowledged, assertDependencyApprover } from './dependency-changes';
 import { repositoryLabel } from '../shared/repository-names';
 import type { AppEnv } from './env';
@@ -8,7 +8,7 @@ import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
 import { securityClient, type Principal } from './security';
 import { needsPacking, packMission, summarizeMission, unpackMission, type BlobStore } from './mission-storage';
-import { assertLineInCandidate, assertReviewClear, reviewMissionInput } from './proposal-review';
+import { assertLineInCandidate, assertReviewClear, currentReviewRequests, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
 import type { ImportReceipt, ImportResult } from './repository-import';
 import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './releases';
@@ -767,20 +767,35 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return started;
   }
 
-  async retryAgents(key: string, id: string, mode: 'retry' | 'drop', runIds: string[] | undefined, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
+  async retryAgents(key: string, id: string, mode: 'retry' | 'drop' | 'review', runIds: string[] | undefined, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections(), guidance?: string): Promise<Mission> {
     await this.ensureDispatchAlarm(Date.now() + 1000);
     const release = await this.reserveMissionCapacity(key, id, authorization);
-    const started = await this.releaseOnFailure(release, () => this.mutateMission(key, JSON.stringify([mode === 'retry' ? 'retry-agents' : 'drop-failed-agents', id, runIds ? [...runIds].sort() : null]), id, () => {
+    const action = mode === 'retry' ? 'retry-agents' : mode === 'review' ? 'address-review' : 'drop-failed-agents';
+    const started = await this.releaseOnFailure(release, () => this.mutateMission(key, JSON.stringify([action, id, runIds ? [...runIds].sort() : null, guidance ?? null]), id, () => {
       const mission = this.requiredMission(id);
-      if (!['failed', 'cancelled'].includes(mission.status) || mission.epoch === 0) throw new ApiError(409, 'MISSION_NOT_FAILED', 'Only a failed or cancelled attempt can retry or drop individual agents.');
+      const reviewing = mode === 'review';
+      if (reviewing ? mission.status !== 'needs_review' : !['failed', 'cancelled'].includes(mission.status) || mission.epoch === 0) throw reviewing ? new ApiError(409, 'MISSION_NOT_IN_REVIEW', 'Only a candidate awaiting review can be sent back to its agents.') : new ApiError(409, 'MISSION_NOT_FAILED', 'Only a failed or cancelled attempt can retry or drop individual agents.');
       if (mission.skillChange || mission.revertChange || mission.branchChange) throw new ApiError(409, 'TRUSTED_MISSION', 'This proposal has one trusted editor. Use Retry mission instead.');
       const unknown = (runIds ?? []).filter((runId) => !mission.runs.some((run) => run.id === runId));
       if (unknown.length) throw new ApiError(400, 'UNKNOWN_AGENT', `No agent with ID ${unknown[0]!.slice(0, 64)} belongs to this mission.`);
       const checks = mission.raceChecks ?? mission.checks;
-      const reusable = (run: Mission['runs'][number]) => run.status === 'completed' && !!run.commitSha && !!run.forkName && !runIds?.includes(run.id) && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha);
+      const verified = (run: Mission['runs'][number]) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha);
+      const requests = reviewing ? currentReviewRequests(mission) : [];
+      if (reviewing && !requests.length && !guidance) throw new ApiError(409, 'NO_CHANGE_REQUESTS', 'This candidate has no open change requests. Request changes first, or pass guidance for the agents.');
+      const chosen = reviewing ? runIds ?? (mission.mode === 'race' ? (mission.selectedRunId ? [mission.selectedRunId] : []) : mission.runs.filter(verified).map((run) => run.id)) : runIds;
+      if (reviewing && !chosen?.length) throw new ApiError(409, 'SELECT_CANDIDATE', 'Select a candidate first, or name the agents to send the review to.');
+      if (reviewing && mission.runs.some((run) => chosen!.includes(run.id) && !verified(run))) throw new ApiError(409, 'AGENT_NOT_VERIFIED', 'Only agents with a verified candidate can address a review.');
+      const reusable = (run: Mission['runs'][number]) => verified(run) && !chosen?.includes(run.id) && !(!reviewing && run.collision);
       const reused = mission.runs.filter(reusable);
-      const others = mission.runs.filter((run) => !reusable(run));
+      const others = mission.runs.filter((run) => !reusable(run) && (!reviewing || chosen!.includes(run.id)));
       if (!others.length && (mode === 'drop' || mission.mode === 'race')) throw new ApiError(409, 'NO_FAILED_AGENTS', 'Every agent has a verified candidate. Use Retry mission to rerun them all, or choose the agents to rerun.');
+      const sourceOf = (run: Mission['runs'][number]) => ({ runId: run.id, name: run.name, forkName: run.forkName!, commitSha: run.commitSha! });
+      const startFrom = (run: Mission['runs'][number]): AgentRun['startFrom'] => {
+        if (reviewing) return { reason: 'review', candidates: (mission.mode === 'race' ? [run] : mission.runs.filter(verified)).map(sourceOf) };
+        if (run.collision && reused.length) return { reason: 'collision', files: run.collision.files, candidates: reused.map(sourceOf) };
+        return undefined;
+      };
+      const feedback = reviewing ? [requests.length ? `Reviewer change requests on the previous candidate:\n${requests.map((review) => `- ${review.path ? `${review.path}:${review.line} ` : ''}${review.body}`).join('\n')}` : '', guidance ?? ''].filter(Boolean).join('\n\n').slice(0, REVIEW_GUIDANCE_MAX) : guidance;
       if (mode === 'drop' && !reused.length) throw new ApiError(409, 'NO_COMPLETED_AGENTS', 'No agent has a verified candidate to continue with. Retry the failed agents instead.');
       const repository = this.getRepository(mission.repositoryId);
       const previousEpoch = mission.epoch;
@@ -794,9 +809,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const fresh = (run: Mission['runs'][number]) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, changedFiles: [] as string[] });
       mission.runs = mission.runs.map((run) => {
         if (reusedIds.has(run.id)) return { ...run, reusedFromEpoch: run.reusedFromEpoch ?? previousEpoch, ...(run.candidateBaseSha ?? previousBase ? { candidateBaseSha: run.candidateBaseSha ?? previousBase! } : {}) };
-        if (mode === 'drop') return { ...fresh(run), status: 'skipped' as const, completedAt: now, skipReason: run.skipReason ?? `Excluded in attempt ${previousEpoch + 1} after it ${run.status === 'cancelled' ? 'was cancelled' : 'failed'}${run.error ? `: ${failureLine(run.error)}` : ''}` };
+        if (mode === 'drop' || reviewing && !chosen!.includes(run.id)) return { ...fresh(run), status: 'skipped' as const, completedAt: now, skipReason: run.skipReason ?? (reviewing ? `Not sent the review in attempt ${previousEpoch + 1}` : `Excluded in attempt ${previousEpoch + 1} after it ${run.status === 'cancelled' ? 'was cancelled' : 'failed'}${run.error ? `: ${failureLine(run.error)}` : ''}`) };
         const [pinned] = pinMissionModels({ ...mission, runs: [run] }, models).runs;
-        return { ...fresh(pinned!), status: 'queued' as const };
+        const from = startFrom(run);
+        return { ...fresh(pinned!), status: 'queued' as const, ...(feedback ? { retryGuidance: feedback } : {}), ...(from ? { startFrom: from } : {}) };
       });
       mission.status = 'queued';
       mission.epoch += 1;
@@ -816,10 +832,15 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const names = (runs: Mission['runs']) => runs.map((run) => run.name.slice(0, 60)).join(', ');
       const moved = previousBase && mission.baseSha !== previousBase ? ` The default branch moved from ${previousBase.slice(0, 12)} to ${(mission.baseSha ?? 'none').slice(0, 12)}, so ${mission.mode === 'race' ? 'reused candidates will be re-run' : 'reused candidates are merged onto the new base and the combined checks re-verify them'}.` : '';
       const reuseNote = reused.length ? ` Reusing ${reused.length} verified candidate${reused.length === 1 ? '' : 's'} from attempt ${previousEpoch} (${names(reused)}) after confirming each commit is still in its fork.` : '';
+      const collided = others.filter((run) => run.collision && reused.length);
+      const rebaseNote = collided.length ? ` ${names(collided)} start${collided.length === 1 ? 's' : ''} from the merged candidates of ${names(reused)} to resolve the collision in ${[...new Set(collided.flatMap((run) => run.collision!.files))].slice(0, 10).join(', ')}.` : '';
+      const guidanceNote = guidance ? ` Guidance from ${authorization?.principal.userId ?? 'the requester'}: "${guidance.replace(/\s+/g, ' ').slice(0, 300)}${guidance.length > 300 ? '…' : ''}"` : '';
       this.queueDispatch(mission);
-      return this.saveMission(mission, mode === 'retry'
-        ? others.length ? `Attempt ${mission.epoch} queued to retry ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}).${reuseNote}${moved}` : `Attempt ${mission.epoch} queued to combine again without rerunning any agent.${reuseNote}${moved}`
-        : `Attempt ${mission.epoch} queued without ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}), now marked skipped.${reuseNote} Acceptance criteria are unchanged.${moved}`, mode === 'drop' ? 'warning' : 'info');
+      return this.saveMission(mission, mode === 'review'
+        ? `Attempt ${mission.epoch} queued to address ${requests.length} change request${requests.length === 1 ? '' : 's'} with ${names(others)}, starting from the reviewed candidate.${reuseNote}${moved}${guidanceNote}`
+        : mode === 'retry'
+          ? others.length ? `Attempt ${mission.epoch} queued to retry ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}).${reuseNote}${rebaseNote}${moved}${guidanceNote}` : `Attempt ${mission.epoch} queued to combine again without rerunning any agent.${reuseNote}${moved}`
+          : `Attempt ${mission.epoch} queued without ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}), now marked skipped.${reuseNote} Acceptance criteria are unchanged.${moved}`, mode === 'drop' ? 'warning' : 'info');
     }));
     if (started.status === 'queued') this.queueDispatch(started);
     return started;

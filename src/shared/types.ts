@@ -83,6 +83,9 @@ export interface AgentRun {
   candidateBaseSha?: string;
   skipReason?: string;
   dependencyChanges?: ManifestDependencyChanges[];
+  retryGuidance?: string;
+  collision?: { files: string[]; epoch: number };
+  startFrom?: { reason: 'collision' | 'review'; files?: string[]; candidates: { runId: string; name: string; forkName: string; commitSha: string }[] };
 }
 
 export type RunnerSize = 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';
