@@ -11,7 +11,7 @@ import { deleteWorkerPreview, previewAlias, upsertWorkerPreview, WorkerPreviewEr
 import { resolveWorkerPreviewsConfig } from './installation-credential';
 import { WorkerBuildFailure } from './worker-bundle';
 import { changedPaths } from './deploy-changes';
-import { automaticPromotion, deployWorkflowId, landedDeployments, policyDeployTargets, runDeployment, wranglerEnvironment, type DeploymentRecord, type DeployParams } from './deployments';
+import { automaticPromotion, deployWorkflowId, landedDeployments, landingDeploySummary, policyDeployTargets, runDeployment, wranglerEnvironment, type DeploymentRecord, type DeployParams } from './deployments';
 import { cloudflareDeployClient, type CloudflareDeployAccess } from './cloudflare-deploy';
 import { bindPreviewD1, deletePreviewD1 } from './preview-d1';
 import { cloudflareDeployAccess, cloudflareWorkerDeployer } from './cloudflare';
@@ -128,14 +128,16 @@ function retireParams(repositoryId: string, missionId: string, workspaceId: stri
 export async function scheduleLandedDeployment(env: AppEnv, repositoryId: string, missionId: string, epoch: number, commitSha: string, baseSha?: string): Promise<void> {
   const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repositoryId}`);
   const { settings } = await coordinator.deployState();
+  const created: DeploymentRecord[] = [];
   for (const draft of landedDeployments(settings, repositoryId, missionId, commitSha, baseSha)) {
     const principal = settings?.environments[draft.environment]?.authorizedBy;
     if (!principal) continue;
-    await createAndDispatchDeployment(env, coordinator, draft, principal, `land-${missionId}-${epoch}${draft.environment === 'production' ? '' : `-${draft.environment}`}`, JSON.stringify(['land', missionId, epoch, commitSha, draft.environment]));
+    created.push(await createAndDispatchDeployment(env, coordinator, draft, principal, `land-${missionId}-${epoch}${draft.environment === 'production' ? '' : `-${draft.environment}`}`, JSON.stringify(['land', missionId, epoch, commitSha, draft.environment])));
   }
+  await coordinator.recordMissionEvent(missionId, landingDeploySummary(settings, created));
 }
 
-async function createAndDispatchDeployment(env: AppEnv, coordinator: ReturnType<AppEnv['GITFLARE_COORDINATOR']['getByName']>, draft: DeploymentRecord, principal: DeployParams['principal'], key: string, fingerprint: string): Promise<void> {
+async function createAndDispatchDeployment(env: AppEnv, coordinator: ReturnType<AppEnv['GITFLARE_COORDINATOR']['getByName']>, draft: DeploymentRecord, principal: DeployParams['principal'], key: string, fingerprint: string): Promise<DeploymentRecord> {
   let record;
   try { record = await coordinator.createDeployment(key, fingerprint, draft); }
   catch (error) {
@@ -143,8 +145,9 @@ async function createAndDispatchDeployment(env: AppEnv, coordinator: ReturnType<
     record = await coordinator.createDeployment(key, fingerprint, { ...draft, status: 'awaiting_confirmation' });
   }
   if (record.status === 'queued' && env.MISSION_WORKFLOW && await dispatchBackground(env.MISSION_WORKFLOW, deployWorkflowId(record.id), { kind: 'deploy', repositoryId: draft.repositoryId, deploymentId: record.id, principal } satisfies DeployParams) === 'missing') {
-    await coordinator.updateDeployment(record.id, ['queued'], { status: 'failed', errorCode: 'DEPLOYMENT_NOT_STARTED', error: 'The deployment could not be scheduled. Deploy it manually.' });
+    return await coordinator.updateDeployment(record.id, ['queued'], { status: 'failed', errorCode: 'DEPLOYMENT_NOT_STARTED', error: 'The deployment could not be scheduled. Deploy it manually.' }) ?? record;
   }
+  return record;
 }
 
 function previewsCall(config: { token: string; accountId: string }) {

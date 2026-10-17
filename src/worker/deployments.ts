@@ -725,6 +725,7 @@ function detectBlockers(setup: DetectedSetup, settings: DeploySettings | null, m
   const blocking: string[] = [];
   const label = accountLabel(account);
   if (account.missingScopes?.length) blocking.push(`The ${account.source} Cloudflare connection to ${label} was not granted ${account.missingScopes.join(', ')}, which deploying the detected Workers needs. An Owner must reconnect Cloudflare and grant ${account.missingScopes.length === 1 ? 'that scope' : 'those scopes'} before anything deploys.`);
+  blocking.push(...(account.resourceBlockers ?? []));
   if (mapping && mapping.accountId !== account.accountId) blocking.push(`This repository's Workers are linked on Cloudflare account ${mapping.accountId}, but the ${account.source} connection is on ${label}. Applying this setup links them on ${label} instead.`);
   for (const environment of configuredEnvironments(settings)) {
     const saved = settings!.environments[environment]!;
@@ -898,12 +899,34 @@ export async function deploymentsApi(request: Request, context: DeployApiContext
 export function landedDeployments(settings: DeploySettings | null, repositoryId: string, missionId: string, commitSha: string, baseSha?: string): DeploymentRecord[] {
   if (!settings || !sha.test(commitSha)) return [];
   const fields = { commitSha, missionId, trigger: 'land' as const, ...(baseSha && sha.test(baseSha) ? { baseSha } : {}) };
+  return landingEnvironments(settings).map((environment) => {
+    const value = settings.environments[environment]!;
+    return environmentRecord(repositoryId, environment, value, value.authorizedBy.userId, { ...fields, status: 'queued' });
+  });
+}
+
+function landingEnvironments(settings: DeploySettings): DeployEnvironment[] {
   const enabled = configuredEnvironments(settings).filter((environment) => settings.environments[environment]?.enabled);
   const preProduction = enabled.filter((environment) => environment !== PRODUCTION);
-  return (preProduction.length ? preProduction : enabled).map((environment) => {
+  return (preProduction.length ? preProduction : enabled).filter((environment) => settings.environments[environment]!.trigger === 'auto');
+}
+
+const LANDED_STATUS: Partial<Record<DeploymentStatus, string>> = { queued: 'queued', awaiting_confirmation: 'waiting for confirmation because another deployment is running', failed: 'could not be scheduled' };
+
+export function landingDeploySummary(settings: DeploySettings | null, created: DeploymentRecord[]): string {
+  const environments = configuredEnvironments(settings);
+  if (!settings || !environments.length) return 'Deploy on land is not set up for this repository; no deployment was queued.';
+  const landing = landingEnvironments(settings);
+  const parts = environments.map((environment) => {
     const value = settings.environments[environment]!;
-    return environmentRecord(repositoryId, environment, value, value.authorizedBy.userId, { ...fields, status: value.trigger === 'auto' ? 'queued' : 'awaiting_confirmation' });
+    const record = created.find((item) => item.environment === environment);
+    if (record) return `${environment} ${LANDED_STATUS[record.status] ?? record.status} (deployment ${record.id}, ${settingsTargets(value).map((target) => target.workerName).join(', ')} on account ${record.accountId})`;
+    if (!value.enabled) return `${environment} not queued (deploy on land is off)`;
+    if (value.trigger !== 'auto') return `${environment} not queued (manual: deploy it with Deploy or gitflare_deploy)`;
+    if (landing.includes(environment)) return `${environment} not queued (no authorizing user is recorded; save its settings again)`;
+    return `${environment} not queued (it is promoted after ${landing.join(', ') || 'another environment'} succeeds)`;
   });
+  return `Deploy on land: ${parts.join('; ')}.`;
 }
 
 export function promotionSource(settings: DeploySettings | null): DeployEnvironment | null {

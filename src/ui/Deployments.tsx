@@ -27,7 +27,7 @@ interface EnvironmentState {
   canConfirm?: boolean;
 }
 interface State { environmentOrder?: Environment[]; environments: Record<Environment, EnvironmentState>; deployments: Deployment[]; workers: { id: string; name: string; environment: string }[] }
-interface DetectedResource { type: "d1" | "r2" | "queue"; name: string; status?: "exists" | "create" | "missing" | "unknown" }
+interface DetectedResource { type: "d1" | "r2" | "queue"; name: string; status?: "exists" | "create" | "missing" | "unknown"; needsScope?: string }
 interface DetectedTarget { workerName: string; configPath: string; buildCommand?: string; buildReasons: string[]; d1Migrations: boolean; watchPaths: string[]; dependsOn: string[]; resources: DetectedResource[]; customDomains: string[]; routes: string[]; workersDev: boolean; exists?: boolean | null; urls?: string[] }
 interface SetupWarning { id: string; environment: Environment; configPath: string; message: string }
 interface DetectedSetup { commitSha: string; fingerprint: string; packageManager: string | null; environments: Record<Environment, { targets: DetectedTarget[]; warnings: SetupWarning[] }>; errors: string[]; notes: string[]; account?: { connected: true; accountId: string; accountName?: string; source: string; subdomain: string | null; notes: string[] } | { connected: false; reason: string } }
@@ -167,7 +167,7 @@ export default function Deployments({ repository, onNotify }: { repository: Repo
                     <strong>{target.workerName}</strong>{target.exists === false ? " · will be created" : target.exists ? " · exists" : ""} · <code>{target.configPath}</code>
                     <div className="cf-state">{target.buildCommand ? <>Build <code>{target.buildCommand}</code> ({target.buildReasons.join("; ")})</> : "No build step"}{target.d1Migrations ? " · D1 migrations" : ""}{target.dependsOn.length ? ` · after ${target.dependsOn.join(", ")}` : ""}</div>
                     {target.watchPaths.length > 0 && <div className="cf-state">Watch {target.watchPaths.join(", ")}</div>}
-                    {target.resources.length > 0 && <div className="cf-state">{target.resources.map((resource) => `${resourceLabels[resource.type]} ${resource.name}${resource.status ? ` (${resourceStatus[resource.status]})` : ""}`).join(" · ")}</div>}
+                    {target.resources.length > 0 && <div className="cf-state">{target.resources.map((resource) => `${resourceLabels[resource.type]} ${resource.name}${resource.status ? ` (${resourceStatus[resource.status]}${resource.needsScope ? `, needs ${resource.needsScope}` : ""})` : ""}`).join(" · ")}</div>}
                     <div className="cf-state">{target.urls?.length ? <WorkerUrls urls={target.urls} /> : target.workersDev ? "workers.dev URL after the account subdomain is read" : "No public URL (workers.dev off)"}</div>
                   </li>
                 ))}

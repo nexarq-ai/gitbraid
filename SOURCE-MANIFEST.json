@@ -320,8 +320,8 @@
     },
     {
       "path": "src/ui/Deployments.tsx",
-      "size": 30116,
-      "sha256": "caae4e71ee9676b29bca5f0d57895e8a428d3f3b6497816799deb2065a2b84bc"
+      "size": 30199,
+      "sha256": "d0e650d9f69f63859ed757d019009fef90066cda1a4e36ff57bba24073d97d0c"
     },
     {
       "path": "src/ui/design-system.css",
@@ -565,8 +565,8 @@
     },
     {
       "path": "src/worker/background-work.ts",
-      "size": 25915,
-      "sha256": "f485467cfa1eb7566816f3fb28c1d20ccc9a138f1581961d0df0e4beb4523f4f"
+      "size": 26131,
+      "sha256": "d29d6090e7d6f36f1282adf28028479b5609dc919e4471e9323b14eb94fdf281"
     },
     {
       "path": "src/worker/branch-protection.ts",
@@ -620,8 +620,8 @@
     },
     {
       "path": "src/worker/coordinator.ts",
-      "size": 93396,
-      "sha256": "b3ffb23b5276a26add7468066a60e3e7f0bb21b76a99729d9514a8af954f884a"
+      "size": 95059,
+      "sha256": "f928af68c22bd326bb9621e3e40552d614e67da7dfbafd0b9765c3f94230ff0a"
     },
     {
       "path": "src/worker/d1-migrations.ts",
@@ -640,8 +640,8 @@
     },
     {
       "path": "src/worker/deploy-detect.ts",
-      "size": 28729,
-      "sha256": "80a0987fec5e04ec9e4babe0dd25c1d63ab8df56f0a0bcb56dde7d0866c3c060"
+      "size": 29749,
+      "sha256": "96d64b019c401c3ef90b47c54327df69b90af5b186100f04902899d9897c4f28"
     },
     {
       "path": "src/worker/deploy-environments.ts",
@@ -650,8 +650,8 @@
     },
     {
       "path": "src/worker/deployments.ts",
-      "size": 73688,
-      "sha256": "c5941f9f038156aa647d1b95d7c7205d25fb3aaf59befb7177f19ecc69f79093"
+      "size": 75363,
+      "sha256": "db96ef4913d6d0d40ad63077c9c969a962004ac2b8331e5a6c2460543e748f04"
     },
     {
       "path": "src/worker/distribution.ts",

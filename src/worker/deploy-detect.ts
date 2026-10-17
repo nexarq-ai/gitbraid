@@ -6,7 +6,7 @@ import type { DeployTarget } from './deployments';
 import { ENVIRONMENT_NAME, orderedEnvironments, PRODUCTION, type DeployEnvironment } from './deploy-environments';
 import { detectPackageManager, LOCKFILES, runnerFor, type PackageManager } from './package-manager';
 import { workersSubdomain } from './preview-access';
-import { requiredDeployScopes, subdomainValues } from './worker-provisioning';
+import { requiredDeployScopes, SCOPE_D1_WRITE, SCOPE_QUEUES_WRITE, SCOPE_R2_WRITE, subdomainValues } from './worker-provisioning';
 import { WORKER_CONFIG_FILES } from './worker-bundle';
 
 export const SCAN_ENTRY_LIMIT = 20_000;
@@ -26,7 +26,9 @@ export type ResourceStatus = 'exists' | 'create' | 'missing' | 'unknown';
 export type SetupWarningKind = 'inherited-route' | 'shared-resource' | 'production-service' | 'send-email';
 
 export interface RepositoryScan { commitSha: string; files: Map<string, string>; truncated: boolean }
-export interface DetectedResource { type: 'd1' | 'r2' | 'queue'; name: string; id?: string; binding?: string; status?: ResourceStatus }
+export interface DetectedResource { type: 'd1' | 'r2' | 'queue'; name: string; id?: string; binding?: string; status?: ResourceStatus; needsScope?: string }
+const CREATE_SCOPES: Record<DetectedResource['type'], string> = { d1: SCOPE_D1_WRITE, r2: SCOPE_R2_WRITE, queue: SCOPE_QUEUES_WRITE };
+const RESOURCE_KINDS: Record<DetectedResource['type'], string> = { d1: 'D1 database', r2: 'R2 bucket', queue: 'queue' };
 export interface DetectedTarget {
   workerName: string;
   configPath: string;
@@ -47,7 +49,7 @@ export interface DetectedTarget {
 export interface SetupWarning { id: string; kind: SetupWarningKind; environment: DeployEnvironment; configPath: string; message: string }
 export interface DetectedEnvironment { targets: DetectedTarget[]; warnings: SetupWarning[] }
 export interface DetectedConfig { path: string; workerName?: string; environments: DeployEnvironment[]; error?: string }
-export interface AccountFacts { connected: true; accountId: string; accountName?: string; source: 'repository' | 'workspace'; subdomain: string | null; scopes?: string[]; requiredScopes: string[]; missingScopes?: string[]; notes: string[] }
+export interface AccountFacts { connected: true; accountId: string; accountName?: string; source: 'repository' | 'workspace'; subdomain: string | null; scopes?: string[]; requiredScopes: string[]; missingScopes?: string[]; resourceBlockers?: string[]; notes: string[] }
 export interface ConnectionFacts { accountName?: string; scopes?: string[] }
 export interface DetectedSetup {
   commitSha: string;
@@ -438,14 +440,19 @@ export async function withAccountFacts(setup: DetectedSetup, call: CloudflareCal
       targets: await Promise.all(value.targets.map(async (target) => ({
         ...target,
         exists: workers ? workers.has(target.workerName) : null,
-        resources: await Promise.all(target.resources.map(async (resource) => ({ ...resource, status: await lookup(resource) }))),
+        resources: await Promise.all(target.resources.map(async (resource) => {
+          const found = await lookup(resource);
+          const scope = CREATE_SCOPES[resource.type];
+          return { ...resource, status: found, ...(found === 'create' && connection.scopes && !connection.scopes.includes(scope) ? { needsScope: scope } : {}) };
+        })),
         urls: [...(target.workersDev && subdomain ? [workersDevUrl(target.workerName, subdomain)] : []), ...target.customDomains.map((domain) => `https://${domain}`)],
       }))),
     };
   }
   const requiredScopes = [...new Set(Object.values(setup.environments).flatMap((value) => value?.targets.flatMap((target) => target.requiredScopes) ?? []))];
   const missingScopes = connection.scopes ? requiredScopes.filter((scope) => !connection.scopes!.includes(scope)) : undefined;
-  return { ...setup, environments, account: { connected: true, accountId, ...(connection.accountName ? { accountName: connection.accountName } : {}), source, subdomain, ...(connection.scopes ? { scopes: connection.scopes } : {}), requiredScopes, ...(missingScopes ? { missingScopes } : {}), notes } };
+  const resourceBlockers = Object.entries(environments).flatMap(([environment, value]) => value!.targets.flatMap((target) => target.resources.filter((resource) => resource.needsScope).map((resource) => `${environment}: ${target.workerName} would create ${RESOURCE_KINDS[resource.type]} ${resource.name}, which needs ${resource.needsScope} (not granted to this connection).`)));
+  return { ...setup, environments, account: { connected: true, accountId, ...(connection.accountName ? { accountName: connection.accountName } : {}), source, subdomain, ...(connection.scopes ? { scopes: connection.scopes } : {}), requiredScopes, ...(missingScopes ? { missingScopes } : {}), ...(resourceBlockers.length ? { resourceBlockers } : {}), notes } };
 }
 
 export function detectedTargets(environment: DetectedEnvironment): DeployTarget[] {
