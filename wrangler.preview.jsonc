@@ -1,13 +1,13 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "gitbraid-preview",
+  "name": "gitflare-preview",
   "main": "src/preview/index.ts",
   "compatibility_date": "2026-10-12",
   "workers_dev": true,
   "services": [
     {
       "binding": "GITFLARE",
-      "service": "gitbraid",
+      "service": "gitflare",
       "entrypoint": "PreviewRelay"
     }
   ]

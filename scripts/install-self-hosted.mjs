@@ -20,14 +20,14 @@ const ask = async (label, fallback = '') => (await terminal.question(`${label}${
 const requireValue = (value, pattern, label) => { if (!pattern.test(value)) throw new Error(`Invalid ${label}`); return value; };
 try {
   await access(wrangler);
-  console.log('Gitbraid installer. Select your own Cloudflare account and dedicated Worker name. Provisioning requires AI Gateway and Artifacts permissions; provider BYOK stays in Cloudflare dashboard.');
+  console.log('Gitflare (self-hosted) installer. Select your own Cloudflare account and dedicated Worker name. Provisioning requires AI Gateway and Artifacts permissions; provider BYOK stays in Cloudflare dashboard.');
   if (!configureOnly) { await command(['login']); await command(['whoami']); }
   const accountId = requireValue(await ask('Your selected Cloudflare account ID'), /^[a-f0-9]{32}$/, 'account ID');
-  const name = requireValue(await ask('Dedicated Worker name', 'gitbraid'), /^[a-z][a-z0-9-]{2,48}$/, 'Worker name');
+  const name = requireValue(await ask('Dedicated Worker name', 'gitflare'), /^[a-z][a-z0-9-]{2,48}$/, 'Worker name');
   const config = JSON.parse(await readFile(resolve(root, 'distribution/wrangler.self-hosted.json'), 'utf8'));
   config.account_id = accountId;
   config.name = name;
-  config.vars.WORKSPACE_NAME = await ask('Workspace name', 'Gitbraid workspace');
+  config.vars.WORKSPACE_NAME = await ask('Workspace name', 'Gitflare workspace');
   config.artifacts = [{ binding: 'ARTIFACTS', namespace: requireValue(await ask('Your Artifacts namespace name', name), /^[a-z0-9][a-z0-9._-]{0,63}$/, 'namespace') }];
   const sender = await ask('Your verified Email Sending sender (optional)');
   if (sender) { requireValue(sender, /^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'sender'); config.vars.EMAIL_FROM = sender; config.send_email = [{ name: 'EMAIL', allowed_sender_addresses: [sender] }]; }

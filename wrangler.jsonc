@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "gitbraid",
+  "name": "gitflare",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-10-12",
   "compatibility_flags": [
@@ -28,12 +28,12 @@
   "vars": {
     "APP_ENV": "production",
     "EDITION": "self-hosted",
-    "WORKSPACE_NAME": "Gitbraid workspace",
+    "WORKSPACE_NAME": "Gitflare workspace",
     "AI_GATEWAY_ID": "gitflare",
     "MODEL": "openai/gpt-6-luna",
     "AI_FEATURES": "enabled",
-    "GITBRAID_INSTALLATION": "gitbraid",
-    "GITBRAID_PRIMARY_WORKER": "gitbraid"
+    "GITFLARE_INSTALLATION": "gitflare",
+    "GITFLARE_PRIMARY_WORKER": "gitflare"
   },
   "ai": {
     "binding": "AI"
@@ -113,7 +113,7 @@
   ],
   "workflows": [
     {
-      "name": "gitbraid-missions",
+      "name": "gitflare-missions",
       "binding": "MISSION_WORKFLOW",
       "class_name": "MissionWorkflow"
     }
@@ -124,7 +124,7 @@
   "artifacts": [
     {
       "binding": "ARTIFACTS",
-      "namespace": "gitbraid"
+      "namespace": "gitflare"
     }
   ],
   "kv_namespaces": [
@@ -134,7 +134,7 @@
   ],
   "containers": [
     {
-      "name": "gitbraid-runner",
+      "name": "gitflare-runner",
       "class_name": "AgentSandbox",
       "scheduling_policy": "durable_object",
       "images": {
