@@ -94,7 +94,7 @@ const configPathPattern = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._@+-]+(?
 export const deployWorkflowId = (deploymentId: string) => `deploy-${deploymentId}`;
 
 export function backgroundPrincipal(principal: Principal): Principal {
-  return { userId: principal.userId, workspaceId: principal.workspaceId, role: principal.role };
+  return { userId: principal.userId, workspaceId: principal.workspaceId, role: principal.role, ...(principal.bootstrap ? { bootstrap: true } : {}) };
 }
 
 export function defaultTrigger(environment: DeployEnvironment): DeployTrigger {

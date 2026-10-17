@@ -590,8 +590,8 @@
     },
     {
       "path": "src/worker/deployments.ts",
-      "size": 67584,
-      "sha256": "ae7f24ec922edd30f51e49a7395face78212f7e026b85ccf66278bfe80dd7086"
+      "size": 67637,
+      "sha256": "0b5d510f2506ba053cc683d0bf0890e0ba1bb17ea81d9485350c9c66657358e1"
     },
     {
       "path": "src/worker/distribution.ts",
