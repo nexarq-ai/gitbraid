@@ -29,7 +29,7 @@ function joinChunks(chunks: Uint8Array[]): Uint8Array {
   return merged;
 }
 
-export async function readCappedOutput(stream: ReadableStream<Uint8Array> | null, cap: number, strict = false): Promise<string> {
+export async function readCappedOutput(stream: ReadableStream<Uint8Array> | null, cap: number, strict = false, observe?: (chunk: Uint8Array) => void): Promise<string> {
   if (!stream) return '';
   const reader = stream.getReader();
   const headCap = strict ? cap : Math.floor(cap / 4);
@@ -41,6 +41,7 @@ export async function readCappedOutput(stream: ReadableStream<Uint8Array> | null
     const next = await reader.read();
     if (next.done) break;
     bytes += next.value.byteLength;
+    observe?.(next.value);
     if (strict && bytes > cap) {
       await reader.cancel();
       throw new Error(`Command output exceeded ${cap} bytes`);
@@ -61,6 +62,48 @@ export async function readCappedOutput(stream: ReadableStream<Uint8Array> | null
   if (bytes <= cap) return decoder.decode(joinChunks([...head, ...tail]));
   const kept = joinChunks(tail);
   return `${decoder.decode(joinChunks(head))}\n[output truncated] ${bytes - cap} bytes omitted; the last ${tailCap} bytes follow\n${decoder.decode(kept.subarray(kept.byteLength - tailCap))}`;
+}
+
+const SECRET_PATTERNS: [RegExp, string][] = [
+  [/(\w+:\/\/)[^/\s:@]+(?::[^/\s@]*)?@/g, '$1[redacted]@'],
+  [/\b(Bearer|Basic)\s+[\w.~+/=-]+/gi, '$1 [redacted]'],
+  [/\b([\w-]*(?:token|secret|password|passwd|api[_-]?key|authorization)[\w-]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi, '$1$2[redacted]'],
+  [/\b(?:sk|ghp|gho|github_pat|xox[abp]|AKIA)[\w-]{12,}/g, '[redacted]'],
+];
+
+export function redactSecrets(text: string): string {
+  return SECRET_PATTERNS.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), text);
+}
+
+export function commandSummary(argv: string[], limit = 240): string {
+  const script = argv[0] && /(?:^|\/)(?:ba)?sh$/.test(argv[0]) && /^-l?c$/.test(argv[1] ?? '') ? argv[2] : undefined;
+  const joined = script ?? argv.map((part) => /^[\w@%+=:,./-]+$/.test(part) ? part : JSON.stringify(part)).join(' ');
+  const text = redactSecrets(joined.replace(/\s+/g, ' ').trim());
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+const TAIL_BYTES = 16_384;
+
+export class OutputTail {
+  #chunks: Uint8Array[] = [];
+  #bytes = 0;
+
+  add(chunk: Uint8Array): void {
+    this.#chunks.push(chunk.slice());
+    this.#bytes += chunk.byteLength;
+    while (this.#chunks.length > 1 && this.#bytes - this.#chunks[0]!.byteLength >= TAIL_BYTES) this.#bytes -= this.#chunks.shift()!.byteLength;
+  }
+
+  lines(count: number): string[] {
+    const text = new TextDecoder().decode(joinChunks(this.#chunks)).replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+    return text ? text.split('\n').slice(-count).map((line) => redactSecrets(line).slice(0, 500)) : [];
+  }
+}
+
+export function deadlineMessage(argv: string[], deadlineMs: number, elapsedMs: number, tail: OutputTail): string {
+  const lines = tail.lines(20);
+  const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
+  return `Sandbox command exceeded its execution deadline: \`${commandSummary(argv)}\` ran ${seconds(elapsedMs)} against a ${seconds(deadlineMs)} deadline (plus ${seconds(DEADLINE_GRACE_MS)} grace) and the runner was stopped.${lines.length ? `\nLast ${lines.length} line${lines.length === 1 ? '' : 's'} of output:\n${lines.join('\n')}` : '\nThe command produced no output.'}`;
 }
 
 export class GitOutbound extends WorkerEntrypoint<RunnerEnv, OutboundProps> {
@@ -252,19 +295,21 @@ export class AgentSandbox extends DurableObject<RunnerEnv> {
     if (!container?.running) throw new Error('Sandbox is not running');
     const seconds = Math.max(1, Math.min(maximumMs, Math.floor(timeoutMs))) / 1000;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const tail = new OutputTail();
+    const started = Date.now();
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new Error('Sandbox command exceeded its execution deadline'));
+        reject(new Error(deadlineMessage(argv, seconds * 1000, Date.now() - started, tail)));
         void Promise.resolve().then(() => container.destroy()).catch(() => { console.error('runner.command.timeout.cleanup.failed'); });
       }, seconds * 1000 + DEADLINE_GRACE_MS);
     });
-    const started = Date.now();
     const execution = (async () => {
       const process = await container.exec(['timeout', '--kill-after=2s', `${seconds}s`, ...argv], {
         cwd,
         env: { GIT_SSL_CAINFO: ca, NODE_EXTRA_CA_CERTS: ca, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', CI: 'true', ...COREPACK_ENV, COREPACK_ENABLE_NETWORK: '0', ...extraEnv },
       });
-      const [stdout, stderr, exitCode] = await Promise.all([readCappedOutput(process.stdout, cap, strict), readCappedOutput(process.stderr, cap, strict), process.exitCode]);
+      const observe = (chunk: Uint8Array) => tail.add(chunk);
+      const [stdout, stderr, exitCode] = await Promise.all([readCappedOutput(process.stdout, cap, strict, observe), readCappedOutput(process.stderr, cap, strict, observe), process.exitCode]);
       const timedOut = TIMEOUT_EXIT_CODES.includes(exitCode) && Date.now() - started >= seconds * 1000 - 1000;
       return timedOut ? { stdout, stderr, exitCode, timedOut } : { stdout, stderr, exitCode };
     })();

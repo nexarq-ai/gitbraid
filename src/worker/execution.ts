@@ -6,7 +6,7 @@ import type { CommandResult, GitPermission, PrepareOptions } from '../../runner/
 import { loadRepositorySkillContext } from './repository-skills';
 import { validateRepositorySkillChange } from './skill-edit';
 import { assertPinnedModel, defaultModelConnections, resolveModelConnection, DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
-import { inferenceMessage, ModelResponseError, type InputItem, type ModelEnv, type ModelMessage } from './model-adapter';
+import { inferenceMessage, ModelLocationError, ModelResponseError, type InputItem, type ModelEnv, type ModelMessage } from './model-adapter';
 export { DEFAULT_MODEL, ESCALATION_MODEL } from './model-config';
 import { classifyPreview, previewPlan, workerPreviewBuildCommand } from './preview-plan';
 import { buildWorkerBundle, DEPLOY_BUILD_TIMEOUT_MS, deployBuildScript, readWorkerConfig, WorkerBuildFailure, workerConfigPath, type BundleSandbox, type ResolvedWorkerConfig, type WorkerBundle } from './worker-bundle';
@@ -306,6 +306,24 @@ function gitNetworkFailure(operation: 'clone' | 'fetch', result: CommandResult, 
   return { message: `Git ${operation} ${outcome} on attempt ${attempt} of ${CLONE_ATTEMPTS}${detail ? `: ${detail}` : ''}`, transient: timedOut || TRANSIENT_CLONE.test(detail) };
 }
 
+export class RunnerKilledError extends Error {
+  constructor(message: string) { super(message); this.name = 'RunnerKilledError'; }
+}
+
+export async function cloneOnFreshRunner(sandbox: SandboxRunner, replace: () => Promise<SandboxRunner>, fork: ArtifactInfo, baseSha: string, onRetry: CloneRetry = async () => {}): Promise<SandboxRunner> {
+  try {
+    await clone(sandbox, fork, baseSha, onRetry);
+    return sandbox;
+  } catch (error) {
+    if (!(error instanceof RunnerKilledError)) throw error;
+    await onRetry(`${error.message}. Retrying the clone on a fresh runner`);
+    try { await sandbox.destroy(); } catch { console.error(JSON.stringify({ event: 'killed_runner_cleanup_failed' })); }
+    const fresh = await replace();
+    await clone(fresh, fork, baseSha, onRetry);
+    return fresh;
+  }
+}
+
 async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string, onRetry: CloneRetry = async () => {}): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     const started = Date.now();
@@ -315,7 +333,9 @@ async function clone(sandbox: SandboxRunner, fork: ArtifactInfo, baseSha: string
     console.warn(JSON.stringify({ event: 'git_clone_failed', attempt, attempts: CLONE_ATTEMPTS, exitCode: result.exitCode, timedOut: !!result.timedOut, transient: failure.transient, durationMs: Date.now() - started }));
     if (!failure.transient || attempt >= CLONE_ATTEMPTS) throw new Error(failure.message);
     await onRetry(`${failure.message}. Retrying the clone in a clean directory`);
-    await checked(sandbox, ['rm', '-rf', '--', '/workspace/repo'], '/workspace');
+    const cleanup = await sandbox.command(['rm', '-rf', '--', '/workspace/repo'], '/workspace');
+    if (cleanup.exitCode === 137) throw new RunnerKilledError(`Runner was killed while removing the failed clone (exit 137) after ${failure.message.charAt(0).toLowerCase()}${failure.message.slice(1)}`);
+    if (cleanup.exitCode !== 0) throw new Error(`Command failed (${cleanup.exitCode}): rm ${cleanup.stderr.slice(0, 1000)}`);
   }
   await checked(sandbox, ['git', 'checkout', '--detach', baseSha]);
   await checked(sandbox, ['git', 'config', 'user.name', 'Gitflare']);
@@ -723,6 +743,7 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     return true;
   };
   const forks = new Map<string, ArtifactInfo>();
+  let modelLocationBlocked = false;
   let sharedPolicy: RepositoryPolicy | undefined;
   let reports = Promise.resolve();
   const publish = () => {
@@ -763,7 +784,12 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
   });
   const runAgent = async (run: AgentRun) => {
     const key = `gf-${mission.id}-${mission.epoch}-${run.id}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    const sandbox = SANDBOX.getByName(key);
+    if (modelLocationBlocked) {
+      Object.assign(run, { status: 'failed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), error: 'Not started: the model provider refused this mission’s Cloudflare locations (see the mission event)' });
+      await publish();
+      return;
+    }
+    let sandbox = SANDBOX.getByName(key);
     run.status = 'running';
     run.startedAt = new Date().toISOString();
     run.model = trusted ? undefined : run.modelConfig!.id;
@@ -779,10 +805,16 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
       run.summary = 'Git fork allocated. Preparing the isolated runner';
       await publish();
       await assertAuthority();
-      await sandbox.prepare([{ ...fork, write: true }, ...(canonical ? [{ ...canonical, write: false }] : [])]);
+      const permissions = [{ ...fork, write: true }, ...(canonical ? [{ ...canonical, write: false }] : [])];
+      await sandbox.prepare(permissions);
       run.summary = 'Runner prepared. Cloning the recorded base commit';
       await publish();
-      await clone(sandbox, fork, baseSha, async (message) => { run.summary = message; await publish(); });
+      sandbox = await cloneOnFreshRunner(sandbox, async () => {
+        const fresh = SANDBOX.getByName(`${key}-fresh`);
+        await assertAuthority();
+        await fresh.prepare(permissions);
+        return fresh;
+      }, fork, baseSha, async (message) => { run.summary = message; await publish(); });
       const policy = await loadPolicy(sandbox, baseSha, input.testCommand, input.checkSettings);
       sharedPolicy ??= policy;
       if (policy.install) {
@@ -913,6 +945,13 @@ export async function executeMission(input: ExecutionInput, env: ExecutionEnv, r
     } catch (error) {
       run.status = 'failed';
       run.error = error instanceof Error ? error.message : 'Agent execution failed';
+      if (error instanceof ModelLocationError) {
+        run.error = 'The model provider refused this mission’s Cloudflare locations (see the mission event)';
+        if (!modelLocationBlocked) {
+          modelLocationBlocked = true;
+          result.events = [...(result.events ?? []), { id: `gf-${mission.id}-${mission.epoch}-model-location`, timestamp: new Date().toISOString(), type: 'warning', message: `Model calls for ${run.model ?? 'this mission'} were refused because of the Cloudflare location they came from. ${error.message}`.slice(0, 1200) }];
+        }
+      }
     } finally {
       run.completedAt = new Date().toISOString();
       await sandbox.destroy();
@@ -1056,7 +1095,7 @@ export interface IntegrationInput {
   assertAuthority?: AuthorityGuard;
 }
 
-const RUNNER_FAILURE = /^(?:Runner preparation failed|Git (?:clone|fetch) |Command failed \(\d+\)|Sandbox (?:command exceeded|is not)|Container stopped)/;
+const RUNNER_FAILURE = /^(?:Runner (?:preparation failed|was killed)|Git (?:clone|fetch) |Command failed \(\d+\)|Sandbox (?:command exceeded|is not)|Container stopped)/;
 
 export class IntegrationFailure extends Error {
   constructor(public readonly outcome: 'not_pushed' | 'unknown', message: string) {

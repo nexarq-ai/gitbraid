@@ -20,8 +20,8 @@
     },
     {
       "path": "distribution/wrangler.self-hosted.json",
-      "size": 2866,
-      "sha256": "e509a835f1e2a8e1bf34f0fa5c7ee52f2dd7c9eb1b3630ca9098b0d56dd96663"
+      "size": 3052,
+      "sha256": "85ef2ab3b8d058690a47d3d9e3422792d1e81acbbca26619fadb958a88dd33e2"
     },
     {
       "path": "docs/public/admin.md",
@@ -115,8 +115,8 @@
     },
     {
       "path": "runner/sandbox.ts",
-      "size": 20043,
-      "sha256": "3f5a1fa49565a101ab842f3ee27f4d205636ee12f9e1713084a2648e344403e5"
+      "size": 22441,
+      "sha256": "9b79a680b53895c3edfb33a9e8f0dc2c9e0da1e2c99bd7bb373c1ae254feb947"
     },
     {
       "path": "scripts/deploy-self-hosted.mjs",
@@ -680,13 +680,13 @@
     },
     {
       "path": "src/worker/env.ts",
-      "size": 2171,
-      "sha256": "9df881a0e2ae143a8f500e8829a724e5293afff35e61efc5fa0a36edbbded10c"
+      "size": 2356,
+      "sha256": "4107d67ed7ac827904dc7eac7e4d9a307ab1be4dc73283cd3db08dc80811c1c4"
     },
     {
       "path": "src/worker/execution.ts",
-      "size": 94570,
-      "sha256": "c23170b541f5b8c377fa2b6d869bad2013769ac36a277704ac082af2a6621422"
+      "size": 96914,
+      "sha256": "954241ae7018534ce7a430902c452e2007c2e494843069d19a1205a26b4f8349"
     },
     {
       "path": "src/worker/gateway-routing.ts",
@@ -710,8 +710,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 79627,
-      "sha256": "0a81a9d1a7aab7af28d9193e4e940b00a11016ae1837b169f6cc52b306843a9a"
+      "size": 79671,
+      "sha256": "525c8bc61d1259044ec6adafa490a6936594f8ca0c060cb349aa5c85044f934f"
     },
     {
       "path": "src/worker/installation-credential.ts",
@@ -750,13 +750,23 @@
     },
     {
       "path": "src/worker/model-adapter.ts",
-      "size": 21148,
-      "sha256": "1f446e05fe7df28997527e186250802953b711b15c21ff64ff9e0f72fd07323a"
+      "size": 21997,
+      "sha256": "f6aff753f1b5c7d9edfa49bf2909aee56883caf924489dbff3f84485adc8436b"
     },
     {
       "path": "src/worker/model-config.ts",
       "size": 6120,
       "sha256": "789100a22ec47effd264f86773f52f0ef06dc124cb8cade5557c0eb6f52e8157"
+    },
+    {
+      "path": "src/worker/model-relay.ts",
+      "size": 354,
+      "sha256": "822270d463835886b2532c23849462b05540a5808a99726a90d678a13469d9f6"
+    },
+    {
+      "path": "src/worker/model-transport.ts",
+      "size": 6954,
+      "sha256": "376b8499650863847cc9d757b2ac6f6af92d79c66391b3f209744e6087f8b77e"
     },
     {
       "path": "src/worker/oauth.ts",
@@ -910,8 +920,8 @@
     },
     {
       "path": "wrangler.jsonc",
-      "size": 2866,
-      "sha256": "e509a835f1e2a8e1bf34f0fa5c7ee52f2dd7c9eb1b3630ca9098b0d56dd96663"
+      "size": 3052,
+      "sha256": "85ef2ab3b8d058690a47d3d9e3422792d1e81acbbca26619fadb958a88dd33e2"
     },
     {
       "path": "wrangler.preview.jsonc",

@@ -47,6 +47,7 @@ import { capabilityHash, mintPreviewToken, PREVIEW_CAPABILITY_MS, previewCapabil
 export { GitflareSecurity } from './security';
 export { GitflareCoordinator } from './coordinator';
 export { MissionWorkflow } from './workflow';
+export { ModelRelay } from './model-relay';
 export { AgentSandbox, BootstrapOutbound, GitOutbound, ImportOutbound, RegistryOutbound } from '../../runner/sandbox';
 
 const encoder = new TextEncoder();
