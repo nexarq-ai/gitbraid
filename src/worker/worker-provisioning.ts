@@ -14,6 +14,7 @@ export const SCOPE_R2_WRITE = 'workers-r2.write';
 export const SCOPE_QUEUES_WRITE = 'queues.write';
 export const SCOPE_WORKERS_ROUTES_WRITE = 'workers-routes.write';
 export const SCOPE_ZONE_READ = 'zone.read';
+export const SCOPE_AI_WRITE = 'ai.write';
 export const DEPLOY_KEEP_SECRET_BINDINGS = ['secret_text', 'secret_key'];
 
 const MAX_ENTRIES = 200;
@@ -657,6 +658,7 @@ export function requiredDeployScopes(config: WorkerDeployConfig, options: { d1Mi
   const d1 = Array.isArray(config.d1_databases) ? config.d1_databases : [];
   if (options.d1Migrations || d1.some((item) => !isRecord(item) || item.database_id === undefined)) scopes.push(SCOPE_D1_WRITE);
   if (nonEmptyList(config.r2_buckets)) scopes.push(SCOPE_R2_WRITE);
+  if (isRecord(config.ai)) scopes.push(SCOPE_AI_WRITE);
   const queues = isRecord(config.queues) ? config.queues : {};
   if (nonEmptyList(queues.producers) || nonEmptyList(queues.consumers)) scopes.push(SCOPE_QUEUES_WRITE);
   const routeList = Array.isArray(config.routes) ? config.routes : config.route !== undefined ? [config.route] : [];

@@ -825,8 +825,8 @@
     },
     {
       "path": "src/worker/worker-provisioning.ts",
-      "size": 41038,
-      "sha256": "31e6098396b69737731e7e28d82b6efc7422a7032a7b9b72c898497cf24e6748"
+      "size": 41136,
+      "sha256": "0baee2a03eb8e040aa27379919493383691366ae1de1d45ee1d411ffb4c91fe7"
     },
     {
       "path": "src/worker/workflow.ts",
