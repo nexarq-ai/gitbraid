@@ -3,6 +3,7 @@ import { Button } from "@cloudflare/kumo/components/button";
 import type { Repository } from "../shared/types";
 import { request } from "./api";
 import { ErrorNotice, relativeTime } from "./components";
+import { OperationTrack } from "./OperationMotion";
 import { RouteProgress } from "./WorkspaceLoader";
 import "./cloudflare-connection.css";
 
@@ -188,6 +189,9 @@ export default function Deployments({ repository, onNotify }: { repository: Repo
 
   function environmentCard(environment: Environment) {
     const view: EnvironmentState = state!.environments[environment] ?? { settings: null, current: null, lastChange: null, pending: null, running: false, canDeploy: false };
+    const latest = state!.deployments.find(item => item.environment === environment && ACTIVE.includes(item.status)) ?? state!.deployments.find(item => item.id === view.lastChange?.deploymentId);
+    const stages = latest?.mode === "upload-only" ? ["Queued", "Build", "Upload", "Uploaded"] : ["Queued", "Build", "Deploy", "Rollout", "Live"];
+    const stage = latest ? ({ queued: 0, building: 1, deploying: 2, rolling_out: 3, succeeded: 4, uploaded: 3 } as Partial<Record<Status, number>>)[latest.status] : undefined;
     const settings = view.settings;
     const targets = settings?.targets ?? [];
     const chosen = selection[environment] ?? targets.map((target) => target.workerName);
@@ -199,6 +203,7 @@ export default function Deployments({ repository, onNotify }: { repository: Repo
     return (
       <section key={environment} className="cf-environment" aria-label={`${environmentLabel(environment)} environment`}>
         <h3>{environmentLabel(environment)}</h3>
+        {latest && <div className="operation-deployment"><div className="operation-deployment-heading"><strong>{labels[latest.status]}</strong><span>{latest.commitSha?.slice(0, 12) ?? "Deployment"}</span></div><OperationTrack kind="deploy" active={ACTIVE.includes(latest.status)} step={stage ?? 0} steps={stages.length} failed={latest.status === "failed"} />{stage !== undefined && <ol className="operation-deployment-steps" aria-label="Deployment stages">{stages.map((label, index) => <li key={label} aria-current={index === stage ? "step" : undefined}>{label}</li>)}</ol>}</div>}
         {!settings ? <p className="cf-muted">Not configured.</p> : (
           <>
             <p className="cf-state">{settings.enabled ? (production ? (settings.trigger === "auto" ? "Deploys automatically after staging (Owner opt-in)" : "Promote or deploy with Owner confirmation") : settings.trigger === "auto" ? "Deploys automatically on land" : "Deploy on land waits for confirmation") : "Manual only"}{settings.mode === "upload-only" ? " · upload versions only" : ""}</p>
