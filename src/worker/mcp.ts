@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { IssueDetail, IssueList, Mission, MissionAttempt, Release, ReleaseList, Repository, RepositoryFile, RepositoryTree, Workspace } from '../shared/types';
 import { RELEASE_NOTES_MAX, RELEASE_REQUEST_MAX_BYTES } from './releases';
 import { ENVIRONMENT_NAME } from './deploy-environments';
-import { ApiError, MISSION_REQUEST_MAX_BYTES, publicError, readJson, repositoryPath, repositoryRef } from './domain';
+import { ApiError, MISSION_REQUEST_MAX_BYTES, publicError, readJson, repositoryPath, repositoryRef, RETRY_GUIDANCE_MAX } from './domain';
 import type { DocMetadata, ProductDoc } from './docs';
 import { ISSUE_BODY_MAX, ISSUE_COMMENT_MAX, ISSUE_REQUEST_MAX_BYTES } from './issues';
 import { mutableSkillPath, SKILL_CONTENT_MAX_BYTES, SKILL_REQUEST_MAX_BYTES } from './skill-edit';
@@ -411,12 +411,14 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
   }, (input) => guarded(async () => missionSummary(await call<Mission>('/api/missions', { repositoryId: input.repository_id, title: input.title, prompt: input.prompt, acceptanceCriteria: input.acceptance_criteria, tasks: input.tasks, ...(input.attachments ? { attachments: input.attachments } : {}), mode: input.mode, expectedBaseSha: input.expected_base_sha, ...(input.issue_number ? { issueNumber: input.issue_number } : {}) }, input.idempotency_key))));
   server.registerTool('gitflare_start_mission', {
     title: 'Start a mission or retry its failed agents',
-    description: `Run a mission’s agents (billed). start reruns all. On a failed or cancelled attempt, retry_failed reruns agents without a verified candidate (plus run_ids), reusing unchanged ones; drop_failed skips them and combines the verified ones. A workspace runs ${WORKSPACE_MISSION_LIMIT} missions at once, each up to 3 agents at a time; WORKSPACE_MISSION_LIMIT means wait or cancel one. Needs execute permission and write access.`,
-    inputSchema: z.object({ mission_id: missionId, action: z.enum(['start', 'retry_failed', 'drop_failed']).default('start'), run_ids: z.array(identifier).min(1).max(MAX_MISSION_AGENTS).optional().describe('retry_failed only: also rerun these agents even if they have verified candidates.'), idempotency_key: requestKey }).strict(), annotations: external,
+    description: `Run agents (billed). start reruns all. After failure: retry_failed reruns failed or collided agents (collided ones start from merged peers) and reuses verified ones; drop_failed skips failed ones. In review: address_review sends open change requests to agents. guidance is appended to rerun tasks. A workspace runs ${WORKSPACE_MISSION_LIMIT} missions at once, 3 agents at a time each. Needs execute and write access.`,
+    inputSchema: z.object({ mission_id: missionId, action: z.enum(['start', 'retry_failed', 'drop_failed', 'address_review']).default('start'), run_ids: z.array(identifier).min(1).max(MAX_MISSION_AGENTS).optional().describe('retry_failed: also rerun these agents even if they have verified candidates. address_review: the agents that address the review.'), guidance: z.string().min(1).max(RETRY_GUIDANCE_MAX).optional().describe('retry_failed and address_review: extra instructions appended to the rerun agents’ task, for example exact dependency versions.'), idempotency_key: requestKey }).strict(), annotations: external,
   }, (input) => guarded(async () => {
-    if (input.run_ids && input.action !== 'retry_failed') throw new ApiError(400, 'INVALID_INPUT', 'run_ids applies only to retry_failed.');
-    const path = input.action === 'retry_failed' ? 'retry-agents' : input.action === 'drop_failed' ? 'drop-failed-agents' : 'start';
-    return missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${path}`, input.run_ids ? { runIds: input.run_ids } : {}, input.idempotency_key as string));
+    const targeted = input.action === 'retry_failed' || input.action === 'address_review';
+    if (input.run_ids && !targeted) throw new ApiError(400, 'INVALID_INPUT', 'run_ids applies only to retry_failed and address_review.');
+    if (input.guidance && !targeted) throw new ApiError(400, 'INVALID_INPUT', 'guidance applies only to retry_failed and address_review.');
+    const path = input.action === 'retry_failed' ? 'retry-agents' : input.action === 'address_review' ? 'address-review' : input.action === 'drop_failed' ? 'drop-failed-agents' : 'start';
+    return missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${path}`, { ...(input.run_ids ? { runIds: input.run_ids } : {}), ...(input.guidance ? { guidance: input.guidance } : {}) }, input.idempotency_key as string));
   }));
   server.registerTool('gitflare_cancel_mission', {
     title: 'Cancel a mission',

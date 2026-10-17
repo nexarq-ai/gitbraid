@@ -159,3 +159,24 @@ export function installCommand(plan: InstallPlan, mode: InstallMode = 'install')
   const activate = plan.pinned ? 'corepack install' : `corepack install -g ${bin}@${plan.fallbackRange}`;
   return ['/bin/sh', '-c', `corepack enable ${bin} && ${activate} && ${managerCommand(plan, mode)}`];
 }
+
+const INSTALL_ERROR_LINE = /^(?:npm (?:error|ERR!)|\s*ERR_PNPM_[A-Z_]+|error\s|\S*\s*YN0(?!000)\d{3}\b)/;
+const INSTALL_NOISE = /^(?:A complete log of this run|For a full report see|Fix the upstream dependency conflict|this command with --force|to accept an incorrect|Run "npm help|\/\S+\.(?:log|txt)$)/;
+const ANSI = /\u001b\[[0-9;]*m/g;
+
+export interface InstallFailure { headline: string; excerpt: string }
+
+export function installFailureExcerpt(output: string, maxLines = 24): InstallFailure {
+  const lines = output.replace(ANSI, '').split('\n').map((line) => line.trimEnd());
+  const meaningful = lines
+    .filter((line) => INSTALL_ERROR_LINE.test(line))
+    .map((line) => line.replace(/^npm (?:error|ERR!) ?/, '').replace(/^\S*\s*(YN\d{4}):\s*│?\s*/, '$1: ').replace(/^error\s+/, '').trim())
+    .filter((line) => line && !INSTALL_NOISE.test(line));
+  const picked = meaningful.length ? meaningful : lines.map((line) => line.trim()).filter(Boolean).slice(-8);
+  const lead = picked.find((line) => !/^code [A-Z_0-9]+$/.test(line)) ?? picked[0] ?? 'the installer produced no output';
+  const found = picked.find((line) => line.startsWith('Found: '));
+  const conflict = picked.indexOf('Could not resolve dependency:');
+  const needed = conflict >= 0 ? picked[conflict + 1] : undefined;
+  const headline = [lead, found !== lead ? found : undefined, needed ? `needs ${needed}` : undefined].filter(Boolean).join(' · ');
+  return { headline: headline.slice(0, 400), excerpt: picked.slice(0, maxLines).join('\n').slice(0, 2400) };
+}

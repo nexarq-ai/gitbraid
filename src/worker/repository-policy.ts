@@ -3,7 +3,7 @@ import { MAX_TEST_TIMEOUT_MS } from './budgets';
 import { detectPackageManager, hasInstallableDependencies, runnerFor, testScript, type InstallPlan, type PackageManager } from './package-manager';
 
 export const POLICY_FILE = 'gitflare.json';
-export const DEFAULT_EDITABLE = ['src/', 'docs/', 'README.md'];
+export const DEFAULT_EDITABLE = ['src/', 'docs/', 'public/', 'static/', 'assets/', 'README.md'];
 
 export type { RunnerSize } from '../shared/types';
 export const RUNNER_SIZES: readonly RunnerSize[] = ['standard-1', 'standard-2', 'standard-3', 'standard-4'];
@@ -60,6 +60,7 @@ export interface RepositoryPolicy {
   starter: boolean;
   untested: boolean;
   generated: GeneratedFiles | null;
+  manifest?: boolean;
 }
 
 export interface GeneratedFiles { paths: string[]; command: string | null }
@@ -140,7 +141,7 @@ export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: st
     if (baseFiles === undefined) return withLimits(fallback, {}, settings);
     const untested = !baseFiles.some((path) => TEST_PATHS.test(path) && !path.includes('node_modules/'));
     const scripted = basePackageJson !== undefined && basePackageJson !== null ? packageTestCheck(baseFiles, basePackageJson, baseLockHead) : null;
-    return withLimits({ ...fallback, starter: isStarterRepository(baseFiles), untested, ...(scripted ? { testCommand: scripted.testCommand, evidence: scripted.evidence, install: scripted.install } : {}) }, {}, settings);
+    return withLimits({ ...fallback, starter: isStarterRepository(baseFiles), untested, manifest: baseFiles.includes('package.json'), ...(scripted ? { testCommand: scripted.testCommand, evidence: scripted.evidence, install: scripted.install } : {}) }, {}, settings);
   }
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Error(`${POLICY_FILE} is not valid JSON`); }
@@ -148,7 +149,7 @@ export function parseRepositoryPolicy(raw: string | null, defaultTestCommand: st
   const fields = parsed as Record<string, unknown>;
   const unknown = Object.keys(fields).filter((key) => !['test', 'evidence', 'editable', 'install', 'preview', 'timeoutSeconds', 'runner', 'generated', 'deploy'].includes(key));
   if (unknown.length) throw new Error(`${POLICY_FILE}: unsupported field "${unknown[0]}"`);
-  const policy = { ...fallback };
+  const policy: RepositoryPolicy = { ...fallback, ...(baseFiles ? { manifest: baseFiles.includes('package.json') } : {}) };
   if (fields.test !== undefined) policy.testCommand = command(fields.test, 'test');
   if (fields.preview !== undefined) policy.previewCommand = command(fields.preview, 'preview');
   if (fields.evidence !== undefined) {
@@ -187,13 +188,36 @@ export function isProtectedPath(path: string, editable: string[] = DEFAULT_EDITA
   return !allowed || ALWAYS_PROTECTED.test(path) || TEST_PATHS.test(path);
 }
 
-// Only these stay off-limits when a repository has nothing yet to protect
-const STARTER_PROTECTED = /(^|\/)(gitflare\.json|\.npmrc)$|^\.(git|github)(\/|$)/;
+// Only these stay off-limits when a repository has nothing yet to protect; a starter base has no gitflare.json, so a root one may be added once
+const STARTER_PROTECTED = /(^|\/)\.npmrc$|.\/gitflare\.json$|^\.(git|github)(\/|$)/;
 const MANIFESTS = /(^|\/)package\.json$/;
 const NPM_PLACEHOLDER_TEST = /no test specified/;
 
 export function isStarterRepository(baseFiles: string[]): boolean {
   return !baseFiles.some((path) => path === POLICY_FILE || MANIFESTS.test(path) || TEST_PATHS.test(path));
+}
+
+export function protectionReason(path: string, policy: Pick<RepositoryPolicy, 'editable' | 'starter'>): string {
+  if (/^\.(git|github)(\/|$)/.test(path)) return '.git and .github/ are always protected';
+  if (/(^|\/)gitflare\.json$/.test(path)) return policy.starter ? `only a valid root ${POLICY_FILE} without deploy may be added` : `${POLICY_FILE} is protected; edit it outside Gitflare`;
+  if (/(^|\/)(\.npmrc|\.yarnrc|\.yarnrc\.yml|pnpm-workspace\.yaml|\.pnpmfile\.c?js|\.pnp\.c?js|\.pnp\.loader\.mjs)$|(^|\/)\.yarn\//.test(path)) return 'package manager configuration is protected';
+  if (MANIFESTS.test(path)) return policy.starter ? 'package.json is reviewed separately' : 'a new package.json is allowed only in a starter repository; an existing one may change only its dependency sections';
+  if (TEST_PATHS.test(path)) return 'existing tests are protected; add a new test file instead';
+  return `outside the editable paths ${policy.editable.join(', ')}; set "editable" in ${POLICY_FILE} to allow it`;
+}
+
+export function addsStarterPolicyFile(changes: PathChange[], policy: Pick<RepositoryPolicy, 'starter'>): boolean {
+  return policy.starter && changes.some(({ path, status }) => status === 'A' && path === POLICY_FILE);
+}
+
+export function starterPolicyFileProblem(raw: string): string | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return `${POLICY_FILE} is not valid JSON`; }
+  try {
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'deploy' in parsed) return `${POLICY_FILE} created by an agent may not set "deploy"; an Owner configures deployments`;
+    parseRepositoryPolicy(raw, 'node --test --test-reporter=tap');
+    return null;
+  } catch (error) { return error instanceof Error ? error.message : `${POLICY_FILE} is invalid`; }
 }
 
 export function protectedChanges(changes: PathChange[], policy: Pick<RepositoryPolicy, 'editable' | 'starter'>): string[] {

@@ -35,6 +35,15 @@ export function agentRunIds(value: unknown): string[] | undefined {
   return [...new Set(value as string[])];
 }
 
+export const RETRY_GUIDANCE_MAX = 2000;
+export const REVIEW_GUIDANCE_MAX = 6000;
+
+export function retryGuidance(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || value.length > RETRY_GUIDANCE_MAX || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) throw new ApiError(400, 'INVALID_INPUT', `guidance must be text of at most ${RETRY_GUIDANCE_MAX} characters.`);
+  return value.trim() || undefined;
+}
+
 export function repositoryName(value: unknown): string {
   const name = requireString(value, 'Repository name', 64);
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) || name.endsWith('.git')) {
