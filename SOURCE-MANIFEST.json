@@ -84,6 +84,21 @@
       "sha256": "606c63fa7642e08bbcd7f81ea2a20bf7d69854e3e84a9f116469ff155343dd1e"
     },
     {
+      "path": "public/fonts/instrument-sans-LICENSE.txt",
+      "size": 4538,
+      "sha256": "c27a3c53c3beed7f5c26853afa15991478ff7145d3754a36b0382f84e10c0d03"
+    },
+    {
+      "path": "public/fonts/instrument-serif-LICENSE.txt",
+      "size": 4314,
+      "sha256": "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3"
+    },
+    {
+      "path": "public/fonts/jetbrains-mono-LICENSE.txt",
+      "size": 4524,
+      "sha256": "403581b69dac5cff4079205e01c6b467e56af449ecbd7247693ddb1baafa005b"
+    },
+    {
       "path": "public/logo.svg",
       "size": 589,
       "sha256": "295b79764d84544883fe21b481a2bacd6734e7cc40e949ddb05f45acaa18800c"
@@ -180,8 +195,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 77742,
-      "sha256": "6fa50ed049e7243caa7c27ca2060aa1a8818bb8aaf7845121543f98674b55750"
+      "size": 77725,
+      "sha256": "e2cd77e8237bd16e1171a30a67a69c4086f5556289c651a01c92856cd8091401"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -250,8 +265,8 @@
     },
     {
       "path": "src/ui/AuthScreen.tsx",
-      "size": 14969,
-      "sha256": "43a4002d77b03987d6692321459e59b5096558ecc43e4ca381c26675332303e8"
+      "size": 15067,
+      "sha256": "141cf30e1d9b96fe2a2eebef1cc9f2549f61cb2849becda14ae288c1682a1dc0"
     },
     {
       "path": "src/ui/branches.css",
@@ -297,6 +312,11 @@
       "path": "src/ui/Deployments.tsx",
       "size": 28773,
       "sha256": "6eb80da81e6a2052cc0277efa90d52107642390b8c59f7374d2d7973dbeb6498"
+    },
+    {
+      "path": "src/ui/design-system.css",
+      "size": 118585,
+      "sha256": "e9604088d87c6a112da0e9aaa127f1a926d9c4441ada7a0f21a3a5495457f0fb"
     },
     {
       "path": "src/ui/diff-highlight.ts",
@@ -480,8 +500,8 @@
     },
     {
       "path": "src/ui/router.ts",
-      "size": 3997,
-      "sha256": "1c8d47ea58b6ea38035b712c3daef01921be24bc1475af13679f190efdf956ce"
+      "size": 5327,
+      "sha256": "af5eab890d7d58812ca3ef6c54f5d7df3d4618fb56c8eed82009223f1d9814fc"
     },
     {
       "path": "src/ui/SelfHostedHome.tsx",
@@ -492,6 +512,11 @@
       "path": "src/ui/styles.css",
       "size": 70244,
       "sha256": "60fe9b20c1fae3de3e9e3a727b2bc91f047093bb06a9b4811b562642b8c2cb5f"
+    },
+    {
+      "path": "src/ui/ThemeToggle.tsx",
+      "size": 2124,
+      "sha256": "01c838d02a6fe7e0bc6a08cfb2d291bacc4d7298696ce13b6466ec8346230c0b"
     },
     {
       "path": "src/ui/WorkspaceLoader.tsx",
@@ -710,8 +735,8 @@
     },
     {
       "path": "src/worker/oauth.ts",
-      "size": 12675,
-      "sha256": "57c0257fbe9266b2961df063f0717e29b93cb9c32e72f48d2c78b3ad48d1e6d1"
+      "size": 13115,
+      "sha256": "34f4e4dc457c53e121ec7f75e0adca7fe7d7c993ebdf37aabfa2521f12ed0602"
     },
     {
       "path": "src/worker/onboarding.ts",
@@ -765,8 +790,8 @@
     },
     {
       "path": "src/worker/public-pages.ts",
-      "size": 12293,
-      "sha256": "b47c198b72ef959333b9beaf151b7cbe74613f06b9d2b8a2c11ce9546a583501"
+      "size": 463,
+      "sha256": "9542311a7342c995f8e3d4818cd314fe2d37d15052ec94b25798edefd94bd042"
     },
     {
       "path": "src/worker/rate-limits.ts",
