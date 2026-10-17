@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { BranchChangeResult, CheckOverride, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
-import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint, failureLine } from './domain';
+import type { AgentRun, BranchChangeResult, CheckOverride, CheckPlan, CheckSettings, CreateMissionInput, IssueDetail, IssueList, Mission, MissionAttempt, MissionEvent, MissionSummary, ModelConnection, Release, Repository, RepositorySkillChange, ReviewMissionInput } from '../shared/types';
+import { ApiError, assertActiveRun, assertApproval, assertReplayFingerprint, failureLine, REVIEW_GUIDANCE_MAX } from './domain';
 import { assertDependenciesAcknowledged, assertDependencyApprover } from './dependency-changes';
 import { repositoryLabel } from '../shared/repository-names';
 import type { AppEnv } from './env';
@@ -8,7 +8,7 @@ import type { ExecutionResult } from './execution';
 import { SqlStore } from './store';
 import { securityClient, type Principal } from './security';
 import { needsPacking, packMission, summarizeMission, unpackMission, type BlobStore } from './mission-storage';
-import { assertLineInCandidate, assertReviewClear, reviewMissionInput } from './proposal-review';
+import { assertLineInCandidate, assertReviewClear, currentReviewRequests, reviewMissionInput } from './proposal-review';
 import { skillMissionInput, validateRepositorySkillChange } from './skill-edit';
 import type { ImportReceipt, ImportResult } from './repository-import';
 import { applyReleaseChange, type ReleaseChange, type ReleaseReceipt } from './releases';
@@ -29,6 +29,19 @@ export interface MissionSummaryCache { repositoryId: string; summaries: MissionS
 export interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
 const INTEGRATION_PREPARATION_MS = 600_000;
 
+function lastPreview(state: PreviewState, reason: PreviewEndReason, endedAt: number): LastPreview {
+  return {
+    candidateSha: state.candidateSha, epoch: state.epoch, kind: state.worker ? 'worker' : 'container', previewUrl: state.worker?.previewUrl ?? null,
+    ...(state.readyAt ? { readyAt: new Date(state.readyAt).toISOString() } : {}),
+    expiresAt: new Date(state.expiresAt).toISOString(), endedAt: new Date(reason === 'expired' ? state.expiresAt : endedAt).toISOString(), reason,
+  };
+}
+
+export function draftRuns(mission: Mission): Mission {
+  if (mission.status !== 'draft' || !mission.runs.some((run) => run.status === 'queued')) return mission;
+  return { ...mission, runs: mission.runs.map((run) => run.status === 'queued' ? { ...run, status: 'draft' } : run) };
+}
+
 function eligibleRaceRuns(mission: Mission): Mission['runs'] {
   const checks = mission.raceChecks ?? mission.checks;
   return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
@@ -47,7 +60,9 @@ export const PREVIEW_HEARTBEAT_MS = 30_000;
 export const PREVIEW_READY_MS = 900_000;
 export const WORKER_PREVIEW_TTL_MS = 900_000;
 interface PreviewFailureRecord { claimId: string; epoch: number; candidateSha: string; message: string; failedAt: string }
-export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; expiresAt?: string; readyAt?: string; extended?: boolean; extendable?: boolean; error?: string; message?: string; kind?: 'worker' | 'container'; worker?: WorkerPreviewInfo; access?: 'link' | 'cloudflare-access' | 'members' }
+export type PreviewEndReason = 'expired' | 'retired' | 'replaced';
+export interface LastPreview { candidateSha: string; epoch: number; kind: 'worker' | 'container'; previewUrl: string | null; readyAt?: string; expiresAt: string; endedAt: string; reason: PreviewEndReason }
+export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; last?: LastPreview; expiresAt?: string; readyAt?: string; extended?: boolean; extendable?: boolean; error?: string; message?: string; kind?: 'worker' | 'container'; worker?: WorkerPreviewInfo; access?: 'link' | 'cloudflare-access' | 'members' }
 interface DispatchIntent { workflowId: string; missionId: string; repositoryId: string; epoch: number; attempts: number; nextAttemptAt: number }
 export const DISPATCH_FAST_ATTEMPTS = 8;
 interface MissionWatch { workflowId: string; missionId: string; epoch: number; deliveredAt: number; lastReportAt: number; checkAt: number; misses: number }
@@ -476,6 +491,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         if (current.worker) return { worker: current.worker, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt };
         return current.sandboxName ? { sandboxName: current.sandboxName, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt } : { claimId: current.claimId, claimed: false };
       }
+      if (current?.phase === 'ready') this.rememberPreview(id, current, current.expiresAt <= Date.now() ? 'expired' : 'replaced');
       const claimId = crypto.randomUUID();
       this.store.put(`preview-state:${id}`, { claimId, epoch, candidateSha, phase: 'preparing', expiresAt: Date.now() + PREVIEW_LEASE_MS } satisfies PreviewState);
       this.store.delete(`preview-failure:${id}`);
@@ -545,9 +561,16 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (!record || (claimId && record.claimId !== claimId)) return null;
       this.store.delete(`worker-preview:${id}`);
       const state = this.store.get<PreviewState>(`preview-state:${id}`);
-      if (state?.worker) this.store.delete(`preview-state:${id}`);
+      if (state?.worker) {
+        if (state.phase === 'ready') this.rememberPreview(id, state, state.expiresAt <= Date.now() ? 'expired' : 'retired');
+        this.store.delete(`preview-state:${id}`);
+      }
       return record;
     });
+  }
+
+  private rememberPreview(id: string, state: PreviewState, reason: PreviewEndReason): void {
+    this.store.put(`preview-last:${id}`, lastPreview(state, reason, Date.now()) satisfies LastPreview);
   }
 
   previewFailed(id: string, claimId: string, message?: string): boolean {
@@ -574,9 +597,12 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         ...(ready.worker ? { kind: 'worker' as const, worker: ready.worker, access: ready.worker.host?.access ?? 'link' } : { kind: 'container' as const, access: 'members' as const }),
       };
     }
+    const expired = state?.phase === 'ready' && state.expiresAt <= Date.now() ? lastPreview(state, 'expired', Date.now()) : undefined;
+    const last = expired ?? this.store.get<LastPreview>(`preview-last:${id}`);
+    const history = last ? { last } : {};
     const failure = this.store.get<PreviewFailureRecord>(`preview-failure:${id}`);
-    if (current(failure)) return { status: 'failed', candidateSha: mission.candidateSha, error: failure!.message };
-    return { status: 'none', candidateSha: mission.candidateSha };
+    if (current(failure)) return { status: 'failed', candidateSha: mission.candidateSha, error: failure!.message, ...history };
+    return { status: 'none', candidateSha: mission.candidateSha, ...history };
   }
 
   createRepository(key: string, repository: Repository): Repository {
@@ -603,11 +629,11 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   private readonly blobs: BlobStore = { get: (key) => this.store.get<string>(key), putIfAbsent: (key, value) => this.store.putIfAbsent(key, value) };
 
   listMissions(): Mission[] {
-    return this.store.list<Mission>('mission:').map((mission) => unpackMission(mission, this.blobs)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.list<Mission>('mission:').map((mission) => draftRuns(unpackMission(mission, this.blobs))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   listMissionSummaries(): MissionSummary[] {
-    return this.store.list<Mission>('mission:').map(summarizeMission).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.list<Mission>('mission:').map((mission) => summarizeMission(draftRuns(mission))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   getMission(id: string): Mission | undefined {
@@ -615,7 +641,21 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (!stored) return undefined;
     const mission = unpackMission(stored, this.blobs);
     if (needsPacking(stored)) this.store.put(`mission:${id}`, packMission(mission, this.blobs));
-    return mission;
+    return draftRuns(mission);
+  }
+
+  recordMissionEvent(id: string, message: string): void {
+    const mission = this.getMission(id);
+    if (mission) this.saveMission(mission, message);
+  }
+
+  missionCandidate(commitSha: string): { missionId: string; forkName?: string } | undefined {
+    for (const mission of this.store.list<Mission>('mission:')) {
+      if (mission.candidateSha === commitSha) return { missionId: mission.id, ...(mission.integrationForkName ? { forkName: mission.integrationForkName } : {}) };
+      const run = mission.runs.find((item) => item.commitSha === commitSha);
+      if (run) return { missionId: mission.id, ...(run.forkName ? { forkName: run.forkName } : {}) };
+    }
+    return undefined;
   }
 
   missionRepository(id: string): string | undefined { return this.store.get<string>(`mission-repository:${id}`); }
@@ -679,7 +719,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         id, repositoryId: repository.id, title: input.title, prompt: input.prompt,
         acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(input.issueNumber !== undefined ? { issueNumber: input.issueNumber } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
-        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
+        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'draft', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
       };
       if (mission.issueNumber !== undefined) linkIssueMission(this.store, mission.issueNumber, mission.id, now);
@@ -710,6 +750,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         const mission = this.newMission(skillMissionInput(repositoryId, change), authorization, undefined, missionId);
         mission.status = 'queued';
         mission.epoch = 1;
+        mission.runs = mission.runs.map((run) => ({ ...run, status: 'queued' }));
         this.queueDispatch(mission);
         return this.saveMission(mission, 'Skill edit queued for exact-content execution and repository checks.');
       });
@@ -767,20 +808,35 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     return started;
   }
 
-  async retryAgents(key: string, id: string, mode: 'retry' | 'drop', runIds: string[] | undefined, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections()): Promise<Mission> {
+  async retryAgents(key: string, id: string, mode: 'retry' | 'drop' | 'review', runIds: string[] | undefined, authorization?: NonNullable<Mission['authorization']>, models = defaultModelConnections(), guidance?: string): Promise<Mission> {
     await this.ensureDispatchAlarm(Date.now() + 1000);
     const release = await this.reserveMissionCapacity(key, id, authorization);
-    const started = await this.releaseOnFailure(release, () => this.mutateMission(key, JSON.stringify([mode === 'retry' ? 'retry-agents' : 'drop-failed-agents', id, runIds ? [...runIds].sort() : null]), id, () => {
+    const action = mode === 'retry' ? 'retry-agents' : mode === 'review' ? 'address-review' : 'drop-failed-agents';
+    const started = await this.releaseOnFailure(release, () => this.mutateMission(key, JSON.stringify([action, id, runIds ? [...runIds].sort() : null, guidance ?? null]), id, () => {
       const mission = this.requiredMission(id);
-      if (!['failed', 'cancelled'].includes(mission.status) || mission.epoch === 0) throw new ApiError(409, 'MISSION_NOT_FAILED', 'Only a failed or cancelled attempt can retry or drop individual agents.');
+      const reviewing = mode === 'review';
+      if (reviewing ? mission.status !== 'needs_review' : !['failed', 'cancelled'].includes(mission.status) || mission.epoch === 0) throw reviewing ? new ApiError(409, 'MISSION_NOT_IN_REVIEW', 'Only a candidate awaiting review can be sent back to its agents.') : new ApiError(409, 'MISSION_NOT_FAILED', 'Only a failed or cancelled attempt can retry or drop individual agents.');
       if (mission.skillChange || mission.revertChange || mission.branchChange) throw new ApiError(409, 'TRUSTED_MISSION', 'This proposal has one trusted editor. Use Retry mission instead.');
       const unknown = (runIds ?? []).filter((runId) => !mission.runs.some((run) => run.id === runId));
       if (unknown.length) throw new ApiError(400, 'UNKNOWN_AGENT', `No agent with ID ${unknown[0]!.slice(0, 64)} belongs to this mission.`);
       const checks = mission.raceChecks ?? mission.checks;
-      const reusable = (run: Mission['runs'][number]) => run.status === 'completed' && !!run.commitSha && !!run.forkName && !runIds?.includes(run.id) && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha);
+      const verified = (run: Mission['runs'][number]) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha);
+      const requests = reviewing ? currentReviewRequests(mission) : [];
+      if (reviewing && !requests.length && !guidance) throw new ApiError(409, 'NO_CHANGE_REQUESTS', 'This candidate has no open change requests. Request changes first, or pass guidance for the agents.');
+      const chosen = reviewing ? runIds ?? (mission.mode === 'race' ? (mission.selectedRunId ? [mission.selectedRunId] : []) : mission.runs.filter(verified).map((run) => run.id)) : runIds;
+      if (reviewing && !chosen?.length) throw new ApiError(409, 'SELECT_CANDIDATE', 'Select a candidate first, or name the agents to send the review to.');
+      if (reviewing && mission.runs.some((run) => chosen!.includes(run.id) && !verified(run))) throw new ApiError(409, 'AGENT_NOT_VERIFIED', 'Only agents with a verified candidate can address a review.');
+      const reusable = (run: Mission['runs'][number]) => verified(run) && !chosen?.includes(run.id) && !(!reviewing && run.collision);
       const reused = mission.runs.filter(reusable);
-      const others = mission.runs.filter((run) => !reusable(run));
+      const others = mission.runs.filter((run) => !reusable(run) && (!reviewing || chosen!.includes(run.id)));
       if (!others.length && (mode === 'drop' || mission.mode === 'race')) throw new ApiError(409, 'NO_FAILED_AGENTS', 'Every agent has a verified candidate. Use Retry mission to rerun them all, or choose the agents to rerun.');
+      const sourceOf = (run: Mission['runs'][number]) => ({ runId: run.id, name: run.name, forkName: run.forkName!, commitSha: run.commitSha! });
+      const startFrom = (run: Mission['runs'][number]): AgentRun['startFrom'] => {
+        if (reviewing) return { reason: 'review', candidates: (mission.mode === 'race' ? [run] : mission.runs.filter(verified)).map(sourceOf) };
+        if (run.collision && reused.length) return { reason: 'collision', files: run.collision.files, candidates: reused.map(sourceOf) };
+        return undefined;
+      };
+      const feedback = reviewing ? [requests.length ? `Reviewer change requests on the previous candidate:\n${requests.map((review) => `- ${review.path ? `${review.path}:${review.line} ` : ''}${review.body}`).join('\n')}` : '', guidance ?? ''].filter(Boolean).join('\n\n').slice(0, REVIEW_GUIDANCE_MAX) : guidance;
       if (mode === 'drop' && !reused.length) throw new ApiError(409, 'NO_COMPLETED_AGENTS', 'No agent has a verified candidate to continue with. Retry the failed agents instead.');
       const repository = this.getRepository(mission.repositoryId);
       const previousEpoch = mission.epoch;
@@ -794,9 +850,10 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const fresh = (run: Mission['runs'][number]) => ({ id: run.id, name: run.name, role: run.role, task: run.task, assignment: run.assignment, model: run.model, modelConfig: run.modelConfig, changedFiles: [] as string[] });
       mission.runs = mission.runs.map((run) => {
         if (reusedIds.has(run.id)) return { ...run, reusedFromEpoch: run.reusedFromEpoch ?? previousEpoch, ...(run.candidateBaseSha ?? previousBase ? { candidateBaseSha: run.candidateBaseSha ?? previousBase! } : {}) };
-        if (mode === 'drop') return { ...fresh(run), status: 'skipped' as const, completedAt: now, skipReason: run.skipReason ?? `Excluded in attempt ${previousEpoch + 1} after it ${run.status === 'cancelled' ? 'was cancelled' : 'failed'}${run.error ? `: ${failureLine(run.error)}` : ''}` };
+        if (mode === 'drop' || reviewing && !chosen!.includes(run.id)) return { ...fresh(run), status: 'skipped' as const, completedAt: now, skipReason: run.skipReason ?? (reviewing ? `Not sent the review in attempt ${previousEpoch + 1}` : `Excluded in attempt ${previousEpoch + 1} after it ${run.status === 'cancelled' ? 'was cancelled' : 'failed'}${run.error ? `: ${failureLine(run.error)}` : ''}`) };
         const [pinned] = pinMissionModels({ ...mission, runs: [run] }, models).runs;
-        return { ...fresh(pinned!), status: 'queued' as const };
+        const from = startFrom(run);
+        return { ...fresh(pinned!), status: 'queued' as const, ...(feedback ? { retryGuidance: feedback } : {}), ...(from ? { startFrom: from } : {}) };
       });
       mission.status = 'queued';
       mission.epoch += 1;
@@ -816,10 +873,15 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       const names = (runs: Mission['runs']) => runs.map((run) => run.name.slice(0, 60)).join(', ');
       const moved = previousBase && mission.baseSha !== previousBase ? ` The default branch moved from ${previousBase.slice(0, 12)} to ${(mission.baseSha ?? 'none').slice(0, 12)}, so ${mission.mode === 'race' ? 'reused candidates will be re-run' : 'reused candidates are merged onto the new base and the combined checks re-verify them'}.` : '';
       const reuseNote = reused.length ? ` Reusing ${reused.length} verified candidate${reused.length === 1 ? '' : 's'} from attempt ${previousEpoch} (${names(reused)}) after confirming each commit is still in its fork.` : '';
+      const collided = others.filter((run) => run.collision && reused.length);
+      const rebaseNote = collided.length ? ` ${names(collided)} start${collided.length === 1 ? 's' : ''} from the merged candidates of ${names(reused)} to resolve the collision in ${[...new Set(collided.flatMap((run) => run.collision!.files))].slice(0, 10).join(', ')}.` : '';
+      const guidanceNote = guidance ? ` Guidance from ${authorization?.principal.userId ?? 'the requester'}: "${guidance.replace(/\s+/g, ' ').slice(0, 300)}${guidance.length > 300 ? '…' : ''}"` : '';
       this.queueDispatch(mission);
-      return this.saveMission(mission, mode === 'retry'
-        ? others.length ? `Attempt ${mission.epoch} queued to retry ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}).${reuseNote}${moved}` : `Attempt ${mission.epoch} queued to combine again without rerunning any agent.${reuseNote}${moved}`
-        : `Attempt ${mission.epoch} queued without ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}), now marked skipped.${reuseNote} Acceptance criteria are unchanged.${moved}`, mode === 'drop' ? 'warning' : 'info');
+      return this.saveMission(mission, mode === 'review'
+        ? `Attempt ${mission.epoch} queued to address ${requests.length} change request${requests.length === 1 ? '' : 's'} with ${names(others)}, starting from the reviewed candidate.${reuseNote}${moved}${guidanceNote}`
+        : mode === 'retry'
+          ? others.length ? `Attempt ${mission.epoch} queued to retry ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}).${reuseNote}${rebaseNote}${moved}${guidanceNote}` : `Attempt ${mission.epoch} queued to combine again without rerunning any agent.${reuseNote}${moved}`
+          : `Attempt ${mission.epoch} queued without ${others.length} agent${others.length === 1 ? '' : 's'} (${names(others)}), now marked skipped.${reuseNote} Acceptance criteria are unchanged.${moved}`, mode === 'drop' ? 'warning' : 'info');
     }));
     if (started.status === 'queued') this.queueDispatch(started);
     return started;
@@ -1176,7 +1238,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       this.store.delete('integration:claim');
       mission.status = 'integrated';
       delete mission.error;
-      this.saveMission(mission, `Verified canonical branch at approved commit ${sha.slice(0, 12)}. No production deployment was triggered.`, 'success');
+      this.saveMission(mission, `Verified canonical branch at approved commit ${sha.slice(0, 12)}.`, 'success');
       this.archive(mission, 'integrated');
       this.recordLinkedIssues(mission, sha);
       return mission;

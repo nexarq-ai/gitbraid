@@ -168,7 +168,7 @@ export async function cloudflareAnalyticsRequest(env:AppEnv,p:Principal,body:{qu
 export async function cloudflareDeployAccess(env: AppEnv, p: Principal, authorization: CloudflareAuthorization, repositoryId?: string): Promise<CloudflareDeployAccess> {
   const {vault,source}=await loadPreferred(env,p,authorization,repositoryId); const account=selectedAccount(vault,source);
   checkAccount(vault,authorization.expectedAccountId);
-  return {accessToken:vault.accessToken,accountId:account.id,scopes:vault.scopes,source};
+  return {accessToken:vault.accessToken,accountId:account.id,...(account.name?{accountName:account.name}:{}),scopes:vault.scopes,source};
 }
 export function assertDeployScope(scopes: string[]): void {
   if (!scopes.includes(CLOUDFLARE_DEPLOY_SCOPE)) throw new ApiError(403,'CLOUDFLARE_SCOPE_MISSING',`The Cloudflare connection was not granted ${CLOUDFLARE_DEPLOY_SCOPE} (Workers Scripts Write). An Owner must reconnect Cloudflare after the installation requests that scope.`);

@@ -5,7 +5,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AiSettings, IntegrationStatus, Mission, Repository, Workspace } from '../shared/types';
 import { createArtifactsRepository, repositoryHead } from './artifacts';
 import { assertDependencyApproval } from './dependency-changes';
-import { agentRunIds, ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, storageRepositoryName } from './domain';
+import { agentRunIds, ApiError, assertMutationOrigin, findRepositoryByName, isLocalRequest, MISSION_REQUEST_MAX_BYTES, missionInput, publicError, readJson, repositoryName, repositoryPath, repositoryRef, requireIdempotencyKey, requireString, retryGuidance, storageRepositoryName } from './domain';
 import { repositoryLabel } from '../shared/repository-names';
 import { checkSettingsSnapshot, normalizeCheckSettings, retryPlan } from './check-settings';
 import { handlePreviewSettings } from './preview-settings-api';
@@ -27,7 +27,7 @@ import { oauthConsent, oauthProvider, revokeClientGrants } from './oauth';
 import { publicPageResponse } from './public-pages';
 import { publicGitResponse } from './hosted-source';
 import { deliverInvitation } from './email';
-import { CLOUDFLARE_LINK_COOKIE, requestCookie, handleCloudflare, handleRepositoryCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
+import { CLOUDFLARE_LINK_COOKIE, requestCookie, handleCloudflare, handleRepositoryCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest, cloudflareDeployAccess } from './cloudflare';
 import { dispatchCloudflareProject, projectDependencies, type ProjectOperation } from './cloudflare-projects';
 import { validateRepositoryInitialization, initializeArtifactsRepository } from './repository-initialization';
 import { SKILL_REQUEST_MAX_BYTES, validateRepositorySkillChange, verifyRepositorySkillChange } from './skill-edit';
@@ -47,6 +47,7 @@ import { capabilityHash, mintPreviewToken, PREVIEW_CAPABILITY_MS, previewCapabil
 export { GitflareSecurity } from './security';
 export { GitflareCoordinator } from './coordinator';
 export { MissionWorkflow } from './workflow';
+export { ModelRelay } from './model-relay';
 export { AgentSandbox, BootstrapOutbound, GitOutbound, ImportOutbound, RegistryOutbound } from '../../runner/sandbox';
 
 const encoder = new TextEncoder();
@@ -159,13 +160,40 @@ async function currentRepository(env: AppEnv, repository: Repository): Promise<R
   return updated;
 }
 
-async function browseRepository(env: AppEnv, repository: Repository, kind: string, url: URL): Promise<Response> {
+async function workspaceName(env: AppEnv, access: { workspace(principal: Principal): Promise<{ name: string }> }, principal: Principal): Promise<string> {
+  return principal.workspaceId === 'legacy' && env.WORKSPACE_NAME ? env.WORKSPACE_NAME : (await access.workspace(principal)).name;
+}
+
+type SourceHandle = Awaited<ReturnType<NonNullable<AppEnv['ARTIFACTS']>['get']>>;
+type SourceCommit = Awaited<ReturnType<SourceHandle['log']>>[number];
+interface CandidateSources { find(commitSha: string): Promise<{ missionId: string; forkName?: string } | undefined>; authorize(missionId: string): Promise<void> }
+
+async function openFork(env: AppEnv, name: string): Promise<SourceHandle | null> {
+  try { return await env.ARTIFACTS!.get(name); } catch { return null; }
+}
+
+async function browseRepository(env: AppEnv, repository: Repository, kind: string, url: URL, candidates?: CandidateSources): Promise<Response> {
   if (!env.ARTIFACTS || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Connect an Artifacts repository to browse its source.');
   const ref = repositoryRef(url.searchParams.get('ref') || repository.defaultBranch);
   const path = repositoryPath(url.searchParams.get('path') ?? '', kind === 'tree');
   using source = await env.ARTIFACTS.get(repository.name);
   const commit = (await source.log({ ref, limit: 1 }))[0];
-  if (!commit) throw new ApiError(404, 'REF_NOT_FOUND', 'This branch, tag, or commit does not exist. Push an initial commit if the repository is empty.');
+  if (commit) return sourceView(source, commit, kind, path, ref);
+  const fullSha = /^[a-f0-9]{40}$/.test(ref);
+  const candidate = fullSha && candidates ? await candidates.find(ref) : undefined;
+  if (candidate) {
+    await candidates!.authorize(candidate.missionId);
+    using fork = candidate.forkName ? await openFork(env, candidate.forkName) : null;
+    const held = fork ? (await fork.log({ ref, limit: 1 }).catch(() => []))[0] : undefined;
+    if (fork && held?.hash === ref) return sourceView(fork, held, kind, path, ref, candidate.missionId);
+    throw new ApiError(404, 'MISSION_CANDIDATE_UNAVAILABLE', `Commit ${ref.slice(0, 12)} is a candidate of mission ${candidate.missionId}, and the fork that held it can no longer be read. This commit is a mission candidate; use gitflare_inspect_mission view changes (GET /api/missions/${candidate.missionId}) to read its diff.`);
+  }
+  if (fullSha) throw new ApiError(404, 'REF_NOT_FOUND', `Commit ${ref.slice(0, 12)} is not in this repository or in any of its mission candidates. Pass a branch, tag or a commit from gitflare_inspect_mission.`);
+  throw new ApiError(404, 'REF_NOT_FOUND', 'This branch, tag, or commit does not exist. Push an initial commit if the repository is empty.');
+}
+
+async function sourceView(source: SourceHandle, commit: SourceCommit, kind: string, path: string, ref: string, missionId?: string): Promise<Response> {
+  const origin = missionId ? { missionId, source: 'mission-candidate' as const } : {};
   if (kind === 'file') {
     const blob = await source.readFile({ ref: commit.hash, path });
     if (!blob) throw new ApiError(404, 'FILE_NOT_FOUND', 'This file could not be found at the selected commit.');
@@ -177,7 +205,7 @@ async function browseRepository(env: AppEnv, repository: Repository, kind: strin
       throw new ApiError(415, 'BINARY_FILE', 'This file contains binary data. Clone the repository to inspect it.');
     }
     if (content.includes('\0')) throw new ApiError(415, 'BINARY_FILE', 'This file contains binary data. Clone the repository to inspect it.');
-    return Response.json({ path, content, commitSha: commit.hash });
+    return Response.json({ path, content, commitSha: commit.hash, ...origin });
   }
   let tree = await source.readTree(commit.treeHash);
   for (const segment of path ? path.split('/') : []) {
@@ -188,7 +216,7 @@ async function browseRepository(env: AppEnv, repository: Repository, kind: strin
   if (!tree) throw new ApiError(404, 'DIRECTORY_NOT_FOUND', 'This directory could not be found at the selected commit.');
   if (tree.length > 5000) throw new ApiError(413, 'DIRECTORY_TOO_LARGE', 'This directory contains more than 5,000 entries. Clone the repository to browse it.');
   const entries = tree.map((entry) => ({ name: entry.name, path: path ? `${path}/${entry.name}` : entry.name, type: entry.type === 'tree' ? 'directory' : 'file' })).sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
-  return Response.json({ entries, ref, commitSha: commit.hash });
+  return Response.json({ entries, ref, commitSha: commit.hash, ...origin });
 }
 
 async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promise<Response> {
@@ -220,7 +248,10 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
   const principal = await authorize(request, env);
   const access = security(env);
   if (request.method === 'GET' && (['/api/docs', '/api/mcp'].includes(url.pathname) || url.pathname.startsWith('/api/docs/'))) await access.authorizeMetadata(principal);
-  if (url.pathname === '/api/access' && request.method === 'GET') return Response.json(await access.snapshot(principal));
+  if (url.pathname === '/api/access' && request.method === 'GET') {
+    const [snapshot, name] = await Promise.all([access.snapshot(principal), workspaceName(env, access, principal)]);
+    return Response.json({ ...snapshot, workspace: snapshot.workspace ? { ...snapshot.workspace, name } : snapshot.workspace, workspaces: snapshot.workspaces.map((workspace) => workspace.id === principal.workspaceId ? { ...workspace, name } : workspace) });
+  }
   if (url.pathname.startsWith('/api/access/') && request.method === 'POST') {
     assertMutationOrigin(request); const body = await readJson(request); const action = url.pathname.slice('/api/access/'.length);
     if (action === 'accept-invite') return Response.json(await access.acceptInvite(principal, requireString(body.token, 'Invitation token', 128)));
@@ -228,7 +259,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     if (action === 'credential-create') { const catalog = env.GITFLARE_COORDINATOR.getByName(catalogName(principal.workspaceId)); if (!await catalog.getRepository(String(body.repositoryId))) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'Select a repository in this workspace.'); }
     const result = await access.action(principal, action, body);
     if (action === 'session-revoke' && typeof body.id === 'string') await revokeClientGrants(env, url.origin, application, authorize, principal.userId, body.id);
-    if (action === 'invite' && result && typeof result === 'object' && 'token' in result && typeof result.token === 'string') { const workspace = await access.workspace(principal); const delivery = await deliverInvitation(env, { email: String(body.email), token: result.token, workspaceName: workspace.name, origin: url.origin }); return Response.json({ ...result, delivery }); }
+    if (action === 'invite' && result && typeof result === 'object' && 'token' in result && typeof result.token === 'string') { const delivery = await deliverInvitation(env, { email: String(body.email), token: result.token, workspaceName: await workspaceName(env, access, principal), origin: url.origin }); return Response.json({ ...result, delivery }); }
     return Response.json(result);
   }
   if (request.method === 'GET' && url.pathname === '/api/docs') return Response.json({ items: listDocs() });
@@ -328,7 +359,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const [, repositories, name, ai, cached] = await Promise.all([
       access.authorizeMetadata(principal),
       catalog.listRepositories(),
-      principal.workspaceId === 'legacy' ? env.WORKSPACE_NAME : access.workspace(principal).then(workspace => workspace.name),
+      workspaceName(env, access, principal),
       aiSettings(env, catalog),
       Promise.resolve().then(() => catalog.listSummaryCache()).catch(() => []),
     ]);
@@ -384,6 +415,14 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       repository, principal,
       ledger: { state: () => coordinator.deployState(), get: (id) => coordinator.getDeployment(id), saveEnvironment: (environment, settings) => coordinator.saveDeployEnvironment(environment, settings), create: (key, fingerprint, record) => coordinator.createDeployment(key, fingerprint, record), confirm: (id, actorId) => coordinator.confirmDeployment(id, actorId), saveDetected: (environments, detected) => coordinator.saveDetectedDeploySetup(environments, detected) },
       detectSetup: () => detectRepositorySetup(env, principal, repository),
+      connection: async () => {
+        try {
+          const connection = await cloudflareDeployAccess(env, principal, { action: 'read', resourceType: 'repository', resourceId: repository.id }, repository.id);
+          return { connected: true, accountId: connection.accountId, ...(connection.accountName ? { accountName: connection.accountName } : {}), scopes: connection.scopes, source: connection.source };
+        } catch (error) {
+          return { connected: false, reason: error instanceof ApiError ? error.detail : 'Connect Cloudflare for this repository or workspace first.' };
+        }
+      },
       linkWorkers: async (accountId, workers) => { await access.projectStore(principal, repository.id, 'link', { accountId, workers }); },
       authorizeRead: () => access.authorize(principal, 'read', 'repository', repository.id),
       authorizeDeploy: (workerName) => access.authorize(principal, 'deploy', 'environment', workerName),
@@ -429,7 +468,8 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       return Response.json({ branch: repository.defaultBranch, commitSha: commit.hash, commitMessage: commit.message });
     }
     if (repositoryMatch[2] === 'skills') return Response.json(await listRepositorySkills(env.ARTIFACTS, repository, url.searchParams.get('ref') ?? undefined));
-    return browseRepository(env, repository, repositoryMatch[2], url);
+    const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
+    return browseRepository(env, repository, repositoryMatch[2], url, { find: (commitSha) => coordinator.missionCandidate(commitSha), authorize: (missionId) => access.authorize(principal, 'read', 'repository', repository.id, missionId) });
   }
   const branchWrite = request.method === 'POST' ? /^\/api\/repositories\/([a-zA-Z0-9-]+)\/branches(?:\/(delete))?$/.exec(url.pathname) : null;
   if (branchWrite) {
@@ -489,7 +529,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const draft = await coordinator.createMission(key, { repositoryId: repository.id, expectedBaseSha: current.headSha, title, prompt: description ?? `Merge ${branch} into ${repository.defaultBranch}.`, branchChange: { branch, headSha, targetBranch: repository.defaultBranch, ...(description ? { description } : {}) } }, authorization, models);
     return Response.json(await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models), { status: 202 });
   }
-  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|preview-extend|attempts|review|select|revert|pull|retry-checks|retry-agents|drop-failed-agents))?$/.exec(url.pathname);
+  const match = /^\/api\/missions\/([a-zA-Z0-9-]+)(?:\/(start|cancel|approve|revoke|integrate|preview|preview-extend|attempts|review|select|revert|pull|retry-checks|retry-agents|drop-failed-agents|address-review))?$/.exec(url.pathname);
   if (request.method === 'GET' && match && !match[2]) { const {mission,repository} = await findMission(env, match[1], principal.workspaceId); await access.authorize(principal, 'read', 'repository', repository.id, mission.id); return Response.json(mission); }
   if (request.method === 'GET' && match?.[2] === 'attempts') {
     const { repository, mission } = await findMission(env, match[1], principal.workspaceId);
@@ -662,7 +702,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     const reviewInput = match[2] === 'review' ? reviewMissionInput(body) : undefined;
     const pullAction = match[2] === 'pull' ? body.action : undefined;
     if (match[2] === 'pull' && !['update', 'close', 'reopen'].includes(String(pullAction))) throw new ApiError(400, 'INVALID_PULL_ACTION', 'Choose update, close or reopen.');
-    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents' || match[2] === 'revert' || (pullAction && pullAction !== 'close') ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' || match[2] === 'preview-extend' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
+    const action: Action = reviewInput ? (reviewInput.action === 'comment' ? 'contribute' : 'review') : match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents' || match[2] === 'address-review' || match[2] === 'revert' || (pullAction && pullAction !== 'close') ? 'execute' : ['approve', 'revoke', 'select'].includes(match[2]) ? 'review' : match[2] === 'integrate' || match[2] === 'preview-extend' ? 'land' : match[2] === 'preview' ? 'read' : 'contribute';
     try { await access.authorize(principal, action, 'repository', repository.id, mission.id); }
     catch (error) {
       if (reviewInput?.action !== 'comment' || publicError(error).code !== 'FORBIDDEN') throw error;
@@ -738,8 +778,10 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       const started = await startWithDurableDispatch(coordinator, `${key.slice(0, 120)}-start`, draft.id, authorization, models);
       return Response.json(started, { status: 202 });
     }
-    if (match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents') {
-      const runIds = match[2] === 'retry-agents' ? agentRunIds(body.runIds) : undefined;
+    if (match[2] === 'start' || match[2] === 'retry-agents' || match[2] === 'drop-failed-agents' || match[2] === 'address-review') {
+      const runIds = match[2] === 'retry-agents' || match[2] === 'address-review' ? agentRunIds(body.runIds) : undefined;
+      const guidance = match[2] === 'retry-agents' || match[2] === 'address-review' ? retryGuidance(body.guidance) : undefined;
+      if (body.guidance !== undefined && match[2] !== 'retry-agents' && match[2] !== 'address-review') throw new ApiError(400, 'INVALID_INPUT', 'guidance applies only to retrying failed agents or addressing a review.');
       if (!mission.skillChange && !mission.revertChange && !mission.branchChange) {
         await requireAi(env, catalog);
         const credentials = await aiCredentials(catalog);
@@ -754,7 +796,7 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       if (!current.headSha) throw new ApiError(409, 'EMPTY_REPOSITORY', 'Push an initial commit before starting a mission.');
       const authorization = { principal, workspaceId: principal.workspaceId, creatorId: mission.authorization?.creatorId ?? principal.userId };
       const models = await coordinatorRead('getModelConnections', () => catalog.getModelConnections());
-      const started = match[2] === 'start' ? await startWithDurableDispatch(coordinator, key, mission.id, authorization, models) : await coordinator.retryAgents(key, mission.id, match[2] === 'retry-agents' ? 'retry' : 'drop', runIds, authorization, models);
+      const started = match[2] === 'start' ? await startWithDurableDispatch(coordinator, key, mission.id, authorization, models) : await coordinator.retryAgents(key, mission.id, match[2] === 'retry-agents' ? 'retry' : match[2] === 'address-review' ? 'review' : 'drop', runIds, authorization, models, guidance);
       return Response.json(started, { status: 202 });
     }
     const candidateSha = requireString(body.candidateSha, 'Candidate commit', 40, 40);

@@ -1,5 +1,5 @@
 export type MissionStatus = 'draft' | 'queued' | 'running' | 'checking' | 'needs_review' | 'approved' | 'integrating' | 'integrated' | 'failed' | 'cancelled';
-export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
+export type RunStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
 export type MissionMode = 'combine' | 'race';
 export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 
@@ -83,6 +83,9 @@ export interface AgentRun {
   candidateBaseSha?: string;
   skipReason?: string;
   dependencyChanges?: ManifestDependencyChanges[];
+  retryGuidance?: string;
+  collision?: { files: string[]; epoch: number };
+  startFrom?: { reason: 'collision' | 'review'; files?: string[]; candidates: { runId: string; name: string; forkName: string; commitSha: string }[] };
 }
 
 export type RunnerSize = 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';
@@ -282,8 +285,9 @@ export interface CreateRepositoryInput { name: string; description?: string }
 export interface ApproveMissionInput { candidateSha: string; baseSha: string }
 export interface ApiError { error: { code: string; message: string } }
 
-export interface RepositoryTree { entries: { name: string; path: string; type: 'file' | 'directory'; size?: number }[]; ref: string; commitSha: string }
-export interface RepositoryFile { path: string; content: string; commitSha: string }
+export interface CandidateSource { missionId?: string; source?: 'mission-candidate' }
+export interface RepositoryTree extends CandidateSource { entries: { name: string; path: string; type: 'file' | 'directory'; size?: number }[]; ref: string; commitSha: string }
+export interface RepositoryFile extends CandidateSource { path: string; content: string; commitSha: string }
 
 export type AccessSnapshot = Awaited<ReturnType<import('../worker/security').SecurityService['snapshot']>>;
 export type WorkspaceRole = import('../worker/security').Role;

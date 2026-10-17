@@ -93,6 +93,10 @@
       {
         "name": "GITFLARE_SECURITY",
         "class_name": "GitflareSecurity"
+      },
+      {
+        "name": "MODEL_RELAY",
+        "class_name": "ModelRelay"
       }
     ]
   },
@@ -108,6 +112,12 @@
       "tag": "v2-security",
       "new_sqlite_classes": [
         "GitflareSecurity"
+      ]
+    },
+    {
+      "tag": "v3-model-relay",
+      "new_sqlite_classes": [
+        "ModelRelay"
       ]
     }
   ],

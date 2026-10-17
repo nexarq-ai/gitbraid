@@ -140,7 +140,7 @@ export default function ProposalCreate({ repositories, repositoryId, canContribu
       setTitle(current => fillBlank(current, draft.title));
       setCriteria(current => fillBlank(current, draft.acceptanceCriteria.join('\n')));
       setAgents(current => mergeDraftAgents(current, draft.tasks, requestedIds));
-      setDraftNote('Draft filled in the blank fields. Review and edit it before creating the mission.');
+      setDraftNote(['Draft filled in the blank fields. Review and edit it before creating the mission.', ...(draft.warnings ?? [])].join(' '));
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'The draft could not be created. Fill the fields yourself or try again.'); }
     finally { setDrafting(false); }
   }

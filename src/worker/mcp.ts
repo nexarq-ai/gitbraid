@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { IssueDetail, IssueList, Mission, MissionAttempt, Release, ReleaseList, Repository, RepositoryFile, RepositoryTree, Workspace } from '../shared/types';
 import { RELEASE_NOTES_MAX, RELEASE_REQUEST_MAX_BYTES } from './releases';
 import { ENVIRONMENT_NAME } from './deploy-environments';
-import { ApiError, MISSION_REQUEST_MAX_BYTES, publicError, readJson, repositoryPath, repositoryRef } from './domain';
+import { ApiError, MISSION_REQUEST_MAX_BYTES, publicError, readJson, repositoryPath, repositoryRef, RETRY_GUIDANCE_MAX } from './domain';
 import type { DocMetadata, ProductDoc } from './docs';
 import { ISSUE_BODY_MAX, ISSUE_COMMENT_MAX, ISSUE_REQUEST_MAX_BYTES } from './issues';
 import { mutableSkillPath, SKILL_CONTENT_MAX_BYTES, SKILL_REQUEST_MAX_BYTES } from './skill-edit';
@@ -17,6 +17,7 @@ import { URL_IMPORT_LIMITS } from './url-import';
 import { rateLimitMessage, type RateLimited } from './rate-limits';
 import { DRAFT_GOAL_MAX, DRAFT_GOAL_MIN, MAX_MISSION_AGENTS } from '../shared/mission-draft';
 import { DEFAULT_MODEL } from './model-config';
+import { WORKSPACE_MISSION_LIMIT } from './capacity';
 
 export type McpApi = (request: Request) => Promise<Response>;
 export type McpLimiter = (kind: 'read' | 'write') => Promise<RateLimited | null>;
@@ -106,13 +107,20 @@ function missionSummary(mission: Mission) {
   };
 }
 
+const CHANGES_GUIDANCE = `Stored patches are capped in length, so a large change can end early. Each is returned detail_limit characters at a time: follow patch.nextOffset with detail_offset. To read a whole changed file, call gitflare_read_file with the change's readFile ref and path.`;
+
+function candidateRef(mission: Mission, runIds: string[]): string | undefined {
+  if (mission.mode === 'race') return mission.runs.find((run) => runIds.includes(run.id) && run.commitSha)?.commitSha ?? mission.candidateSha ?? undefined;
+  return mission.candidateSha ?? undefined;
+}
+
 function missionEvidence(mission: Mission, input: { view: 'summary' | 'context' | 'runs' | 'changes' | 'checks' | 'events' | 'reviews'; offset: number; limit: number; detail_offset: number; detail_limit: number }): Record<string, unknown> {
   if (input.view === 'summary') return missionSummary(mission);
   const detail = (value: string) => excerpt(value, input.detail_offset, input.detail_limit);
   const reference = { missionId: mission.id, status: mission.status, candidateSha: mission.candidateSha, baseSha: mission.baseSha, epoch: mission.epoch, view: input.view };
   if (input.view === 'context') return { ...reference, title: mission.title, prompt: detail(mission.prompt), acceptanceCriteria: mission.acceptanceCriteria ?? [], attachments: (mission.attachments ?? []).slice(input.offset, input.offset + input.limit).map((file) => ({ name: file.name, bytes: new TextEncoder().encode(file.content).length, content: detail(file.content) })), attachmentCount: mission.attachments?.length ?? 0, skillChange: mission.skillChange ? { ...mission.skillChange, content: detail(mission.skillChange.content) } : undefined };
-  const values: Record<string, unknown>[] = input.view === 'reviews' ? (mission.reviews ?? []).map(({ body, ...review }) => ({ ...review, outdated: isOutdatedReview(mission, review), body: detail(body) })) : input.view === 'changes' ? (mission.raceChanges ?? mission.changes).map(({ patch, ...change }) => ({ ...change, patch: detail(patch) })) : input.view === 'checks' ? (mission.raceChecks ?? mission.checks).map(({ output, ...check }) => ({ ...check, output: detail(output ?? '') })) : input.view === 'runs' ? mission.runs.map(({ task, assignment, summary, ...run }) => ({ ...run, task: detail(task), assignment: detail(assignment ?? ''), summary: detail(summary ?? '') })) : mission.events.map((event) => ({ ...event, message: detail(event.message) }));
-  return { ...reference, ...page(values, input.offset, input.limit) };
+  const values: Record<string, unknown>[] = input.view === 'reviews' ? (mission.reviews ?? []).map(({ body, ...review }) => ({ ...review, outdated: isOutdatedReview(mission, review), body: detail(body) })) : input.view === 'changes' ? (mission.raceChanges ?? mission.changes).map(({ patch, ...change }) => ({ ...change, patch: detail(patch), ...(candidateRef(mission, change.runIds) ? { readFile: { tool: 'gitflare_read_file', ref: candidateRef(mission, change.runIds), path: change.path } } : {}) })) : input.view === 'checks' ? (mission.raceChecks ?? mission.checks).map(({ output, ...check }) => ({ ...check, output: detail(output ?? '') })) : input.view === 'runs' ? mission.runs.map(({ task, assignment, summary, ...run }) => ({ ...run, task: detail(task), assignment: detail(assignment ?? ''), summary: detail(summary ?? '') })) : mission.events.map((event) => ({ ...event, message: detail(event.message) }));
+  return { ...reference, ...page(values, input.offset, input.limit), ...(input.view === 'changes' ? { patchGuidance: CHANGES_GUIDANCE } : {}) };
 }
 
 function result(value: Record<string, unknown>): CallToolResult {
@@ -122,6 +130,17 @@ function result(value: Record<string, unknown>): CallToolResult {
     return { content: [{ type: 'text', text: JSON.stringify(limited) }], structuredContent: limited };
   }
   return { content: [{ type: 'text', text: serialized }], structuredContent: value };
+}
+
+const MCP_FIELD_NAMES: Record<string, string> = { approveDependencies: 'approve_dependencies' };
+
+async function withMcpFieldNames<T>(operation: Promise<T>): Promise<T> {
+  try { return await operation; }
+  catch (error) {
+    if (!(error instanceof ApiError)) throw error;
+    const detail = Object.entries(MCP_FIELD_NAMES).reduce((text, [api, mcp]) => text.replaceAll(api, mcp), error.detail);
+    throw detail === error.detail ? error : new ApiError(error.status, error.code, detail);
+  }
 }
 
 async function guarded(operation: () => Promise<Record<string, unknown>>): Promise<CallToolResult> {
@@ -253,12 +272,12 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     return { workspace: workspace.name, mode: workspace.mode, integrations: workspace.integrations, ...page(workspace.repositories, input.offset, input.limit) };
   }));
   server.registerTool('gitflare_browse_repository', {
-    title: 'Browse repository source', description: 'List one directory at a branch, tag or commit. Returns the resolved commit SHA; pass it as ref to later reads so evidence stays consistent. Read-only.',
+    title: 'Browse repository source', description: 'List one directory at a branch, tag or commit, including a mission candidate commit (combined or race, even one held only in its fork) when you may read that mission. Returns the resolved commit SHA; pass it as ref to later reads so evidence stays consistent. Read-only.',
     inputSchema: z.object({ repository_id: repositoryId, ref: gitRef.default('main'), path: filePath.default(''), offset, limit: pageLimit }).strict(), annotations: readOnly,
   }, (input) => guarded(async () => {
     const query = new URLSearchParams({ ref: repositoryRef(input.ref), path: repositoryPath(input.path) });
     const tree = await call<RepositoryTree>(`/api/repositories/${input.repository_id}/tree?${query}`);
-    return { ref: tree.ref, commitSha: tree.commitSha, ...page(tree.entries, input.offset, input.limit) };
+    return { ref: tree.ref, commitSha: tree.commitSha, ...(tree.missionId ? { missionId: tree.missionId, source: tree.source } : {}), ...page(tree.entries, input.offset, input.limit) };
   }));
   server.registerTool('gitflare_list_repository_skills', {
     title: 'List repository skills', description: 'Find SKILL.md files under .agents/skills, .claude/skills, skills and docs/skills at one commit, with names, descriptions and paths. Read them with gitflare_read_file at the returned commitSha. Read-only; nothing is installed or run.',
@@ -277,12 +296,12 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     }, input => guarded(async () => missionSummary(await call<Mission>(`/api/repositories/${input.repository_id}/skills`, { action, path: input.path, content: input.content, baseSha: input.base_sha }, input.idempotency_key))));
   }
   server.registerTool('gitflare_read_file', {
-    title: 'Read a source file', description: 'Read a text file at a branch, tag or commit in pages of up to limit characters; follow nextOffset for more. Binary files and files over 512 KB are refused. Read-only.',
+    title: 'Read a source file', description: 'Read a text file at a branch, tag or commit in pages of up to limit characters; follow nextOffset for more. Mission candidate commits (combined or race, even fork-held) resolve when you may read that mission; use this for whole files the changes view truncates. Binary files and files over 512 KB are refused. Read-only.',
     inputSchema: z.object({ repository_id: repositoryId, ref: gitRef.default('main'), path: z.string().min(1).max(2000).describe('Path relative to the repository root.'), offset, limit: z.number().int().min(1).max(12_000).default(6000).describe('Characters to return.') }).strict(), annotations: readOnly,
   }, (input) => guarded(async () => {
     const query = new URLSearchParams({ ref: repositoryRef(input.ref), path: repositoryPath(input.path, false) });
     const file = await call<RepositoryFile>(`/api/repositories/${input.repository_id}/file?${query}`);
-    return { path: file.path, commitSha: file.commitSha, ...excerpt(file.content, input.offset, input.limit) };
+    return { path: file.path, commitSha: file.commitSha, ...(file.missionId ? { missionId: file.missionId, source: file.source } : {}), ...excerpt(file.content, input.offset, input.limit) };
   }));
   server.registerTool('gitflare_model_connections', {
     title: 'Inspect enabled model connections', description: 'List the models enabled in this workspace, the AI Gateway setup and the Workers AI catalog. A listed model is not proof that inference works. Provider keys are managed with gitflare_manage_ai_key or stored in AI Gateway. Read-only.',
@@ -392,12 +411,14 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
   }, (input) => guarded(async () => missionSummary(await call<Mission>('/api/missions', { repositoryId: input.repository_id, title: input.title, prompt: input.prompt, acceptanceCriteria: input.acceptance_criteria, tasks: input.tasks, ...(input.attachments ? { attachments: input.attachments } : {}), mode: input.mode, expectedBaseSha: input.expected_base_sha, ...(input.issue_number ? { issueNumber: input.issue_number } : {}) }, input.idempotency_key))));
   server.registerTool('gitflare_start_mission', {
     title: 'Start a mission or retry its failed agents',
-    description: 'Run a mission’s agents (billed). start reruns all. On a failed or cancelled attempt, retry_failed reruns agents without a verified candidate (plus run_ids) and reuses the rest if their commits and base are unchanged; drop_failed marks them skipped and combines the verified ones. WORKSPACE_MISSION_LIMIT means wait or cancel one. Then use gitflare_inspect_mission. Needs execute permission and write access.',
-    inputSchema: z.object({ mission_id: missionId, action: z.enum(['start', 'retry_failed', 'drop_failed']).default('start'), run_ids: z.array(identifier).min(1).max(MAX_MISSION_AGENTS).optional().describe('retry_failed only: also rerun these agents even if they have verified candidates.'), idempotency_key: requestKey }).strict(), annotations: external,
+    description: `Run agents (billed). start reruns all. After failure: retry_failed reruns failed or collided agents (collided ones start from merged peers) and reuses verified ones; drop_failed skips failed ones. In review: address_review sends open change requests to agents. guidance is appended to rerun tasks. A workspace runs ${WORKSPACE_MISSION_LIMIT} missions at once, 3 agents at a time each. Needs execute and write access.`,
+    inputSchema: z.object({ mission_id: missionId, action: z.enum(['start', 'retry_failed', 'drop_failed', 'address_review']).default('start'), run_ids: z.array(identifier).min(1).max(MAX_MISSION_AGENTS).optional().describe('retry_failed: also rerun these agents even if they have verified candidates. address_review: the agents that address the review.'), guidance: z.string().min(1).max(RETRY_GUIDANCE_MAX).optional().describe('retry_failed and address_review: extra instructions appended to the rerun agents’ task, for example exact dependency versions.'), idempotency_key: requestKey }).strict(), annotations: external,
   }, (input) => guarded(async () => {
-    if (input.run_ids && input.action !== 'retry_failed') throw new ApiError(400, 'INVALID_INPUT', 'run_ids applies only to retry_failed.');
-    const path = input.action === 'retry_failed' ? 'retry-agents' : input.action === 'drop_failed' ? 'drop-failed-agents' : 'start';
-    return missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${path}`, input.run_ids ? { runIds: input.run_ids } : {}, input.idempotency_key as string));
+    const targeted = input.action === 'retry_failed' || input.action === 'address_review';
+    if (input.run_ids && !targeted) throw new ApiError(400, 'INVALID_INPUT', 'run_ids applies only to retry_failed and address_review.');
+    if (input.guidance && !targeted) throw new ApiError(400, 'INVALID_INPUT', 'guidance applies only to retry_failed and address_review.');
+    const path = input.action === 'retry_failed' ? 'retry-agents' : input.action === 'address_review' ? 'address-review' : input.action === 'drop_failed' ? 'drop-failed-agents' : 'start';
+    return missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${path}`, { ...(input.run_ids ? { runIds: input.run_ids } : {}), ...(input.guidance ? { guidance: input.guidance } : {}) }, input.idempotency_key as string));
   }));
   server.registerTool('gitflare_cancel_mission', {
     title: 'Cancel a mission',
@@ -420,14 +441,14 @@ export function createGitflareMcpServer(api: McpApi, origin: string, access: Acc
     title: 'Approve an exact checked candidate',
     description: 'Approve the exact checked candidate and base SHAs of a mission. Requires passing checks and an unchanged base; does not land. Inspect diffs and checks first and act only on the user’s instruction. If dependencyChanges is not empty, only an Owner can approve, and approve_dependencies must be true after the user explicitly accepts those package changes. Needs review permission and land access.',
     inputSchema: z.object({ mission_id: missionId, candidate_sha: commit, base_sha: commit, approve_dependencies: z.boolean().optional().describe('Owner acknowledgement of the candidate’s dependencyChanges. Required when dependencyChanges is not empty.'), idempotency_key: requestKey }).strict(), annotations: mutation,
-  }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/approve`, { candidateSha: input.candidate_sha, baseSha: input.base_sha, ...(input.approve_dependencies !== undefined ? { approveDependencies: input.approve_dependencies } : {}) }, input.idempotency_key))));
+  }, (input) => guarded(async () => missionSummary(await withMcpFieldNames(call<Mission>(`/api/missions/${input.mission_id}/approve`, { candidateSha: input.candidate_sha, baseSha: input.base_sha, ...(input.approve_dependencies !== undefined ? { approveDependencies: input.approve_dependencies } : {}) }, input.idempotency_key)))));
   for (const action of ['integrate', 'revoke'] as const) {
     const name = action === 'revoke' ? 'gitflare_revoke_approval' : `gitflare_${action}_mission`;
     server.registerTool(name, {
       title: action === 'integrate' ? 'Integrate an approved candidate' : 'Revoke an exact approval',
       description: action === 'integrate' ? 'Land an approved candidate on the default branch through the protected integration path. Writes the canonical branch and is undone only by a revert; deploys only if deploy on land is enabled. Runs in the background: status integrating means still running; repeat calls never push twice. Needs the exact candidate and base SHAs, a current approval, land permission and land access.' : 'Withdraw approval for the exact candidate and base, returning the mission to review. Not possible while landing or after landing. Needs review permission and land access.',
       inputSchema: z.object({ mission_id: missionId, candidate_sha: commit, base_sha: commit, idempotency_key: requestKey }).strict(), annotations: destructive,
-    }, (input) => guarded(async () => missionSummary(await call<Mission>(`/api/missions/${input.mission_id}/${action}`, { candidateSha: input.candidate_sha, baseSha: input.base_sha }, input.idempotency_key))));
+    }, (input) => guarded(async () => missionSummary(await withMcpFieldNames(call<Mission>(`/api/missions/${input.mission_id}/${action}`, { candidateSha: input.candidate_sha, baseSha: input.base_sha }, input.idempotency_key)))));
   }
   server.registerTool('gitflare_preview_mission', {
     title: 'Open a checked candidate preview', description: 'Preview the current passing candidate in the background; status reads progress, host, access, expiresAt or the failure. Worker projects become a Cloudflare Worker Preview of the repository’s own Worker (access link: public to anyone with the link). Others run in a members-only container. Previews retire after the repository lifetime (default 15 min); extend adds one lifetime once (Owner or Maintainer, land access).',

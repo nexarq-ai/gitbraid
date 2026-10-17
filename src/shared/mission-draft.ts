@@ -5,7 +5,7 @@ export const DRAFT_GOAL_MAX = 4000;
 export const MISSION_PROMPT_MAX = 8000;
 export const MAX_MISSION_AGENTS = 10;
 
-export interface MissionDraftResult { title: string; acceptanceCriteria: string[]; tasks: AgentTask[] }
+export interface MissionDraftResult { title: string; acceptanceCriteria: string[]; tasks: AgentTask[]; warnings?: string[] }
 export interface DraftRequestState { repositoryId: string; goal: string }
 
 export function draftGoalProblem(goal: string): string | null {

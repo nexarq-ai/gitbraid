@@ -6,7 +6,7 @@ import type { DeployTarget } from './deployments';
 import { ENVIRONMENT_NAME, orderedEnvironments, PRODUCTION, type DeployEnvironment } from './deploy-environments';
 import { detectPackageManager, LOCKFILES, runnerFor, type PackageManager } from './package-manager';
 import { workersSubdomain } from './preview-access';
-import { subdomainValues } from './worker-provisioning';
+import { requiredDeployScopes, SCOPE_D1_WRITE, SCOPE_QUEUES_WRITE, SCOPE_R2_WRITE, subdomainValues } from './worker-provisioning';
 import { WORKER_CONFIG_FILES } from './worker-bundle';
 
 export const SCAN_ENTRY_LIMIT = 20_000;
@@ -26,7 +26,9 @@ export type ResourceStatus = 'exists' | 'create' | 'missing' | 'unknown';
 export type SetupWarningKind = 'inherited-route' | 'shared-resource' | 'production-service' | 'send-email';
 
 export interface RepositoryScan { commitSha: string; files: Map<string, string>; truncated: boolean }
-export interface DetectedResource { type: 'd1' | 'r2' | 'queue'; name: string; id?: string; binding?: string; status?: ResourceStatus }
+export interface DetectedResource { type: 'd1' | 'r2' | 'queue'; name: string; id?: string; binding?: string; status?: ResourceStatus; needsScope?: string }
+const CREATE_SCOPES: Record<DetectedResource['type'], string> = { d1: SCOPE_D1_WRITE, r2: SCOPE_R2_WRITE, queue: SCOPE_QUEUES_WRITE };
+const RESOURCE_KINDS: Record<DetectedResource['type'], string> = { d1: 'D1 database', r2: 'R2 bucket', queue: 'queue' };
 export interface DetectedTarget {
   workerName: string;
   configPath: string;
@@ -40,13 +42,15 @@ export interface DetectedTarget {
   routes: string[];
   customDomains: string[];
   workersDev: boolean;
+  requiredScopes: string[];
   exists?: boolean | null;
   urls?: string[];
 }
 export interface SetupWarning { id: string; kind: SetupWarningKind; environment: DeployEnvironment; configPath: string; message: string }
 export interface DetectedEnvironment { targets: DetectedTarget[]; warnings: SetupWarning[] }
 export interface DetectedConfig { path: string; workerName?: string; environments: DeployEnvironment[]; error?: string }
-export interface AccountFacts { connected: true; accountId: string; source: 'repository' | 'workspace'; subdomain: string | null; notes: string[] }
+export interface AccountFacts { connected: true; accountId: string; accountName?: string; source: 'repository' | 'workspace'; subdomain: string | null; scopes?: string[]; requiredScopes: string[]; missingScopes?: string[]; resourceBlockers?: string[]; notes: string[] }
+export interface ConnectionFacts { accountName?: string; scopes?: string[] }
 export interface DetectedSetup {
   commitSha: string;
   fingerprint: string;
@@ -340,14 +344,16 @@ export async function detectDeploySetup(scan: RepositoryScan, read: (path: strin
       else errors.push(`${config.path} needs a build (${config.buildReasons.join('; ')}), but ${config.packageDir === null ? 'no package.json was found above it' : `${config.packageDir ? `${config.packageDir}/` : ''}package.json has no "build" script`}.`);
     }
     const routes = routeInfo(effective);
+    const d1Migrations = hasMigrations(effective, config.directory, directories, files);
     const watchPaths = config.packageDir ? [...new Set([`${config.packageDir}/**`, ...(config.directory !== config.packageDir && config.directory ? [`${config.directory}/**`] : []), ...shared])] : [];
     return {
       workerName: name, configPath: config.path, packageDir: config.packageDir ?? config.directory,
       ...(buildCommand ? { buildCommand } : {}), buildReasons: config.buildReasons,
-      d1Migrations: hasMigrations(effective, config.directory, directories, files),
+      d1Migrations,
       watchPaths, dependsOn: dependencies(effective, name), resources: resources(effective),
       routes: routes.routes, customDomains: routes.customDomains,
       workersDev: workersDevEnabled(effective),
+      requiredScopes: requiredDeployScopes(effective, { d1Migrations, uploadOnly: false }),
     };
   };
 
@@ -405,7 +411,7 @@ export function workersDevUrl(worker: string, subdomain: string): string {
   return `https://${worker}.${subdomain}.workers.dev`;
 }
 
-export async function withAccountFacts(setup: DetectedSetup, call: CloudflareCall, accountId: string, source: 'repository' | 'workspace'): Promise<DetectedSetup> {
+export async function withAccountFacts(setup: DetectedSetup, call: CloudflareCall, accountId: string, source: 'repository' | 'workspace', connection: ConnectionFacts = {}): Promise<DetectedSetup> {
   const notes: string[] = [];
   let subdomain: string | null = null;
   try { subdomain = await workersSubdomain(call, accountId); }
@@ -434,12 +440,19 @@ export async function withAccountFacts(setup: DetectedSetup, call: CloudflareCal
       targets: await Promise.all(value.targets.map(async (target) => ({
         ...target,
         exists: workers ? workers.has(target.workerName) : null,
-        resources: await Promise.all(target.resources.map(async (resource) => ({ ...resource, status: await lookup(resource) }))),
+        resources: await Promise.all(target.resources.map(async (resource) => {
+          const found = await lookup(resource);
+          const scope = CREATE_SCOPES[resource.type];
+          return { ...resource, status: found, ...(found === 'create' && connection.scopes && !connection.scopes.includes(scope) ? { needsScope: scope } : {}) };
+        })),
         urls: [...(target.workersDev && subdomain ? [workersDevUrl(target.workerName, subdomain)] : []), ...target.customDomains.map((domain) => `https://${domain}`)],
       }))),
     };
   }
-  return { ...setup, environments, account: { connected: true, accountId, source, subdomain, notes } };
+  const requiredScopes = [...new Set(Object.values(setup.environments).flatMap((value) => value?.targets.flatMap((target) => target.requiredScopes) ?? []))];
+  const missingScopes = connection.scopes ? requiredScopes.filter((scope) => !connection.scopes!.includes(scope)) : undefined;
+  const resourceBlockers = Object.entries(environments).flatMap(([environment, value]) => value!.targets.flatMap((target) => target.resources.filter((resource) => resource.needsScope).map((resource) => `${environment}: ${target.workerName} would create ${RESOURCE_KINDS[resource.type]} ${resource.name}, which needs ${resource.needsScope} (not granted to this connection).`)));
+  return { ...setup, environments, account: { connected: true, accountId, ...(connection.accountName ? { accountName: connection.accountName } : {}), source, subdomain, ...(connection.scopes ? { scopes: connection.scopes } : {}), requiredScopes, ...(missingScopes ? { missingScopes } : {}), ...(resourceBlockers.length ? { resourceBlockers } : {}), notes } };
 }
 
 export function detectedTargets(environment: DetectedEnvironment): DeployTarget[] {
