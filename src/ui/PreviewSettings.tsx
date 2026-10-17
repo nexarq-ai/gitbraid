@@ -8,7 +8,8 @@ type AccessMode = "link" | "cloudflare-access";
 type Snapshot = {
   repositoryId: string;
   canChange: boolean;
-  settings: { lifetimeMinutes: number; access: AccessMode; accessEmailDomains: string[]; targetWorker?: string; updatedAt?: string };
+  settings: { lifetimeMinutes: number; access: AccessMode; accessEmailDomains: string[]; previewEmailRecipients: string[]; targetWorker?: string; updatedAt?: string };
+  email: { recipients: string[]; blocked: boolean; description: string };
   lifetime: { minutes: number; choices: number[]; maxMinutes: number };
   target: { workerName: string; configPath?: string; accountId?: string; connection?: "repository" | "workspace"; connectionCanPreview: boolean } | null;
   access: { description: string; containerDescription: string; cloudflareAccess: { available: boolean; reason?: string } };
@@ -26,6 +27,7 @@ export default function PreviewSettings({ repositoryId, onNotify }: { repository
   const [access, setAccess] = useState<AccessMode>("link");
   const [domains, setDomains] = useState("");
   const [targetWorker, setTargetWorker] = useState("");
+  const [recipients, setRecipients] = useState("");
   const [loadError, setLoadError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -38,6 +40,7 @@ export default function PreviewSettings({ repositoryId, onNotify }: { repository
     setAccess(current.settings.access);
     setDomains(domainsText(current.settings.accessEmailDomains));
     setTargetWorker(current.settings.targetWorker ?? "");
+    setRecipients(domainsText(current.settings.previewEmailRecipients));
   }
 
   useEffect(() => {
@@ -51,7 +54,7 @@ export default function PreviewSettings({ repositoryId, onNotify }: { repository
 
   async function save() {
     if (busy || !snapshot) return;
-    const body = { lifetimeMinutes: lifetime, access, accessEmailDomains: parseDomains(domains), targetWorker: targetWorker.trim() };
+    const body = { lifetimeMinutes: lifetime, access, accessEmailDomains: parseDomains(domains), previewEmailRecipients: parseDomains(recipients), targetWorker: targetWorker.trim() };
     const signature = JSON.stringify(body);
     if (mutation.current?.signature !== signature) mutation.current = { signature, key: crypto.randomUUID() };
     setBusy(true);
@@ -108,6 +111,14 @@ export default function PreviewSettings({ repositoryId, onNotify }: { repository
           )}
         </fieldset>
         <p className="branch-rule-note">{snapshot.access.description} {snapshot.access.containerDescription}</p>
+        <fieldset className="check-settings-fields" disabled={!canChange || busy}>
+          <div className="form-field">
+            <label htmlFor="preview-email-recipients">Preview email recipients <span className="proposal-optional">(one address per line, at most 50)</span></label>
+            <textarea id="preview-email-recipients" rows={3} value={recipients} placeholder="person@example.com" onChange={(event) => setRecipients(event.target.value)} />
+            <small>Preview email goes only to these addresses; leave empty to block all preview email. Exact addresses only: Cloudflare cannot restrict send_email to a domain such as @example.com. Staging and production deploys are unaffected.</small>
+            <small>{snapshot.email.blocked ? "Preview email is blocked now: sends from a preview fail." : `Previews may email ${snapshot.email.recipients.length} address${snapshot.email.recipients.length === 1 ? "" : "es"}.`}</small>
+          </div>
+        </fieldset>
         {error && <div className="error-notice" role="alert">{error}</div>}
         {canChange && <div className="branch-rule-actions"><Button variant="primary" size="base" loading={busy} disabled={busy} onClick={() => void save()}>Save preview settings</Button></div>}
       </div>

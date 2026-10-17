@@ -313,6 +313,7 @@ export async function preparePreview(env: AppEnv, params: PreviewParams, step: S
             ...(uploadAssets ? { uploadAssets: () => uploadAssets(previewCall, previews.accountId, previews.workerName) } : {}),
             ...(d1 ? { d1 } : {}),
             inheritBaseConfig: host.kind === 'connection',
+            emailRecipients: settings.previewEmailRecipients,
           });
         },
       });

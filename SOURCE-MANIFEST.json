@@ -380,8 +380,8 @@
     },
     {
       "path": "src/ui/PreviewSettings.tsx",
-      "size": 7929,
-      "sha256": "6e19e3d728e8d852e4040411d2fe0295ec8ca1b603abdef26cded6ea4bab38c9"
+      "size": 9194,
+      "sha256": "17e98e6d49fee1ea81b5da4709463a70a86d7c6c277c509ee5af12d0f55e24c3"
     },
     {
       "path": "src/ui/proposal-create.css",
@@ -505,8 +505,8 @@
     },
     {
       "path": "src/worker/background-work.ts",
-      "size": 25758,
-      "sha256": "bdb04b002000a65d6b0578a4c4497e54d8ad1eacad10468f91ddb47bdf829f5b"
+      "size": 25820,
+      "sha256": "dd364dc1649c0c8c03435104427194193d541e1c538db1f519ae052110ad20ec"
     },
     {
       "path": "src/worker/branch-protection.ts",
@@ -665,8 +665,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 86369,
-      "sha256": "d74e041dd0921a094a0e158702db85b29c4916356ff3e13e99a4957951468e73"
+      "size": 86714,
+      "sha256": "d29256c8b0f54e185bcd7eb30a9c5bb40a2a8a57560de325d4e3687e388002e8"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -740,13 +740,13 @@
     },
     {
       "path": "src/worker/preview-settings-api.ts",
-      "size": 8379,
-      "sha256": "2a2db604eb197a6cb8fc1ad36bea05171f353c57cddde18af9417d2898a20203"
+      "size": 9126,
+      "sha256": "98f6bea8d712f95a792a9b5c73aaea84e11a1a5d6be7c3ca4d9bb2590d7a7fea"
     },
     {
       "path": "src/worker/preview-settings.ts",
-      "size": 4686,
-      "sha256": "a74823ef4f791270ac893680acc9f914875777d7c9371b6e18f2020dcd2a6ceb"
+      "size": 6353,
+      "sha256": "7d1f94e18da4aaffdc9dcbec5bd11d604de710df8d0e8906d0879fd6d633a2f6"
     },
     {
       "path": "src/worker/proposal-review.ts",
@@ -815,13 +815,13 @@
     },
     {
       "path": "src/worker/worker-bundle.ts",
-      "size": 31120,
-      "sha256": "21be9c0678b719bab2b566c33791d36eb4bc75e6f2ef46879e4924474513652f"
+      "size": 33595,
+      "sha256": "ca903210dcb11ec5c17e4151312673391bfec21e1d5afc40ede02bf15bd1947f"
     },
     {
       "path": "src/worker/worker-previews.ts",
-      "size": 11839,
-      "sha256": "9d4022aea964f3286795c2f73fc87801b502f15983fdcab431e32599a574d7c3"
+      "size": 11890,
+      "sha256": "5071d97b3d97a4d3d84e0ec6a04462d52025b03c0ab43ba937790c761146d9a2"
     },
     {
       "path": "src/worker/worker-provisioning.ts",

@@ -16,6 +16,8 @@ export const PREVIEW_ACCESS_DESCRIPTIONS = {
   container: 'Container previews on Gitflare’s preview origin always need a capability link issued to a signed-in workspace member.',
 } as const;
 
+export const PREVIEW_EMAIL_DESCRIPTION = 'Preview email goes only to these addresses; leave empty to block all preview email. Every send_email binding a Worker Preview gets is restricted to them, and container previews have no outbound email at all. Cloudflare restricts send_email by exact address, so domains such as @example.com cannot be listed. Staging and production deploys are unaffected.';
+
 export interface PreviewSettingsStore {
   getPreviewSettings(): PreviewSettings | Promise<PreviewSettings>;
   setPreviewSettings(key: string, settings: Omit<PreviewSettings, 'updatedAt' | 'updatedBy'>, actorId: string): PreviewSettings | Promise<PreviewSettings>;
@@ -50,6 +52,7 @@ export async function previewSettingsSnapshot(env: AppEnv, repositoryId: string,
   const scope = accessScopeState(env, connection?.scopes ?? null);
   return {
     repositoryId, settings, canChange,
+    email: { recipients: settings.previewEmailRecipients, blocked: !settings.previewEmailRecipients.length, description: PREVIEW_EMAIL_DESCRIPTION },
     lifetime: { minutes: effectiveLifetimeMinutes(settings, env), choices: lifetimeChoices(env), maxMinutes: previewMaxLifetimeMinutes(env), extendOnce: true },
     target: target ? { workerName: target.workerName, ...(target.configPath ? { configPath: target.configPath } : {}), ...(connection ? { accountId: connection.accountId, connection: connection.source } : {}), connectionCanPreview: !!connection?.scopes.includes(WORKERS_SCRIPTS_EDIT_SCOPE) } : null,
     access: {
@@ -77,6 +80,7 @@ export async function changePreviewSettings(env: AppEnv, repositoryId: string, k
   }
   const saved = await deps.store.setPreviewSettings(key, next, actorId);
   await deps.audit(`repository.preview-settings.lifetime-${next.lifetimeMinutes}m.access-${next.access}`);
+  if (current.previewEmailRecipients.join('\n') !== next.previewEmailRecipients.join('\n')) await deps.audit(`repository.preview-settings.email-recipients-${next.previewEmailRecipients.length}`);
   return { settings: saved, ...(accessApp ? { accessApp } : {}) };
 }
 
@@ -111,7 +115,7 @@ export async function handlePreviewSettings(request: Request, env: AppEnv, princ
   }
   if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use GET or POST for preview settings.');
   assertMutationOrigin(request);
-  const key = requireIdempotencyKey(request), body = await readJson(request, 8192);
+  const key = requireIdempotencyKey(request), body = await readJson(request, 16384);
   await security.authorize(principal, 'manage', 'repository', repositoryId);
   const changed = await changePreviewSettings(env, repositoryId, key, body, principal.userId, deps);
   return Response.json({ ...await previewSettingsSnapshot(env, repositoryId, deps, true), ...(changed.accessApp ? { accessApp: changed.accessApp } : {}) });

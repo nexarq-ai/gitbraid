@@ -10,12 +10,14 @@ const SENTINEL = 'GITFLARE_WORKER_BUNDLE ';
 export interface WorkerModule { name: string; contentType: string; content: Uint8Array<ArrayBuffer> }
 export interface BindingRef { name: string; type: string }
 export interface DurableObjectBinding { name: string; class_name: string; script_name?: string }
+export interface SendEmailSource { name: string; allowedSenderAddresses?: string[] }
 export interface D1DatabaseSource { binding: string; databaseId?: string; databaseName?: string; migrationsDir: string | null; migrationsDirSet: boolean; migrationsTable?: string; migrationsPattern?: boolean }
 export interface WorkerBindingSource {
   vars: Record<string, unknown>;
   durableObjects: DurableObjectBinding[];
   bindings: BindingRef[];
   d1Databases?: D1DatabaseSource[];
+  sendEmail?: SendEmailSource[];
 }
 export interface MigrationStep { tag: string; new_classes?: string[]; new_sqlite_classes?: string[]; renamed_classes?: { from: string; to: string }[]; deleted_classes?: string[] }
 export interface ResolvedWorkerConfig {
@@ -189,7 +191,11 @@ const source = (block) => {
     ...(typeof item.migrations_table === 'string' ? { migrationsTable: item.migrations_table } : {}),
     ...(item.migrations_pattern !== undefined ? { migrationsPattern: true } : {}),
   }));
-  return { vars: block.vars ?? {}, durableObjects, bindings, d1Databases };
+  const sendEmail = (Array.isArray(block.send_email) ? block.send_email : []).filter((item) => typeof item?.name === 'string').map((item) => ({
+    name: item.name,
+    ...(Array.isArray(item.allowed_sender_addresses) ? { allowedSenderAddresses: item.allowed_sender_addresses.filter((address) => typeof address === 'string') } : {}),
+  }));
+  return { vars: block.vars ?? {}, durableObjects, bindings, d1Databases, sendEmail };
 };
 const output = {
   configPath,
@@ -258,7 +264,11 @@ function bindingSource(value: unknown): WorkerBindingSource | null {
     ...(typeof item.migrationsTable === 'string' ? { migrationsTable: item.migrationsTable } : {}),
     ...(item.migrationsPattern === true ? { migrationsPattern: true } : {}),
   })) : [];
-  return { vars: Object.fromEntries(Object.entries(vars).filter(([name]) => bindingName.test(name))), durableObjects, bindings, ...(d1Databases.length ? { d1Databases } : {}) };
+  const sendEmail = Array.isArray(value.sendEmail) ? value.sendEmail.filter((item): item is SendEmailSource => record(item) && typeof item.name === 'string' && bindingName.test(item.name)).map((item) => ({
+    name: item.name,
+    ...(Array.isArray(item.allowedSenderAddresses) ? { allowedSenderAddresses: strings(item.allowedSenderAddresses).filter((address) => address.length <= 254).slice(0, 50) } : {}),
+  })) : [];
+  return { vars: Object.fromEntries(Object.entries(vars).filter(([name]) => bindingName.test(name))), durableObjects, bindings, ...(d1Databases.length ? { d1Databases } : {}), ...(sendEmail.length ? { sendEmail } : {}) };
 }
 
 export function parseWorkerConfig(stdout: string): ResolvedWorkerConfig | null {
@@ -357,7 +367,7 @@ export async function buildWorkerBundle(sandbox: BundleSandbox, config: Resolved
   return parseWorkerBundle(output.stdout, config);
 }
 
-export type PreviewBinding = { type: 'plain_text'; text: string } | { type: 'json'; json: unknown } | { type: 'durable_object_namespace'; class_name: string } | { type: 'assets' } | { type: 'd1'; database_id: string; database_name: string };
+export type PreviewBinding = { type: 'plain_text'; text: string } | { type: 'json'; json: unknown } | { type: 'durable_object_namespace'; class_name: string } | { type: 'assets' } | { type: 'd1'; database_id: string; database_name: string } | { type: 'send_email'; allowed_destination_addresses: string[]; allowed_sender_addresses?: string[] };
 export interface PreviewD1Database { binding: string; databaseName: string; databaseId: string; migrationsApplied: number }
 export interface PreviewBindingPlan { env: Record<string, PreviewBinding>; notes: string[] }
 
@@ -379,7 +389,17 @@ export function missingPreviewDatabaseNote(binding: string): string {
 export type PreviewBaseBindings = Record<string, { type?: string }>;
 export const NO_PREVIEW_CONFIG_NOTE = 'This Worker has no preview base configuration and the app has no previews block, so only vars and its own Durable Objects reach the Preview. Add preview bindings in the Worker’s Previews settings in the Cloudflare dashboard, or a previews block in wrangler.jsonc.';
 
-export function hostedPreviewBindings(config: ResolvedWorkerConfig, d1: PreviewD1Database[] = [], base: PreviewBaseBindings | null = null): PreviewBindingPlan {
+export const BLOCKED_PREVIEW_EMAIL_ADDRESS = 'preview-email-blocked@gitflare.invalid';
+
+export function blockedPreviewEmailNote(name: string): string {
+  return `Email ${name} (send_email) is blocked in this preview: it may only send to ${BLOCKED_PREVIEW_EMAIL_ADDRESS}, which cannot receive mail, so every send fails. An Owner can add allowed recipients in Preview settings.`;
+}
+
+function previewEmailBinding(recipients: string[], senders?: string[]): PreviewBinding {
+  return { type: 'send_email', allowed_destination_addresses: recipients.length ? [...recipients] : [BLOCKED_PREVIEW_EMAIL_ADDRESS], ...(senders?.length ? { allowed_sender_addresses: senders } : {}) };
+}
+
+export function hostedPreviewBindings(config: ResolvedWorkerConfig, d1: PreviewD1Database[] = [], base: PreviewBaseBindings | null = null, emailRecipients: string[] = []): PreviewBindingPlan {
   const fromPreviews = !!config.previews;
   const source = config.previews ?? config.production;
   const baseNames = new Set(Object.keys(base ?? {}));
@@ -399,6 +419,10 @@ export function hostedPreviewBindings(config: ResolvedWorkerConfig, d1: PreviewD
     else env[binding.name] = { type: 'durable_object_namespace', class_name: binding.class_name };
   }
   for (const binding of source.bindings) {
+    if (binding.type === 'send_email' && base !== null) {
+      env[binding.name] = previewEmailBinding(emailRecipients, source.sendEmail?.find((item) => item.name === binding.name)?.allowedSenderAddresses);
+      continue;
+    }
     if (baseNames.has(binding.name) && !(fromPreviews && binding.type === 'd1' && d1.some((item) => item.binding === binding.name))) continue;
     if (binding.type !== 'd1') { notes.push(`Binding ${binding.name} (${binding.type}) is not available in hosted previews.`); continue; }
     const database = d1.find((item) => item.binding === binding.name);
@@ -412,7 +436,13 @@ export function hostedPreviewBindings(config: ResolvedWorkerConfig, d1: PreviewD
   }
   const assetsBinding = config.assets && record(config.deploy?.assets) ? config.deploy.assets.binding : undefined;
   if (typeof assetsBinding === 'string' && bindingName.test(assetsBinding)) env[assetsBinding] = { type: 'assets' };
-  for (const [name, binding] of Object.entries(base ?? {})) notes.push(env[name] ? `Binding ${name} from the Worker’s preview settings is overridden by the previews block.` : `Binding ${name} (${binding.type ?? 'binding'}) from the Worker’s preview settings.`);
+  for (const [name, binding] of Object.entries(base ?? {})) {
+    if (binding.type === 'send_email') {
+      env[name] ??= previewEmailBinding(emailRecipients);
+      notes.push(`Binding ${name} (send_email) from the Worker’s preview settings is replaced by one restricted to the preview email recipients.`);
+    } else notes.push(env[name] ? `Binding ${name} from the Worker’s preview settings is overridden by the previews block.` : `Binding ${name} (${binding.type ?? 'binding'}) from the Worker’s preview settings.`);
+  }
+  for (const [name, binding] of Object.entries(env)) if (binding.type === 'send_email') notes.push(emailRecipients.length ? `Email ${name} (send_email) is restricted to ${emailRecipients.join(', ')}.` : blockedPreviewEmailNote(name));
   if (base !== null && !baseNames.size && !fromPreviews) notes.push(NO_PREVIEW_CONFIG_NOTE);
   if (config.containers.length) notes.push('Containers are not available in hosted previews.');
   return { env, notes };

@@ -97,7 +97,7 @@ export function previewDeploymentForm(bundle: WorkerBundle, metadata: Record<str
   return form;
 }
 
-export interface UpsertPreviewInput { alias: string; bundle: WorkerBundle; annotations?: Record<string, string>; uploadAssets?: () => Promise<PreviewAssets>; d1?: PreviewD1Database[]; inheritBaseConfig?: boolean }
+export interface UpsertPreviewInput { alias: string; bundle: WorkerBundle; annotations?: Record<string, string>; uploadAssets?: () => Promise<PreviewAssets>; d1?: PreviewD1Database[]; inheritBaseConfig?: boolean; emailRecipients?: string[] }
 
 export async function getPreviewBaseConfig(config: WorkerPreviewsConfig, fetcher: Fetcher = (request) => fetch(request)): Promise<PreviewBaseBindings> {
   const worker = await call<{ previews_base_config?: { env?: unknown } }>(config, fetcher, '');
@@ -120,7 +120,7 @@ export async function upsertWorkerPreview(config: WorkerPreviewsConfig, input: U
     try { latest = await call<PreviewDeployment>(config, fetcher, `/previews/${encodeURIComponent(preview.id)}/deployments/latest`); }
     catch (error) { if (!notFound(error)) throw error; }
   }
-  const plan = hostedPreviewBindings(input.bundle.config, input.d1, base);
+  const plan = hostedPreviewBindings(input.bundle.config, input.d1, base, input.emailRecipients);
   const migrations = previewMigrations(input.bundle.config, latest?.migration_tag);
   const exported = previewExports(input.bundle.config);
   const assets = input.uploadAssets ? previewAssetsMetadata(await input.uploadAssets()) : null;
