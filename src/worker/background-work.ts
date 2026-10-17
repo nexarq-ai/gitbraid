@@ -21,6 +21,8 @@ import { ensurePreviewAccess } from './preview-access';
 import { previewAccessIncludes } from './preview-settings-api';
 import { POLICY_FILE } from './repository-policy';
 import type { ProjectSnapshot } from './cloudflare-projects';
+import { declaresRoutes, detectDeploySetup, environmentBlock, parseWranglerConfig, scanRepository, withAccountFacts, type DetectedSetup } from './deploy-detect';
+import type { Repository } from '../shared/types';
 
 export interface LandingParams { kind: 'land'; repositoryId: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimId: string; principal: Principal }
 export interface PreviewParams { kind: 'preview'; repositoryId: string; missionId: string; epoch: number; candidateSha: string; claimId: string; principal: Principal }
@@ -184,6 +186,26 @@ export async function retirePreview(env: AppEnv, params: PreviewRetireParams, st
   });
 }
 
+const DETECT_FILE_MAX_BYTES = 262_144;
+
+async function readText(source: { readFile(args: { ref: string; path: string }): Promise<Blob | null> }, ref: string, path: string): Promise<string | null> {
+  const file = await source.readFile({ ref, path });
+  if (!file || file.size > DETECT_FILE_MAX_BYTES) return null;
+  return file.text();
+}
+
+export async function detectRepositorySetup(env: AppEnv, principal: Principal, repository: Repository): Promise<DetectedSetup> {
+  if (!env.ARTIFACTS || repository.provider !== 'artifacts') throw new ApiError(409, 'REPOSITORY_NOT_CONNECTED', 'Deploy setup is detected from a connected Artifacts repository.');
+  const head = await repositoryHead(env.ARTIFACTS, repository.name, repository.defaultBranch);
+  if (!head) throw new ApiError(409, 'EMPTY_REPOSITORY', 'Push an initial commit before detecting the deploy setup.');
+  using source = await env.ARTIFACTS.get(repository.name);
+  const setup = await detectDeploySetup(await scanRepository(source, head), (path) => readText(source, head, path));
+  let access: CloudflareDeployAccess;
+  try { access = await connectionAccess(env, principal, repository.id); }
+  catch (error) { return { ...setup, account: { connected: false, reason: error instanceof ApiError ? error.detail : 'Connect Cloudflare for this repository or workspace first.' } }; }
+  return withAccountFacts(setup, cloudflareDeployClient(access).call, access.accountId, access.source);
+}
+
 async function policyBase(env: AppEnv, repositoryName: string, record: DeploymentRecord): Promise<string | null> {
   if (record.baseSha) return record.baseSha;
   if (!env.ARTIFACTS || !record.commitSha) return null;
@@ -216,6 +238,13 @@ export async function deployLandedWorker(env: AppEnv, params: DeployParams, step
     mappedWorkers: async (principal, repositoryId) => {
       const { mapping } = await access.projectStore(principal, repositoryId, 'get') as ProjectSnapshot;
       return mapping ? { accountId: mapping.accountId, workers: (mapping.resources ?? []).filter((resource) => resource.type === 'worker').map((resource) => resource.id) } : null;
+    },
+    declaresRoutes: async (repository, record, target) => {
+      if (!env.ARTIFACTS || !record.commitSha || !target.configPath) return false;
+      using source = await env.ARTIFACTS.get(repository.name);
+      const content = await readText(source, record.commitSha, target.configPath);
+      if (content === null) return false;
+      try { return declaresRoutes(environmentBlock(parseWranglerConfig(target.configPath, content), record.environment)); } catch { return false; }
     },
   });
   await step.do('promote to production', { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '2 minutes' }, async () => {

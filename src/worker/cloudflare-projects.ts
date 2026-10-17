@@ -19,7 +19,7 @@ export interface MigrationPlan {
   id: string; repositoryId: string; workspaceId: string; accountId: string; mappingVersion: string; databaseId: string; commitSha: string; path: string; checksum: string; createdAt: string; status: 'pending' | 'executing' | 'succeeded' | 'failed' | 'unknown'; error?: string;
 }
 export type ProjectOperation = 'get' | 'map' | 'usage' | 'migration-plan' | 'migration-execute' | 'build-trigger';
-export type ProjectStoreOperation = 'get' | 'set' | 'plan' | 'consume' | 'finish';
+export type ProjectStoreOperation = 'get' | 'set' | 'link' | 'plan' | 'consume' | 'finish';
 export interface ProjectSnapshot { mapping: ProjectMapping | null; plans: MigrationPlan[] }
 export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string!, $scriptName: string!, $start: Time!, $end: Time!) { viewer { accounts(filter: {accountTag: $accountTag}) { workersInvocationsAdaptive(limit: 100, filter: {scriptName: $scriptName, datetime_geq: $start, datetime_leq: $end}) { dimensions {scriptName} sum {requests errors} quantiles {cpuTimeP50 cpuTimeP99} } } } }';
 export const D1_USAGE_QUERY = 'query GitflareD1Usage($accountTag: string!, $databaseId: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {databaseId: $databaseId, date_geq: $start, date_leq: $end}, orderBy: [date_DESC]) { dimensions {date databaseId} sum {readQueries writeQueries rowsRead rowsWritten} } } } }';

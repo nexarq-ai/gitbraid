@@ -154,3 +154,10 @@
 .cf-target textarea { padding: 8px 10px; border: 1px solid #d7dce2; border-radius: 5px; font: 12px ui-monospace, monospace; width: 100%; }
 .cf-environment-settings summary { cursor: pointer; font-size: 13px; font-weight: 600; margin-bottom: 12px; }
 @media (max-width: 800px) { .cf-environments { grid-template-columns: 1fr; } }
+.cf-detected { border: 1px solid #dfe3e8; border-radius: 6px; padding: 14px 16px; margin-bottom: 18px; }
+.cf-detected h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; color: #252b32; }
+.cf-detected h4 { font-size: 13px; font-weight: 600; margin: 0 0 4px; color: #252b32; }
+.cf-detected .cf-target-runs { gap: 10px; margin: 10px 0; padding-left: 18px; list-style: decimal; font-size: 13px; }
+.cf-detected code { overflow-wrap: anywhere; }
+label.cf-warning { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; padding: 8px 10px; border-radius: 5px; background: #fff7e6; color: #7a4b00; font-size: 12px; }
+@media (prefers-color-scheme: dark) { label.cf-warning { background: #3a2c10; color: #f3d28b; } }

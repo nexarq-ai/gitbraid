@@ -972,7 +972,7 @@ export class WorkspaceStore {
       return operation === 'delete' ? existing : { ok: true };
     });
   }
-  async projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}): Promise<unknown> {
+  async projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'link' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}): Promise<unknown> {
     const context = await this.prepare(p);
     return this.change(change => {
       this.validate(p, context);
@@ -986,6 +986,21 @@ export class WorkspaceStore {
         if (mapping.workspaceId !== p.workspaceId || mapping.repositoryId !== repositoryId) fail();
         current.mapping = normalizeProjectMapping(mapping);
         current.plans = current.plans.map(plan => plan.status === 'pending' ? { ...plan, status: 'failed' as const, error: 'Project resources changed. Create a new plan.' } : plan);
+      } else if (operation === 'link') {
+        if (p.role !== 'Owner' && p.role !== 'Deployer') fail();
+        const accountId = body.accountId;
+        const workers = body.workers;
+        if (typeof accountId !== 'string' || !/^[a-f0-9]{32}$/.test(accountId) || !Array.isArray(workers) || !workers.length || workers.length > 20) throw new ApiError(400, 'INVALID_PROJECT_MAPPING', 'Choose the detected Workers and the connected account.');
+        const existing = current.mapping;
+        if (existing && existing.accountId !== accountId) throw new ApiError(409, 'PROJECT_ACCOUNT_CHANGED', 'The project resources are linked to a different Cloudflare account. An Owner must relink them first.');
+        const resources = [...(existing?.resources ?? [])];
+        for (const worker of workers as { id?: unknown; environment?: unknown }[]) {
+          if (typeof worker?.id !== 'string' || !/^[a-zA-Z0-9_-]{1,63}$/.test(worker.id) || typeof worker.environment !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(worker.environment)) throw new ApiError(400, 'INVALID_PROJECT_MAPPING', 'Choose valid Worker names and environments.');
+          if (!this.authorityAllows(p, 'deploy', 'environment', worker.id)) fail();
+          if (!resources.some(resource => resource.type === 'worker' && resource.id === worker.id)) resources.push({ type: 'worker', id: worker.id, name: worker.id, environment: worker.environment });
+        }
+        if (resources.length > 100) throw new ApiError(400, 'INVALID_PROJECT_MAPPING', 'Choose at most 100 resources.');
+        current.mapping = normalizeProjectMapping({ repositoryId, workspaceId: p.workspaceId, accountId, version: existing?.version ?? crypto.randomUUID(), resources, updatedAt: new Date().toISOString() });
       } else {
         const mapping = current.mapping;
         if (!mapping) fail();
@@ -1141,7 +1156,7 @@ export class SecurityService {
     const previous = value ? await this.identity().installationCredential('put', value) : await this.identity().installationCredential('delete');
     if (value || previous) await this.shard(p.workspaceId).audit([{ actorId: p.userId, action: value ? 'installation.cloudflare_credential.set' : 'installation.cloudflare_credential.removed', resourceId: (value ?? previous as InstallationCredentialRecord).accountId }]);
   }
-  projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}): Promise<unknown> { return this.shard(p.workspaceId).projectStore(p, repositoryId, operation, body); }
+  projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'link' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}): Promise<unknown> { return this.shard(p.workspaceId).projectStore(p, repositoryId, operation, body); }
   async rateLimit(key: string, max = 15, windowMs = 900000): Promise<void> {
     if (!await this.identity().rateLimit(key, max, windowMs)) throw new ApiError(429, 'RATE_LIMITED', 'Too many authentication attempts. Try again in 15 minutes.');
   }
@@ -1421,7 +1436,7 @@ export class GitflareSecurity extends DurableObject<AppEnv> {
   shardCall(workspaceId: string, op: string, args: unknown[]) { return this.service.shardCall(workspaceId, op, args); }
   async alarm() { try { await this.service.alarm(); } catch (error) { await this.ctx.storage.setAlarm(Date.now() + 60_000); throw error; } }
   connectionStore(p: Principal | null, operation: 'get' | 'put' | 'delete' | 'state-put' | 'state-consume', body: Record<string, unknown> = {}) { return this.service.connectionStore(p, operation, body); }
-  projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}) { return this.service.projectStore(p, repositoryId, operation, body); }
+  projectStore(p: Principal, repositoryId: string, operation: 'get' | 'set' | 'link' | 'plan' | 'consume' | 'finish', body: Record<string, unknown> = {}) { return this.service.projectStore(p, repositoryId, operation, body); }
   authConfig() { return this.service.authConfig(); }
   startSetup(body: Record<string, unknown>) { return this.service.startSetup(body); }
   verifyMfa(body: Record<string, unknown>, setupOnly?: boolean) { return this.service.verifyMfa(body, setupOnly); }
