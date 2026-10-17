@@ -6,17 +6,19 @@ const TOKEN_ROUTES: Record<string, (fragment: string) => string> = {
   "reset-password": (fragment) => `reset-password/${fragment}`,
 };
 const ROUTE_ALIASES: [RegExp, string][] = [
+  [/^login$/, "signin"],
   [/^(repository\/[^/]+)\/streams$/, "$1/settings/branches"],
   [/^(repository\/[^/]+)\/checkpoints(\/|$)/, "$1/releases$2"],
 ];
-const SERVER_PATH = /^\/(api|mcp|oauth|\.well-known|llms\.txt|privacy|terms|connectors|assets|social|git|source\/gitflare\.git)(\/|$)|\.[a-z0-9]+$/i;
+const SERVER_PATH = /^\/(api|mcp|oauth|\.well-known|llms\.txt|assets|social|git|source\/gitflare\.git)(\/|$)|\.[a-z0-9]+$/i;
 
 function trimSlashes(path: string): string {
   return path.replace(/^\/+|\/+$/g, "");
 }
 
 export function routeFromLocation(pathname: string, hash: string): string {
-  const path = trimSlashes(decodeURIComponent(pathname));
+  let path: string;
+  try { path = trimSlashes(decodeURIComponent(pathname)); } catch { return "not-found"; }
   const fragment = hash.slice(1);
   if (!path) return fragment || "home";
   const tokenRoute = TOKEN_ROUTES[path];
@@ -83,4 +85,22 @@ export function onRouteChange(listener: () => void): () => void {
     window.removeEventListener("hashchange", legacy);
     document.removeEventListener("click", click);
   };
+}
+
+export const PUBLIC_DOC_IDS = ["overview", "install", "admin", "repositories", "mcp", "agents"];
+export const POLICY_ROUTES = ["terms", "privacy", "acceptable-use", "cookies", "security", "support"];
+export const PUBLIC_PRODUCT_ROUTES = ["product", "ai-clients", "open-source", "repositories", "connectors", "connect"];
+
+export function isPublicDocumentationRoute(route: string): boolean {
+  return route === "docs" || PUBLIC_DOC_IDS.some(id => route === `docs/${id}`);
+}
+
+export function isKnownAppRoute(route: string): boolean {
+  return ["home", "signin", "signup", "source/gitflare", "deploy", "overview", "missions", "activity", "access", "proposals/new", ...POLICY_ROUTES, ...PUBLIC_PRODUCT_ROUTES].includes(route)
+    || /^settings(?:\/(?:models|cloudflare))?$/.test(route)
+    || /^docs(?:\/[^/]+)?$/.test(route)
+    || /^mission\/[^/]+(?:\/(?:overview|changes|checks|discussion|activity|attempts)|\/agents(?:\/[^/]+)?)?$/.test(route)
+    || /^repository\/[^/]+(?:\/(?:code|overview|agents|checks|skills|cloudflare|import)|\/settings\/branches|\/(?:pulls|proposals)(?:\/new)?|\/(?:issues|releases)(?:\/[^/]+)?)?$/.test(route)
+    || /^(?:forgot-password|reset-password|verify-email)(?:\/[^/]+)?$/.test(route)
+    || route === "invite" || route.startsWith("invite?");
 }

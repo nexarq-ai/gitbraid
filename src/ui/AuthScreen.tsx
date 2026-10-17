@@ -1,3 +1,4 @@
+import ThemeToggle from "./ThemeToggle";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -116,7 +117,7 @@ export function AccountScreen({ route, config, authenticated, onChanged }: { rou
     description = done ? "Thanks. Your email address is confirmed." : validToken ? "Confirm that this email address belongs to you." : "Sign in and resend the verification email from your account settings.";
     if (!done && validToken) content = <>{failure && <div className="form-error" role="alert">{failure}</div>}<Button variant="primary" size="base" loading={busy} className="auth-submit" onClick={() => void verify()}>Verify email address</Button></>;
   }
-  return <main className="auth-screen"><div className="auth-content"><a className="auth-brand" href={config.edition === "hosted" ? "/" : "/signin"}><span className="brand-icon"><GitBranchIcon size={20} weight="bold"/></span><span>gitflare</span></a><section className="auth-card" aria-labelledby="account-title"><h1 id="account-title">{title}</h1><p className="auth-description" role={done ? "status" : undefined}>{description}</p>{content}<p className="auth-switch"><a href={home}>{homeLabel}</a></p></section></div></main>;
+  return <main className="auth-screen"><div className="auth-theme"><ThemeToggle compact /></div><div className="auth-content"><a className="auth-brand" href={config.edition === "hosted" ? "/" : "/signin"}><span className="brand-icon"><GitBranchIcon size={20} weight="bold"/></span><span>gitflare</span></a><section className="auth-card" aria-labelledby="account-title"><h1 id="account-title">{title}</h1><p className="auth-description" role={done ? "status" : undefined}>{description}</p>{content}<p className="auth-switch"><a href={home}>{homeLabel}</a></p></section></div></main>;
 }
 export function VerifyEmailNotice({ user }: { user: { email?: string; emailVerified?: boolean } }) {
   const [available, setAvailable] = useState(false);

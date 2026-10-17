@@ -1,37 +1,37 @@
 .public-install { max-width: 1000px; padding: 28px 28px 64px; margin: 0 auto; overflow-wrap: anywhere; }
-.public-install-nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid #e1e3e6; margin-bottom: 48px; }
-.public-install-nav > a { font-size: 22px; font-weight: 650; color: #24272d; }
+.public-install-nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid var(--gf-color-border); margin-bottom: 48px; }
+.public-install-nav > a { font-size: 22px; font-weight: 650; color: var(--gf-color-text); }
 .public-install-nav > div { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; }
-.public-install a { color: #005fbd; }
+.public-install a { color: var(--gf-color-info); }
 .public-install header { margin-bottom: 32px; }
 .public-install h1 { display: flex; align-items: center; gap: 12px; font-size: clamp(28px,4vw,40px); font-weight: 650; line-height: 1.25; letter-spacing: -1px; margin-bottom: 16px; }
-.public-install header p { line-height: 1.7; color: #59616b; max-width: 680px; margin: 12px 0; }
+.public-install header p { line-height: 1.7; color: var(--gf-color-text-secondary); max-width: 680px; margin: 12px 0; }
 .public-install-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: 24px; font-size: 14px; }
-.public-install .public-install-primary { background: #20242a; color: white; padding: 10px 16px; border-radius: 5px; }
+.public-install .public-install-primary { background: var(--gf-color-surface-sunken); color: var(--gf-color-on-accent); padding: 10px 16px; border-radius: 5px; }
 .public-source-list { display: grid; }
-.public-source-list button { display: flex; gap: 24px; padding: 12px; text-align: left; border-bottom: 1px solid #e1e3e6; color: #005fbd; background: white; cursor: pointer; }
-.public-source-list button span { width: 50px; font-size: 12px; color: #656b73; }
-.public-release-hash { margin-top: 24px; font-size: 12px; color: #656b73; }
+.public-source-list button { display: flex; gap: 24px; padding: 12px; text-align: left; border-bottom: 1px solid var(--gf-color-border); color: var(--gf-color-info); background: var(--gf-color-surface-raised); cursor: pointer; }
+.public-source-list button span { width: 50px; font-size: 12px; color: var(--gf-color-text-secondary); }
+.public-release-hash { margin-top: 24px; font-size: 12px; color: var(--gf-color-text-secondary); }
 .deploy-guide { list-style: decimal; padding-left: 24px; }
-.deploy-guide li { padding: 22px 0 22px 10px; border-bottom: 1px solid #e1e3e6; }
+.deploy-guide li { padding: 22px 0 22px 10px; border-bottom: 1px solid var(--gf-color-border); }
 .deploy-guide h2 { font-size: 20px; font-weight: 600; margin-bottom: 12px; }
-.deploy-guide p { line-height: 1.8; font-size: 15px; color: #59616b; max-width: 720px; margin-bottom: 12px; }
-.auth-recovery-codes { font-size: 14px; padding: 18px; background: #f7f8fa; margin-bottom: 20px; }
-.auth-enrollment { padding: 14px; background: #f7f8fa; font-size: 13px; line-height: 1.7; margin-bottom: 20px; overflow-wrap: anywhere; }
-.auth-enrollment code { display: block; margin: 12px 0; color: #20242a; font-size: 15px; }
+.deploy-guide p { line-height: 1.8; font-size: 15px; color: var(--gf-color-text-secondary); max-width: 720px; margin-bottom: 12px; }
+.auth-recovery-codes { font-size: 14px; padding: 18px; background: var(--gf-color-surface); margin-bottom: 20px; }
+.auth-enrollment { padding: 14px; background: var(--gf-color-surface); font-size: 13px; line-height: 1.7; margin-bottom: 20px; overflow-wrap: anywhere; }
+.auth-enrollment code { display: block; margin: 12px 0; color: var(--gf-color-text); font-size: 15px; }
 @media(max-width:600px) { .public-install { padding: 20px 16px 48px; } .public-install-nav { align-items: flex-start; gap: 16px; margin-bottom: 32px; } .public-install-nav > div { gap: 12px; justify-content: flex-end; } }
 
-.public-source-clone code { display: block; margin-top: 8px; padding: 14px; background: #f3f5f7; border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.public-source-clone code { display: block; margin-top: 8px; padding: 14px; background: var(--gf-color-surface); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
 
 .public-install-nav { padding: 0 0 18px; min-height: 48px; margin-bottom: 32px; gap: 20px; }
-.public-install-nav > .public-install-wordmark { display: inline-flex; align-items: center; gap: 8px; color: #24272d; font-size: 18px; letter-spacing: -.4px; text-decoration: none; }
+.public-install-nav > .public-install-wordmark { display: inline-flex; align-items: center; gap: 8px; color: var(--gf-color-text); font-size: 18px; letter-spacing: -.4px; text-decoration: none; }
 .public-install-nav > div { gap: 22px; font-size: 12px; }
-.public-install-nav > div a { color: #68727e; text-decoration: none; }
-.public-install-nav > div a:last-child { border: 1px solid #d7dce2; border-radius: 5px; padding: 6px 10px; color: #343c46; }
+.public-install-nav > div a { color: var(--gf-color-text-secondary); text-decoration: none; }
+.public-install-nav > div a:last-child { border: 1px solid var(--gf-color-border); border-radius: 5px; padding: 6px 10px; color: var(--gf-color-text); }
 .installation-page { max-width: 1040px; }
-.installation-heading { padding: 12px 0 30px; border-bottom: 1px solid #e1e3e6; }
-.installation-breadcrumb { display: flex; gap: 9px; color: #808a96; font-size: 12px; margin-bottom: 22px; }
-.installation-breadcrumb a { color: #68727e; }
+.installation-heading { padding: 12px 0 30px; border-bottom: 1px solid var(--gf-color-border); }
+.installation-breadcrumb { display: flex; gap: 9px; color: var(--gf-color-text-secondary); font-size: 12px; margin-bottom: 22px; }
+.installation-breadcrumb a { color: var(--gf-color-text-secondary); }
 .installation-page .installation-heading h1 { font-size: clamp(28px,4vw,36px); letter-spacing: -.8px; margin-bottom: 14px; }
 .installation-page .installation-heading > p { max-width: 580px; font-size: 15px; line-height: 1.75; }
 .installation-page .public-install-actions { gap: 14px 20px; font-size: 12px; }
@@ -39,3 +39,10 @@
 .installation-page .deploy-guide h2 { font-size: 17px; }
 .installation-page .deploy-guide p { font-size: 14px; }
 @media(max-width:600px) { .public-install-nav { flex-wrap: wrap; align-items: center; gap: 16px; padding-bottom: 16px; margin-bottom: 24px; } .public-install-nav > div { gap: 14px; width: 100%; justify-content: flex-start; align-items: center; } .public-install-nav > div a:last-child { margin-left: auto; } .installation-heading { padding-top: 4px; } .installation-page .public-install-actions { gap: 14px; } }
+
+.public-install { color: var(--gf-color-text); }
+.public-install .public-install-primary { color: var(--gf-color-on-accent); background: var(--gf-color-orange); border-radius: var(--gf-radius-pill); }
+.public-install .public-install-primary:hover { background: var(--gf-color-orange-light); }
+.public-install-nav > div a:last-child { border-radius: var(--gf-radius-pill); background: var(--gf-color-surface-raised); }
+.public-source-list button:hover { background: var(--gf-color-surface); }
+.auth-recovery-codes, .auth-enrollment, .public-source-clone code { border: 1px solid var(--gf-color-border); border-radius: 12px; }

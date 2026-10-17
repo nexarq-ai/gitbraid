@@ -58,7 +58,9 @@ import { showOwnerTokenNotice } from "./owner-token-notice";
 import WorkspaceLoader, { RouteProgress } from "./WorkspaceLoader";
 import AiSettingsPanel from "./AiSettingsPanel";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
-import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange } from "./router";
+import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange, isKnownAppRoute, isPublicDocumentationRoute, POLICY_ROUTES, PUBLIC_PRODUCT_ROUTES } from "./router";
+import ThemeToggle from "./ThemeToggle";
+import "./policy-pages.css";
 import { InstallationCredentialPrompt } from "./InstallationCredential";
 
 const loadMissionDetail = () => import("./MissionDetail");
@@ -113,7 +115,7 @@ const runningStates = ["queued", "running", "checking", "integrating"];
 const RETURN_ROUTE_KEY = "gitflare:return-route";
 
 function isPublicRoute(route: string): boolean {
-  return ["home", "signin", "signup", "source/gitflare", "deploy"].includes(route) || route.startsWith("docs") || route.startsWith("invite?") || isAccountRoute(route);
+  return ["home", "signin", "signup", "source/gitflare", "deploy", ...POLICY_ROUTES, ...PUBLIC_PRODUCT_ROUTES].includes(route) || isPublicDocumentationRoute(route) || !isKnownAppRoute(route) || route.startsWith("invite?") || isAccountRoute(route);
 }
 
 function takeReturnRoute(): string {
@@ -356,8 +358,8 @@ function Workspace() {
     setRefreshing(false);
   }
 
-  const publicDocs = route.startsWith("docs") && authState !== "authenticated";
-  if (publicDocs) return <main className="public-documentation"><nav className="public-docs-nav" aria-label="Documentation navigation"><a className="public-docs-brand" href="/" aria-label="Gitflare home">gitflare<span>Documentation</span></a><div><a href="/docs/overview">Guides</a><a href="/connect">Connect MCP</a><a href="/signin">Workspace →</a></div></nav><Documentation publicMode id={["overview", "install", "admin", "repositories", "mcp", "agents"].includes(route.slice(5)) ? route.slice(5) : "overview"} /></main>;
+  if (!isKnownAppRoute(route)) return <main className="route-loading"><h1>Page not found</h1><a href="/overview">Open workspace</a></main>;
+  if (isPublicDocumentationRoute(route) && authState !== "authenticated") return <main className="public-documentation"><Documentation publicMode id={route === "docs" ? "overview" : route.slice(5)} /></main>;
   if (route === "home" && (!authConfig || (authConfig.edition === "hosted" && !authConfig.setupRequired))) return <Homepage authenticated={authState === "authenticated"} />;
   if (!authConfig && !authConfigError) return <WorkspaceLoader />;
   if (!authConfig) return <main className="auth-screen"><div className="auth-card"><h1>Gitflare</h1><p role="status">{authConfigError}</p>{authConfigError && <Button onClick={() => window.location.reload()}>Retry</Button>}</div></main>;
@@ -543,6 +545,7 @@ function Workspace() {
             <span>{pageName}</span>
           </div>
           <div className="utility-actions">
+            <ThemeToggle compact />
             <a
               href="/docs/overview"
             >
