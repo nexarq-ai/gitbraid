@@ -48,6 +48,7 @@ export interface DeployEnvironmentSettings {
   trigger: DeployTrigger;
   mode?: DeployMode;
   targets?: DeployTarget[];
+  requiredScopes?: string[];
   authorizedBy: Principal;
   updatedAt: string;
 }
@@ -97,8 +98,29 @@ export function backgroundPrincipal(principal: Principal): Principal {
   return { userId: principal.userId, workspaceId: principal.workspaceId, role: principal.role, ...(principal.bootstrap ? { bootstrap: true } : {}) };
 }
 
-export function defaultTrigger(environment: DeployEnvironment): DeployTrigger {
-  return environment === 'staging' ? 'auto' : 'manual';
+export function defaultTrigger(): DeployTrigger {
+  return 'manual';
+}
+
+export type DeployConnection = { connected: true; accountId: string; accountName?: string; scopes: string[]; source: 'repository' | 'workspace' } | { connected: false; reason: string };
+
+export function environmentScopes(value: Pick<DeployEnvironmentSettings, 'workerName' | 'targets' | 'mode' | 'requiredScopes'>): string[] {
+  const uploadOnly = value.mode === 'upload-only';
+  const computed = settingsTargets(value).flatMap((target) => requiredDeployScopes({}, { d1Migrations: target.d1Migrations && !uploadOnly, uploadOnly }));
+  return [...new Set([...computed, ...(value.requiredScopes ?? [])])];
+}
+
+export function accountLabel(connection: { accountId: string; accountName?: string }): string {
+  return connection.accountName ? `${connection.accountName} (${connection.accountId})` : connection.accountId;
+}
+
+export function deployBlocker(environment: DeployEnvironment, value: DeployEnvironmentSettings, connection: DeployConnection | null): { reason: string; missingScopes?: string[] } | null {
+  if (!connection) return { reason: 'The Cloudflare connection could not be read. Check it in the Cloudflare tab.' };
+  if (!connection.connected) return { reason: connection.reason };
+  if (connection.accountId !== value.accountId) return { reason: `${environment} deploys to Cloudflare account ${value.accountId}, but the ${connection.source} connection is on ${accountLabel(connection)}. Connect the account the Workers live in, or detect and apply the setup again on this account.` };
+  const missingScopes = environmentScopes(value).filter((scope) => !connection.scopes.includes(scope));
+  if (missingScopes.length) return { reason: `The ${connection.source} Cloudflare connection to ${accountLabel(connection)} was not granted ${missingScopes.join(', ')}, which deploying ${environment} needs. An Owner must reconnect Cloudflare and grant ${missingScopes.length === 1 ? 'that scope' : 'those scopes'}.`, missingScopes };
+  return null;
 }
 
 export function wranglerEnvironment(environment: DeployEnvironment): string | undefined {
@@ -599,6 +621,7 @@ export interface DeployApiContext {
     saveDetected?(environments: Partial<Record<DeployEnvironment, DeployEnvironmentSettings>>, detected: SavedDetection): Promise<DeploySettings>;
   };
   detectSetup?(): Promise<DetectedSetup>;
+  connection?(): Promise<DeployConnection>;
   linkWorkers?(accountId: string, workers: { id: string; environment: DeployEnvironment }[]): Promise<void>;
   authorizeRead(): Promise<void>;
   authorizeDeploy(workerName: string): Promise<void>;
@@ -695,6 +718,61 @@ async function detectedSetup(context: DeployApiContext): Promise<DetectedSetup> 
   return context.detectSetup();
 }
 
+function detectBlockers(setup: DetectedSetup, settings: DeploySettings | null, mapping: { accountId: string } | null): string[] {
+  const account = setup.account;
+  if (!account) return [];
+  if (!account.connected) return [account.reason];
+  const blocking: string[] = [];
+  const label = accountLabel(account);
+  if (account.missingScopes?.length) blocking.push(`The ${account.source} Cloudflare connection to ${label} was not granted ${account.missingScopes.join(', ')}, which deploying the detected Workers needs. An Owner must reconnect Cloudflare and grant ${account.missingScopes.length === 1 ? 'that scope' : 'those scopes'} before anything deploys.`);
+  if (mapping && mapping.accountId !== account.accountId) blocking.push(`This repository's Workers are linked on Cloudflare account ${mapping.accountId}, but the ${account.source} connection is on ${label}. Applying this setup links them on ${label} instead.`);
+  for (const environment of configuredEnvironments(settings)) {
+    const saved = settings!.environments[environment]!;
+    if (saved.accountId !== account.accountId && saved.accountId !== mapping?.accountId) blocking.push(`${environment} is saved to deploy on Cloudflare account ${saved.accountId}, but the ${account.source} connection is on ${label}.`);
+  }
+  return blocking;
+}
+
+interface FieldProblem { code: string; message: string }
+
+async function saveEnvironmentSettings(body: Record<string, unknown>, context: DeployApiContext): Promise<Response> {
+  const { principal } = context;
+  const environment = parseEnvironment(body.environment);
+  const state = await context.ledger.state();
+  const existing = state.settings?.environments[environment];
+  const problems: FieldProblem[] = [];
+  let targets: DeployTarget[] | undefined;
+  if (body.targets !== undefined) {
+    try { targets = parseDeployTargets(body.targets); }
+    catch (error) { if (error instanceof ApiError) problems.push({ code: error.code, message: error.detail }); else throw error; }
+  } else if (body.workerName === undefined) targets = existing?.targets;
+  const workerName = body.targets !== undefined ? targets?.[0]?.workerName : body.workerName !== undefined ? body.workerName : existing?.workerName;
+  if (body.targets === undefined && (typeof workerName !== 'string' || !workerNamePattern.test(workerName))) problems.push({ code: 'INVALID_INPUT', message: 'workerName (MCP worker_name) must be a Worker name of 1 to 63 letters, digits, dashes or underscores, or send targets.' });
+  const rollout = body.rollout ?? existing?.rollout;
+  if (!['immediate', 'gradual'].includes(String(rollout))) problems.push({ code: 'INVALID_ROLLOUT', message: 'rollout must be immediate (100%) or gradual (10% then 100%).' });
+  const trigger = body.trigger ?? body.confirmation ?? existing?.trigger ?? defaultTrigger();
+  if (!['manual', 'auto'].includes(String(trigger))) problems.push({ code: 'INVALID_TRIGGER', message: 'trigger must be manual or auto.' });
+  const mode = body.mode ?? existing?.mode ?? 'deploy';
+  if (!['deploy', 'upload-only'].includes(String(mode))) problems.push({ code: 'INVALID_DEPLOY_MODE', message: 'mode must be deploy or upload-only.' });
+  const enabled = body.enabled ?? existing?.enabled;
+  if (typeof enabled !== 'boolean') problems.push({ code: 'INVALID_INPUT', message: 'enabled must be true or false.' });
+  const unsaved = existing ? '' : ` ${environment} has no saved settings to fill in fields you leave out.`;
+  if (problems.length === 1) throw new ApiError(400, problems[0].code, `${problems[0].message}${unsaved}`);
+  if (problems.length) throw new ApiError(400, 'INVALID_DEPLOY_SETTINGS', `Fix ${problems.length} deploy settings fields: ${problems.map((problem) => problem.message).join(' ')}${unsaved}`);
+  const workers = targets ? targets.map((target) => target.workerName) : [workerName as string];
+  const mapping = await context.mappedWorkers();
+  for (const name of workers) if (!mapping?.workers.some((worker) => worker.id === name)) throw new ApiError(400, 'WORKER_NOT_MAPPED', `Choose Workers linked to this repository in its Cloudflare tab (${name} is not linked).`);
+  if (!canConfigure(principal)) throw new ApiError(403, 'DEPLOYER_REQUIRED', 'Only an Owner or Deployer can change deployment settings.');
+  if (trigger === 'auto' && principal.role !== 'Owner') throw new ApiError(403, 'OWNER_REQUIRED', body.trigger === undefined && body.confirmation === undefined ? `${environment} deploys automatically on land, which only an Owner can keep. Send trigger manual to change its other settings.` : `Only an Owner can turn on automatic deployment for ${environment}.`);
+  const configured = configuredEnvironments(state.settings);
+  if (!configured.includes(environment) && configured.length >= DEPLOY_ENVIRONMENTS_MAX) throw new ApiError(409, 'DEPLOY_ENVIRONMENTS_LIMIT', `A repository can deploy to at most ${DEPLOY_ENVIRONMENTS_MAX} environments.`);
+  for (const name of workers) await context.authorizeDeploy(name);
+  const keepScopes = existing?.requiredScopes?.length && JSON.stringify(existing.targets ?? null) === JSON.stringify(targets ?? null) ? { requiredScopes: existing.requiredScopes } : {};
+  const value: DeployEnvironmentSettings = { enabled: enabled as boolean, workerName: workers[0], accountId: mapping!.accountId, rollout: rollout as DeployRollout, trigger: trigger as DeployTrigger, mode: mode as DeployMode, ...(targets ? { targets } : {}), ...keepScopes, authorizedBy: backgroundPrincipal(principal), updatedAt: new Date().toISOString() };
+  await context.audit?.(`repository.deploy-settings.${environment}.${value.trigger}.${value.mode}${value.enabled ? '' : '.disabled'}`);
+  return Response.json({ settings: publicSettings(await context.ledger.saveEnvironment(environment, value)) });
+}
+
 async function applyDetected(body: Record<string, unknown>, context: DeployApiContext): Promise<Response> {
   const { principal } = context;
   if (!canConfigure(principal)) throw new ApiError(403, 'DEPLOYER_REQUIRED', 'Only an Owner or Deployer can change deployment settings.');
@@ -723,8 +801,8 @@ async function applyDetected(body: Record<string, unknown>, context: DeployApiCo
     const existing = state.settings?.environments[environment];
     environments[environment] = {
       enabled: true, workerName: targets[0].workerName, accountId: account.accountId,
-      rollout: existing?.rollout ?? 'immediate', trigger: environment === PRODUCTION ? (existing?.trigger === 'auto' && principal.role === 'Owner' ? 'auto' : 'manual') : existing?.trigger ?? defaultTrigger(environment), mode: existing?.mode ?? 'deploy',
-      targets, authorizedBy: backgroundPrincipal(principal), updatedAt: now,
+      rollout: existing?.rollout ?? 'immediate', trigger: existing?.trigger === 'auto' && principal.role === 'Owner' ? 'auto' : defaultTrigger(), mode: existing?.mode ?? 'deploy',
+      targets, requiredScopes: [...new Set(setup.environments[environment]!.targets.flatMap((target) => target.requiredScopes ?? []))], authorizedBy: backgroundPrincipal(principal), updatedAt: now,
     };
   }
   await context.linkWorkers(account.accountId, workers);
@@ -737,49 +815,33 @@ export async function deploymentsApi(request: Request, context: DeployApiContext
   const { principal } = context;
   await context.authorizeRead();
   if (request.method === 'GET' && new URL(request.url).pathname.endsWith('/deployments/detect')) {
-    const [setup, state] = await Promise.all([detectedSetup(context), context.ledger.state()]);
+    const [setup, state, mapping] = await Promise.all([detectedSetup(context), context.ledger.state(), context.mappedWorkers()]);
     const saved = state.settings?.detected ?? null;
-    return Response.json({ setup, saved, changed: saved ? setupChanges(saved.files, setup.files) : [], canApply: canConfigure(principal), canAcknowledge: canConfigure(principal) && principal.role === 'Owner' });
+    const blocking = detectBlockers(setup, state.settings, mapping);
+    return Response.json({ setup, saved, changed: saved ? setupChanges(saved.files, setup.files) : [], blocking, canDeploy: blocking.length === 0, canApply: canConfigure(principal), canAcknowledge: canConfigure(principal) && principal.role === 'Owner' });
   }
   if (request.method === 'GET') {
-    const [state, mapping] = await Promise.all([context.ledger.state(), context.mappedWorkers()]);
+    const [state, mapping, connection] = await Promise.all([context.ledger.state(), context.mappedWorkers(), context.connection ? context.connection().catch(() => null) : Promise.resolve(undefined)]);
     const publicValue = publicSettings(state.settings);
     const names = orderedEnvironments([...Object.keys(state.settings?.environments ?? {}), ...state.deployments.map((item) => item.environment)]);
     const environments = Object.fromEntries(await Promise.all(names.map(async (environment) => {
       const value = state.settings?.environments[environment];
-      const canDeploy = value ? (await Promise.all(settingsTargets(value).map((target) => context.canDeploy(target.workerName)))).every(Boolean) : false;
-      return [environment, { settings: publicValue?.environments[environment] ?? null, ...environmentStatus(state.deployments, environment), canDeploy, ...(environment === 'production' ? { canConfirm: canDeploy && principal.role === 'Owner' && !principal.credentialId } : {}) }];
+      const permitted = value ? (await Promise.all(settingsTargets(value).map((target) => context.canDeploy(target.workerName)))).every(Boolean) : false;
+      const blocker = value && connection !== undefined ? deployBlocker(environment, value, connection) : null;
+      const canDeploy = permitted && !blocker;
+      return [environment, { settings: publicValue?.environments[environment] ?? null, ...environmentStatus(state.deployments, environment), canDeploy, ...(value ? { requiredScopes: environmentScopes(value) } : {}), ...(blocker ? { deployBlockedReason: blocker.reason, ...(blocker.missingScopes ? { missingScopes: blocker.missingScopes } : {}) } : {}), ...(environment === 'production' ? { canConfirm: canDeploy && principal.role === 'Owner' && !principal.credentialId } : {}) }];
     })));
     const canDeploy = names.some((environment) => environments[environment].canDeploy);
-    return Response.json({ settings: publicValue, environmentOrder: names, environments, deployments: state.deployments, workers: mapping?.workers ?? [], canDeploy, requiredScope: SCOPE_WORKERS_SCRIPTS_WRITE });
+    const connectionView = connection === undefined ? {} : { connection: connection?.connected ? { connected: true, accountId: connection.accountId, accountName: connection.accountName ?? null, scopes: connection.scopes, source: connection.source } : { connected: false, reason: connection?.reason ?? 'The Cloudflare connection could not be read.' } };
+    return Response.json({ settings: publicValue, environmentOrder: names, environments, deployments: state.deployments, workers: mapping?.workers ?? [], canDeploy, requiredScope: SCOPE_WORKERS_SCRIPTS_WRITE, ...connectionView });
   }
   if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Use GET or POST.');
   assertMutationOrigin(request);
   const key = requireIdempotencyKey(request);
   const body = await readJson(request);
   const action = body.action;
-  const now = new Date().toISOString();
   if (action === 'apply_detected') return applyDetected(body, context);
-  if (action === 'settings') {
-    const environment = parseEnvironment(body.environment);
-    const targets = body.targets !== undefined ? parseDeployTargets(body.targets) : undefined;
-    const workerName = targets ? targets[0].workerName : requireString(body.workerName, 'Worker', 63);
-    const mapping = await context.mappedWorkers();
-    for (const name of targets ? targets.map((target) => target.workerName) : [workerName]) if (!mapping?.workers.some((worker) => worker.id === name)) throw new ApiError(400, 'WORKER_NOT_MAPPED', `Choose Workers linked to this repository in its Cloudflare tab (${name} is not linked).`);
-    const trigger = body.trigger ?? body.confirmation ?? defaultTrigger(environment);
-    if (!['immediate', 'gradual'].includes(String(body.rollout))) throw new ApiError(400, 'INVALID_ROLLOUT', 'Choose immediate (100%) or gradual (10% then 100%).');
-    if (!['manual', 'auto'].includes(String(trigger))) throw new ApiError(400, 'INVALID_TRIGGER', 'Choose manual or automatic deployment.');
-    if (body.mode !== undefined && !['deploy', 'upload-only'].includes(String(body.mode))) throw new ApiError(400, 'INVALID_DEPLOY_MODE', 'Choose deploy or upload-only.');
-    if (typeof body.enabled !== 'boolean') throw new ApiError(400, 'INVALID_INPUT', 'Set enabled to true or false.');
-    if (principal.credentialId || !['Owner', 'Deployer'].includes(principal.role)) throw new ApiError(403, 'DEPLOYER_REQUIRED', 'Only an Owner or Deployer can change deployment settings.');
-    if (environment === PRODUCTION && trigger === 'auto' && principal.role !== 'Owner') throw new ApiError(403, 'OWNER_REQUIRED', 'Only an Owner can turn on automatic production deployment.');
-    const configured = configuredEnvironments((await context.ledger.state()).settings);
-    if (!configured.includes(environment) && configured.length >= DEPLOY_ENVIRONMENTS_MAX) throw new ApiError(409, 'DEPLOY_ENVIRONMENTS_LIMIT', `A repository can deploy to at most ${DEPLOY_ENVIRONMENTS_MAX} environments.`);
-    for (const name of targets ? targets.map((target) => target.workerName) : [workerName]) await context.authorizeDeploy(name);
-    const value: DeployEnvironmentSettings = { enabled: body.enabled, workerName, accountId: mapping!.accountId, rollout: body.rollout as DeployRollout, trigger: trigger as DeployTrigger, mode: (body.mode as DeployMode | undefined) ?? 'deploy', ...(targets ? { targets } : {}), authorizedBy: backgroundPrincipal(principal), updatedAt: now };
-    await context.audit?.(`repository.deploy-settings.${environment}.${value.trigger}.${value.mode}${value.enabled ? '' : '.disabled'}`);
-    return Response.json({ settings: publicSettings(await context.ledger.saveEnvironment(environment, value)) });
-  }
+  if (action === 'settings') return saveEnvironmentSettings(body, context);
   if (action !== 'deploy' && action !== 'rollback' && action !== 'promote') throw new ApiError(400, 'INVALID_DEPLOY_ACTION', 'Choose settings, apply_detected, deploy, promote or rollback.');
   if (principal.credentialId) throw new ApiError(403, 'DEPLOYER_REQUIRED', 'Task credentials cannot deploy.');
   const state = await context.ledger.state();

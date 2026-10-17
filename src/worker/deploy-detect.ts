@@ -6,7 +6,7 @@ import type { DeployTarget } from './deployments';
 import { ENVIRONMENT_NAME, orderedEnvironments, PRODUCTION, type DeployEnvironment } from './deploy-environments';
 import { detectPackageManager, LOCKFILES, runnerFor, type PackageManager } from './package-manager';
 import { workersSubdomain } from './preview-access';
-import { subdomainValues } from './worker-provisioning';
+import { requiredDeployScopes, subdomainValues } from './worker-provisioning';
 import { WORKER_CONFIG_FILES } from './worker-bundle';
 
 export const SCAN_ENTRY_LIMIT = 20_000;
@@ -40,13 +40,15 @@ export interface DetectedTarget {
   routes: string[];
   customDomains: string[];
   workersDev: boolean;
+  requiredScopes: string[];
   exists?: boolean | null;
   urls?: string[];
 }
 export interface SetupWarning { id: string; kind: SetupWarningKind; environment: DeployEnvironment; configPath: string; message: string }
 export interface DetectedEnvironment { targets: DetectedTarget[]; warnings: SetupWarning[] }
 export interface DetectedConfig { path: string; workerName?: string; environments: DeployEnvironment[]; error?: string }
-export interface AccountFacts { connected: true; accountId: string; source: 'repository' | 'workspace'; subdomain: string | null; notes: string[] }
+export interface AccountFacts { connected: true; accountId: string; accountName?: string; source: 'repository' | 'workspace'; subdomain: string | null; scopes?: string[]; requiredScopes: string[]; missingScopes?: string[]; notes: string[] }
+export interface ConnectionFacts { accountName?: string; scopes?: string[] }
 export interface DetectedSetup {
   commitSha: string;
   fingerprint: string;
@@ -340,14 +342,16 @@ export async function detectDeploySetup(scan: RepositoryScan, read: (path: strin
       else errors.push(`${config.path} needs a build (${config.buildReasons.join('; ')}), but ${config.packageDir === null ? 'no package.json was found above it' : `${config.packageDir ? `${config.packageDir}/` : ''}package.json has no "build" script`}.`);
     }
     const routes = routeInfo(effective);
+    const d1Migrations = hasMigrations(effective, config.directory, directories, files);
     const watchPaths = config.packageDir ? [...new Set([`${config.packageDir}/**`, ...(config.directory !== config.packageDir && config.directory ? [`${config.directory}/**`] : []), ...shared])] : [];
     return {
       workerName: name, configPath: config.path, packageDir: config.packageDir ?? config.directory,
       ...(buildCommand ? { buildCommand } : {}), buildReasons: config.buildReasons,
-      d1Migrations: hasMigrations(effective, config.directory, directories, files),
+      d1Migrations,
       watchPaths, dependsOn: dependencies(effective, name), resources: resources(effective),
       routes: routes.routes, customDomains: routes.customDomains,
       workersDev: workersDevEnabled(effective),
+      requiredScopes: requiredDeployScopes(effective, { d1Migrations, uploadOnly: false }),
     };
   };
 
@@ -405,7 +409,7 @@ export function workersDevUrl(worker: string, subdomain: string): string {
   return `https://${worker}.${subdomain}.workers.dev`;
 }
 
-export async function withAccountFacts(setup: DetectedSetup, call: CloudflareCall, accountId: string, source: 'repository' | 'workspace'): Promise<DetectedSetup> {
+export async function withAccountFacts(setup: DetectedSetup, call: CloudflareCall, accountId: string, source: 'repository' | 'workspace', connection: ConnectionFacts = {}): Promise<DetectedSetup> {
   const notes: string[] = [];
   let subdomain: string | null = null;
   try { subdomain = await workersSubdomain(call, accountId); }
@@ -439,7 +443,9 @@ export async function withAccountFacts(setup: DetectedSetup, call: CloudflareCal
       }))),
     };
   }
-  return { ...setup, environments, account: { connected: true, accountId, source, subdomain, notes } };
+  const requiredScopes = [...new Set(Object.values(setup.environments).flatMap((value) => value?.targets.flatMap((target) => target.requiredScopes) ?? []))];
+  const missingScopes = connection.scopes ? requiredScopes.filter((scope) => !connection.scopes!.includes(scope)) : undefined;
+  return { ...setup, environments, account: { connected: true, accountId, ...(connection.accountName ? { accountName: connection.accountName } : {}), source, subdomain, ...(connection.scopes ? { scopes: connection.scopes } : {}), requiredScopes, ...(missingScopes ? { missingScopes } : {}), notes } };
 }
 
 export function detectedTargets(environment: DetectedEnvironment): DeployTarget[] {

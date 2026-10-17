@@ -27,7 +27,7 @@ import { oauthConsent, oauthProvider, revokeClientGrants } from './oauth';
 import { publicPageResponse } from './public-pages';
 import { publicGitResponse } from './hosted-source';
 import { deliverInvitation } from './email';
-import { CLOUDFLARE_LINK_COOKIE, requestCookie, handleCloudflare, handleRepositoryCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest } from './cloudflare';
+import { CLOUDFLARE_LINK_COOKIE, requestCookie, handleCloudflare, handleRepositoryCloudflare, cloudflareAccount, cloudflareApiRequest, cloudflareAnalyticsRequest, cloudflareDeployAccess } from './cloudflare';
 import { dispatchCloudflareProject, projectDependencies, type ProjectOperation } from './cloudflare-projects';
 import { validateRepositoryInitialization, initializeArtifactsRepository } from './repository-initialization';
 import { SKILL_REQUEST_MAX_BYTES, validateRepositorySkillChange, verifyRepositorySkillChange } from './skill-edit';
@@ -384,6 +384,14 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
       repository, principal,
       ledger: { state: () => coordinator.deployState(), get: (id) => coordinator.getDeployment(id), saveEnvironment: (environment, settings) => coordinator.saveDeployEnvironment(environment, settings), create: (key, fingerprint, record) => coordinator.createDeployment(key, fingerprint, record), confirm: (id, actorId) => coordinator.confirmDeployment(id, actorId), saveDetected: (environments, detected) => coordinator.saveDetectedDeploySetup(environments, detected) },
       detectSetup: () => detectRepositorySetup(env, principal, repository),
+      connection: async () => {
+        try {
+          const connection = await cloudflareDeployAccess(env, principal, { action: 'read', resourceType: 'repository', resourceId: repository.id }, repository.id);
+          return { connected: true, accountId: connection.accountId, ...(connection.accountName ? { accountName: connection.accountName } : {}), scopes: connection.scopes, source: connection.source };
+        } catch (error) {
+          return { connected: false, reason: error instanceof ApiError ? error.detail : 'Connect Cloudflare for this repository or workspace first.' };
+        }
+      },
       linkWorkers: async (accountId, workers) => { await access.projectStore(principal, repository.id, 'link', { accountId, workers }); },
       authorizeRead: () => access.authorize(principal, 'read', 'repository', repository.id),
       authorizeDeploy: (workerName) => access.authorize(principal, 'deploy', 'environment', workerName),

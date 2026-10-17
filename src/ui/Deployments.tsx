@@ -23,14 +23,15 @@ interface EnvironmentState {
   running: boolean;
   promotable?: { deploymentId: string; commitSha: string } | null;
   canDeploy: boolean;
+  deployBlockedReason?: string;
   canConfirm?: boolean;
 }
 interface State { environmentOrder?: Environment[]; environments: Record<Environment, EnvironmentState>; deployments: Deployment[]; workers: { id: string; name: string; environment: string }[] }
 interface DetectedResource { type: "d1" | "r2" | "queue"; name: string; status?: "exists" | "create" | "missing" | "unknown" }
 interface DetectedTarget { workerName: string; configPath: string; buildCommand?: string; buildReasons: string[]; d1Migrations: boolean; watchPaths: string[]; dependsOn: string[]; resources: DetectedResource[]; customDomains: string[]; routes: string[]; workersDev: boolean; exists?: boolean | null; urls?: string[] }
 interface SetupWarning { id: string; environment: Environment; configPath: string; message: string }
-interface DetectedSetup { commitSha: string; fingerprint: string; packageManager: string | null; environments: Record<Environment, { targets: DetectedTarget[]; warnings: SetupWarning[] }>; errors: string[]; notes: string[]; account?: { connected: true; accountId: string; source: string; subdomain: string | null; notes: string[] } | { connected: false; reason: string } }
-interface Detection { setup: DetectedSetup; saved: { fingerprint: string; commitSha: string; appliedAt: string } | null; changed: { path: string; change: "added" | "removed" | "modified" }[]; canApply: boolean; canAcknowledge: boolean }
+interface DetectedSetup { commitSha: string; fingerprint: string; packageManager: string | null; environments: Record<Environment, { targets: DetectedTarget[]; warnings: SetupWarning[] }>; errors: string[]; notes: string[]; account?: { connected: true; accountId: string; accountName?: string; source: string; subdomain: string | null; notes: string[] } | { connected: false; reason: string } }
+interface Detection { setup: DetectedSetup; saved: { fingerprint: string; commitSha: string; appliedAt: string } | null; changed: { path: string; change: "added" | "removed" | "modified" }[]; blocking?: string[]; canApply: boolean; canAcknowledge: boolean }
 
 const PRODUCTION = "production";
 const environmentLabel = (environment: Environment) => environment === PRODUCTION ? "Production" : environment === "staging" ? "Staging" : environment;
@@ -45,7 +46,7 @@ const labels: Record<Status, string> = { awaiting_confirmation: "Waiting for con
 const triggers: Record<Trigger, string> = { land: "on land", manual: "manual", rollback: "rollback", promote: "promoted from staging" };
 const targetLabels: Record<TargetStatus, string> = { pending: "Pending", building: "Building", uploaded: "Uploaded", deploying: "Deploying", rolling_out: "Rolling out", succeeded: "Live", failed: "Failed", skipped: "Skipped" };
 const ACTIVE: Status[] = ["queued", "building", "deploying", "rolling_out"];
-const defaultTrigger = (environment: Environment): Settings["trigger"] => environment === "staging" ? "auto" : "manual";
+const defaultTrigger = (): Settings["trigger"] => "manual";
 
 function targetSummary(target: TargetRun): string {
   const parts = [targetLabels[target.status]];
@@ -61,9 +62,9 @@ function draftFor(environment: Environment, state: State): Settings | null {
   const saved = state.environments[environment]?.settings;
   if (saved) return { ...saved, targets: saved.targets.map((target) => ({ ...target, configPath: target.configPath || "wrangler.jsonc" })) };
   const production = state.environments[PRODUCTION]?.settings;
-  if (environment !== PRODUCTION && production) return { ...production, enabled: true, trigger: defaultTrigger(environment), targets: production.targets.map((target) => ({ ...target, workerName: state.workers.find((worker) => worker.id === `${target.workerName}-${environment}`)?.id ?? target.workerName })) };
+  if (environment !== PRODUCTION && production) return { ...production, enabled: true, trigger: defaultTrigger(), targets: production.targets.map((target) => ({ ...target, workerName: state.workers.find((worker) => worker.id === `${target.workerName}-${environment}`)?.id ?? target.workerName })) };
   const worker = state.workers[0];
-  return worker ? { enabled: environment !== PRODUCTION, workerName: worker.id, rollout: "immediate", trigger: defaultTrigger(environment), mode: "deploy", targets: [{ workerName: worker.id, configPath: "wrangler.jsonc", d1Migrations: false }] } : null;
+  return worker ? { enabled: environment !== PRODUCTION, workerName: worker.id, rollout: "immediate", trigger: defaultTrigger(), mode: "deploy", targets: [{ workerName: worker.id, configPath: "wrangler.jsonc", d1Migrations: false }] } : null;
 }
 
 function WorkerUrls({ urls }: { urls?: string[] }) {
@@ -148,17 +149,18 @@ export default function Deployments({ repository, onNotify }: { repository: Repo
     return (
       <section className="cf-detected" aria-label="Detected setup">
         <h3>Detected setup</h3>
-        <p className="cf-state">From the Wrangler configs at <code>{setup.commitSha.slice(0, 12)}</code>{setup.packageManager ? ` · ${setup.packageManager}` : ""}{setup.account?.connected ? ` · account ${setup.account.accountId.slice(0, 8)}… (${setup.account.source} connection)${setup.account.subdomain ? ` · ${setup.account.subdomain}.workers.dev` : ""}` : ""}</p>
+        <p className="cf-state">From the Wrangler configs at <code>{setup.commitSha.slice(0, 12)}</code>{setup.packageManager ? ` · ${setup.packageManager}` : ""}{setup.account?.connected ? ` · account ${setup.account.accountName ? `${setup.account.accountName} ` : ""}${setup.account.accountId} (${setup.account.source} connection)${setup.account.subdomain ? ` · ${setup.account.subdomain}.workers.dev` : ""}` : ""}</p>
         {saved && changed.length > 0 && <p role="status">Setup changed in {changed.map((item) => item.path).join(", ")} since it was saved. Review the new plan and use it again.</p>}
         {saved && current && <p className="cf-state">This repository uses this detected setup (saved {relativeTime(saved.appliedAt)}).</p>}
         {setup.account && !setup.account.connected && <p className="cf-muted">{setup.account.reason}</p>}
         {setup.errors.map((item) => <ErrorNotice key={item} message={item} />)}
+        {detection.blocking?.map((item) => <ErrorNotice key={item} message={item} />)}
         {!environments.length && !setup.errors.length && <p className="cf-muted">No Wrangler config was found at the default branch head.</p>}
         <div className="cf-environments">
           {environments.map((environment) => (
             <div key={environment} className="cf-environment">
               <h4>{environmentLabel(environment)}</h4>
-              <p className="cf-state">{environment === PRODUCTION ? "Promote with Owner confirmation" : defaultTrigger(environment) === "auto" ? "Deploys automatically on land" : "Deploy on land waits for confirmation"}</p>
+              <p className="cf-state">{environment === PRODUCTION ? "Promote with Owner confirmation" : "Deploy on land waits for confirmation until an Owner turns on automatic deploys"}</p>
               <ol className="cf-target-runs">
                 {setup.environments[environment].targets.map((target) => (
                   <li key={target.workerName}>
@@ -212,6 +214,7 @@ export default function Deployments({ repository, onNotify }: { repository: Repo
               <dt>Workers</dt><dd>{view.current?.workers.length ? <ul className="cf-target-runs">{view.current.workers.map((worker) => <li key={worker.workerName}><strong>{worker.workerName}</strong> · <code>{worker.versionId.slice(0, 8)}</code>{worker.percentage < 100 ? ` · ${worker.percentage}%` : ""}<WorkerUrls urls={worker.urls} /></li>)}</ul> : "—"}</dd>
               <dt>Last change</dt><dd>{view.lastChange ? <>{labels[view.lastChange.status]} · {triggers[view.lastChange.trigger]} · {relativeTime(view.lastChange.updatedAt)}{view.lastChange.error ? ` · ${view.lastChange.error}` : ""}</> : "—"}</dd>
             </dl>
+            {view.deployBlockedReason && <ErrorNotice message={view.deployBlockedReason} />}
             {targets.length > 1 && (
               <fieldset className="cf-target-choice">
                 <legend>Targets to deploy</legend>

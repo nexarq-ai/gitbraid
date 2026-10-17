@@ -203,7 +203,7 @@ export async function detectRepositorySetup(env: AppEnv, principal: Principal, r
   let access: CloudflareDeployAccess;
   try { access = await connectionAccess(env, principal, repository.id); }
   catch (error) { return { ...setup, account: { connected: false, reason: error instanceof ApiError ? error.detail : 'Connect Cloudflare for this repository or workspace first.' } }; }
-  return withAccountFacts(setup, cloudflareDeployClient(access).call, access.accountId, access.source);
+  return withAccountFacts(setup, cloudflareDeployClient(access).call, access.accountId, access.source, { ...(access.accountName ? { accountName: access.accountName } : {}), scopes: access.scopes });
 }
 
 async function policyBase(env: AppEnv, repositoryName: string, record: DeploymentRecord): Promise<string | null> {
