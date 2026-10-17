@@ -1146,14 +1146,18 @@ export class SecurityService {
     return undefined;
   }
   private async sessionHome(id: string): Promise<string | null> { return sessionIdHome(id) ?? await this.identity().lookup('sessionHome', id); }
-  private async applySuperAdmin(userId: string, identity: CloudflareIdentity) {
+  private isSuperAdmin(identity: CloudflareIdentity): boolean {
+    return identity.emailVerified === true && operatorWorkspaces(this.options.INSTALLATION_OWNER_WORKSPACES).length > 0 && superAdminEmails(this.options.SUPER_ADMIN_EMAILS).includes(identity.email.trim().toLowerCase());
+  }
+  private async applySuperAdmin(userId: string, identity: CloudflareIdentity): Promise<string | undefined> {
     const workspaces = operatorWorkspaces(this.options.INSTALLATION_OWNER_WORKSPACES);
-    const grant = identity.emailVerified === true && superAdminEmails(this.options.SUPER_ADMIN_EMAILS).includes(identity.email.trim().toLowerCase());
+    const grant = this.isSuperAdmin(identity);
     for (const workspaceId of workspaces) {
       const outcome = await this.shard(workspaceId).superAdmin(userId, grant);
       if (outcome === 'granted') await this.identity().addHint(userId, workspaceId);
       if (outcome === 'removed') await this.identity().removeHint(userId, workspaceId);
     }
+    return grant ? workspaces[0] : undefined;
   }
   private async issueSession(user: User, workspaceId: string, revision?: number, extra: Partial<{ expiresAt: number; authenticatedAt: number }> = {}) {
     const value = mintToken(workspaceId);

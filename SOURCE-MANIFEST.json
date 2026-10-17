@@ -800,8 +800,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 138017,
-      "sha256": "5630a4d786c3e2d18a4df4ade599aa6d0dc71d56d1275787d46bdd9ec254df06"
+      "size": 138277,
+      "sha256": "ca84bcfcca3059474b6f3f6ae9908363fc79fd51c51865ccb1d5d0c9da7d2ece"
     },
     {
       "path": "src/worker/skill-edit.ts",
