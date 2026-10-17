@@ -60,6 +60,7 @@ import AiSettingsPanel from "./AiSettingsPanel";
 import RepositoryImport, { RepositoryImportOnboarding, quoteGitArgument } from "./RepositoryImport";
 import { canonicalizeLegacyHash, currentRoute, navigate as goTo, onRouteChange, isKnownAppRoute, isPublicDocumentationRoute, POLICY_ROUTES, PUBLIC_PRODUCT_ROUTES } from "./router";
 import ThemeToggle from "./ThemeToggle";
+import "./policy-pages.css";
 import { InstallationCredentialPrompt } from "./InstallationCredential";
 
 const loadMissionDetail = () => import("./MissionDetail");
