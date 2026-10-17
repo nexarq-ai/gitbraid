@@ -29,6 +29,19 @@ export interface MissionSummaryCache { repositoryId: string; summaries: MissionS
 export interface IntegrationClaim { claimId?: string; missionId: string; epoch: number; candidateSha: string; baseSha: string; claimedAt?: number; phase?: 'preparing' | 'pushing' }
 const INTEGRATION_PREPARATION_MS = 600_000;
 
+function lastPreview(state: PreviewState, reason: PreviewEndReason, endedAt: number): LastPreview {
+  return {
+    candidateSha: state.candidateSha, epoch: state.epoch, kind: state.worker ? 'worker' : 'container', previewUrl: state.worker?.previewUrl ?? null,
+    ...(state.readyAt ? { readyAt: new Date(state.readyAt).toISOString() } : {}),
+    expiresAt: new Date(state.expiresAt).toISOString(), endedAt: new Date(reason === 'expired' ? state.expiresAt : endedAt).toISOString(), reason,
+  };
+}
+
+export function draftRuns(mission: Mission): Mission {
+  if (mission.status !== 'draft' || !mission.runs.some((run) => run.status === 'queued')) return mission;
+  return { ...mission, runs: mission.runs.map((run) => run.status === 'queued' ? { ...run, status: 'draft' } : run) };
+}
+
 function eligibleRaceRuns(mission: Mission): Mission['runs'] {
   const checks = mission.raceChecks ?? mission.checks;
   return mission.runs.filter((run) => run.status === 'completed' && !!run.commitSha && !!run.forkName && checks.some((check) => check.runId === run.id && check.status === 'passed' && check.candidateSha === run.commitSha));
@@ -47,7 +60,9 @@ export const PREVIEW_HEARTBEAT_MS = 30_000;
 export const PREVIEW_READY_MS = 900_000;
 export const WORKER_PREVIEW_TTL_MS = 900_000;
 interface PreviewFailureRecord { claimId: string; epoch: number; candidateSha: string; message: string; failedAt: string }
-export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; expiresAt?: string; readyAt?: string; extended?: boolean; extendable?: boolean; error?: string; message?: string; kind?: 'worker' | 'container'; worker?: WorkerPreviewInfo; access?: 'link' | 'cloudflare-access' | 'members' }
+export type PreviewEndReason = 'expired' | 'retired' | 'replaced';
+export interface LastPreview { candidateSha: string; epoch: number; kind: 'worker' | 'container'; previewUrl: string | null; readyAt?: string; expiresAt: string; endedAt: string; reason: PreviewEndReason }
+export interface PreviewStatus { status: 'none' | 'starting' | 'ready' | 'failed'; candidateSha: string | null; last?: LastPreview; expiresAt?: string; readyAt?: string; extended?: boolean; extendable?: boolean; error?: string; message?: string; kind?: 'worker' | 'container'; worker?: WorkerPreviewInfo; access?: 'link' | 'cloudflare-access' | 'members' }
 interface DispatchIntent { workflowId: string; missionId: string; repositoryId: string; epoch: number; attempts: number; nextAttemptAt: number }
 export const DISPATCH_FAST_ATTEMPTS = 8;
 interface MissionWatch { workflowId: string; missionId: string; epoch: number; deliveredAt: number; lastReportAt: number; checkAt: number; misses: number }
@@ -476,6 +491,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         if (current.worker) return { worker: current.worker, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt };
         return current.sandboxName ? { sandboxName: current.sandboxName, claimId: current.claimId, claimed: false, expiresAt: current.expiresAt } : { claimId: current.claimId, claimed: false };
       }
+      if (current?.phase === 'ready') this.rememberPreview(id, current, current.expiresAt <= Date.now() ? 'expired' : 'replaced');
       const claimId = crypto.randomUUID();
       this.store.put(`preview-state:${id}`, { claimId, epoch, candidateSha, phase: 'preparing', expiresAt: Date.now() + PREVIEW_LEASE_MS } satisfies PreviewState);
       this.store.delete(`preview-failure:${id}`);
@@ -545,9 +561,16 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       if (!record || (claimId && record.claimId !== claimId)) return null;
       this.store.delete(`worker-preview:${id}`);
       const state = this.store.get<PreviewState>(`preview-state:${id}`);
-      if (state?.worker) this.store.delete(`preview-state:${id}`);
+      if (state?.worker) {
+        if (state.phase === 'ready') this.rememberPreview(id, state, state.expiresAt <= Date.now() ? 'expired' : 'retired');
+        this.store.delete(`preview-state:${id}`);
+      }
       return record;
     });
+  }
+
+  private rememberPreview(id: string, state: PreviewState, reason: PreviewEndReason): void {
+    this.store.put(`preview-last:${id}`, lastPreview(state, reason, Date.now()) satisfies LastPreview);
   }
 
   previewFailed(id: string, claimId: string, message?: string): boolean {
@@ -574,9 +597,12 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         ...(ready.worker ? { kind: 'worker' as const, worker: ready.worker, access: ready.worker.host?.access ?? 'link' } : { kind: 'container' as const, access: 'members' as const }),
       };
     }
+    const expired = state?.phase === 'ready' && state.expiresAt <= Date.now() ? lastPreview(state, 'expired', Date.now()) : undefined;
+    const last = expired ?? this.store.get<LastPreview>(`preview-last:${id}`);
+    const history = last ? { last } : {};
     const failure = this.store.get<PreviewFailureRecord>(`preview-failure:${id}`);
-    if (current(failure)) return { status: 'failed', candidateSha: mission.candidateSha, error: failure!.message };
-    return { status: 'none', candidateSha: mission.candidateSha };
+    if (current(failure)) return { status: 'failed', candidateSha: mission.candidateSha, error: failure!.message, ...history };
+    return { status: 'none', candidateSha: mission.candidateSha, ...history };
   }
 
   createRepository(key: string, repository: Repository): Repository {
@@ -603,11 +629,11 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
   private readonly blobs: BlobStore = { get: (key) => this.store.get<string>(key), putIfAbsent: (key, value) => this.store.putIfAbsent(key, value) };
 
   listMissions(): Mission[] {
-    return this.store.list<Mission>('mission:').map((mission) => unpackMission(mission, this.blobs)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.list<Mission>('mission:').map((mission) => draftRuns(unpackMission(mission, this.blobs))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   listMissionSummaries(): MissionSummary[] {
-    return this.store.list<Mission>('mission:').map(summarizeMission).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.list<Mission>('mission:').map((mission) => summarizeMission(draftRuns(mission))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   getMission(id: string): Mission | undefined {
@@ -615,7 +641,21 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
     if (!stored) return undefined;
     const mission = unpackMission(stored, this.blobs);
     if (needsPacking(stored)) this.store.put(`mission:${id}`, packMission(mission, this.blobs));
-    return mission;
+    return draftRuns(mission);
+  }
+
+  recordMissionEvent(id: string, message: string): void {
+    const mission = this.getMission(id);
+    if (mission) this.saveMission(mission, message);
+  }
+
+  missionCandidate(commitSha: string): { missionId: string; forkName?: string } | undefined {
+    for (const mission of this.store.list<Mission>('mission:')) {
+      if (mission.candidateSha === commitSha) return { missionId: mission.id, ...(mission.integrationForkName ? { forkName: mission.integrationForkName } : {}) };
+      const run = mission.runs.find((item) => item.commitSha === commitSha);
+      if (run) return { missionId: mission.id, ...(run.forkName ? { forkName: run.forkName } : {}) };
+    }
+    return undefined;
   }
 
   missionRepository(id: string): string | undefined { return this.store.get<string>(`mission-repository:${id}`); }
@@ -679,7 +719,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         id, repositoryId: repository.id, title: input.title, prompt: input.prompt,
         acceptanceCriteria: criteria, authorization, ...(input.attachments?.length ? { attachments: input.attachments.map(({ name, content }) => ({ name, content })) } : {}), ...(skillChange ? { skillChange } : {}), ...(revertChange ? { revertChange: { ...revertChange } } : {}), ...(branchChange ? { branchChange } : {}), ...(input.issueNumber !== undefined ? { issueNumber: input.issueNumber } : {}), ...(race ? { mode: 'race' as const } : {}),
         status: 'draft', baseSha: repository.headSha, candidateSha: null, epoch: 0,
-        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'queued', changedFiles: [] })),
+        runs: tasks.map((task) => ({ ...task, assignment: task.task, id: crypto.randomUUID(), task: `${input.prompt}\nYou are ${task.name} (${task.role}). ${race ? 'Complete the whole mission on your own; other agents are attempting it independently and a reviewer will choose one result. Your approach' : 'Your assigned task'}: ${task.task}\nPreserve existing tests and run them.${criteria.length ? `\nAcceptance criteria:\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''}`, status: 'draft', changedFiles: [] })),
         checks: [], changes: [], events: [], createdAt: now, updatedAt: now,
       };
       if (mission.issueNumber !== undefined) linkIssueMission(this.store, mission.issueNumber, mission.id, now);
@@ -710,6 +750,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
         const mission = this.newMission(skillMissionInput(repositoryId, change), authorization, undefined, missionId);
         mission.status = 'queued';
         mission.epoch = 1;
+        mission.runs = mission.runs.map((run) => ({ ...run, status: 'queued' }));
         this.queueDispatch(mission);
         return this.saveMission(mission, 'Skill edit queued for exact-content execution and repository checks.');
       });
@@ -1176,7 +1217,7 @@ export class GitflareCoordinator extends DurableObject<AppEnv> {
       this.store.delete('integration:claim');
       mission.status = 'integrated';
       delete mission.error;
-      this.saveMission(mission, `Verified canonical branch at approved commit ${sha.slice(0, 12)}. No production deployment was triggered.`, 'success');
+      this.saveMission(mission, `Verified canonical branch at approved commit ${sha.slice(0, 12)}.`, 'success');
       this.archive(mission, 'integrated');
       this.recordLinkedIssues(mission, sha);
       return mission;

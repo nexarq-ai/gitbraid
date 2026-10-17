@@ -12,7 +12,7 @@ export function catalogName(workspaceId: string): string { return workspaceId ==
 
 export function capacityError(kind: CapacityKind): ApiError {
   return kind === 'mission'
-    ? new ApiError(429, 'WORKSPACE_MISSION_LIMIT', `This workspace is already running ${WORKSPACE_MISSION_LIMIT} missions, the most it can run at once. Wait for one to finish or cancel it, then start again.`)
+    ? new ApiError(429, 'WORKSPACE_MISSION_LIMIT', `This workspace is already running ${WORKSPACE_MISSION_LIMIT} missions, the most it can run at once (each mission runs up to three agents at a time). Wait for one to finish or cancel it, then start again.`)
     : new ApiError(429, 'WORKSPACE_PREVIEW_LIMIT', `This workspace already has ${WORKSPACE_PREVIEW_LIMIT} live previews, the most it can keep at once. Wait for one to expire, then try again.`);
 }
 
