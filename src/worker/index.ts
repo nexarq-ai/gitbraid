@@ -11,7 +11,7 @@ import { checkSettingsSnapshot, normalizeCheckSettings, retryPlan } from './chec
 import { handlePreviewSettings } from './preview-settings-api';
 import type { AppEnv } from './env';
 import { executionReadiness } from './execution';
-import { backgroundState, dispatchBackground, landingWorkflowId, previewWorkflowId, retireWorkerPreview } from './background-work';
+import { backgroundState, detectRepositorySetup, dispatchBackground, landingWorkflowId, previewWorkflowId, retireWorkerPreview } from './background-work';
 import { backgroundPrincipal, deploymentsApi, deployWorkflowId, type DeployParams } from './deployments';
 import type { ProjectSnapshot } from './cloudflare-projects';
 import { PREVIEW_STEP_MS } from './budgets';
@@ -375,14 +375,16 @@ async function api(request: Request, env: AppEnv, ctx?: ExecutionContext): Promi
     });
     return Response.json(await dispatchCloudflareProject(principal, { ...repository, workspaceId: principal.workspaceId }, operation, body, dependencies));
   }
-  const deploymentsRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/deployments$/.exec(url.pathname);
+  const deploymentsRoute = /^\/api\/repositories\/([a-zA-Z0-9-]+)\/deployments(\/detect)?$/.exec(url.pathname);
   if (deploymentsRoute) {
     const repository = await catalog.getRepository(deploymentsRoute[1]);
     if (!repository) throw new ApiError(404, 'REPOSITORY_NOT_FOUND', 'This repository could not be found.');
     const coordinator = env.GITFLARE_COORDINATOR.getByName(`repository:${repository.id}`);
     return deploymentsApi(request, {
       repository, principal,
-      ledger: { state: () => coordinator.deployState(), get: (id) => coordinator.getDeployment(id), saveEnvironment: (environment, settings) => coordinator.saveDeployEnvironment(environment, settings), create: (key, fingerprint, record) => coordinator.createDeployment(key, fingerprint, record), confirm: (id, actorId) => coordinator.confirmDeployment(id, actorId) },
+      ledger: { state: () => coordinator.deployState(), get: (id) => coordinator.getDeployment(id), saveEnvironment: (environment, settings) => coordinator.saveDeployEnvironment(environment, settings), create: (key, fingerprint, record) => coordinator.createDeployment(key, fingerprint, record), confirm: (id, actorId) => coordinator.confirmDeployment(id, actorId), saveDetected: (environments, detected) => coordinator.saveDetectedDeploySetup(environments, detected) },
+      detectSetup: () => detectRepositorySetup(env, principal, repository),
+      linkWorkers: async (accountId, workers) => { await access.projectStore(principal, repository.id, 'link', { accountId, workers }); },
       authorizeRead: () => access.authorize(principal, 'read', 'repository', repository.id),
       authorizeDeploy: (workerName) => access.authorize(principal, 'deploy', 'environment', workerName),
       canDeploy: async (workerName) => (await access.checkMany(principal, 'deploy', [{ resourceType: 'environment', resourceId: workerName }]))[0] === true,

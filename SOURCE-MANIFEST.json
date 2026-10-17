@@ -275,8 +275,8 @@
     },
     {
       "path": "src/ui/cloudflare-connection.css",
-      "size": 14048,
-      "sha256": "8cff41cc6d59d4ca5391b34a0c807b590752960a510508016ed8208e884e8504"
+      "size": 14773,
+      "sha256": "802c14befc3e977a10fbcebb7d5b00262dde28da25d9097814036fe5829f7d81"
     },
     {
       "path": "src/ui/CloudflareConnection.tsx",
@@ -295,8 +295,8 @@
     },
     {
       "path": "src/ui/Deployments.tsx",
-      "size": 20193,
-      "sha256": "ebb31def7a04cf7b9baabb2eec8bb77f8ece8860bf72561b0c39c9df4294a7e6"
+      "size": 28773,
+      "sha256": "6eb80da81e6a2052cc0277efa90d52107642390b8c59f7374d2d7973dbeb6498"
     },
     {
       "path": "src/ui/diff-highlight.ts",
@@ -505,8 +505,8 @@
     },
     {
       "path": "src/worker/background-work.ts",
-      "size": 23616,
-      "sha256": "95534f6dfb9ee2e0d5748b95e3d672377ec0cf6fb212dc962f28bff1cceee9eb"
+      "size": 25758,
+      "sha256": "bdb04b002000a65d6b0578a4c4497e54d8ad1eacad10468f91ddb47bdf829f5b"
     },
     {
       "path": "src/worker/branch-protection.ts",
@@ -545,8 +545,8 @@
     },
     {
       "path": "src/worker/cloudflare-projects.ts",
-      "size": 18931,
-      "sha256": "0d5f6a4924e8a05d5659f0583315fbe01e6c9bb910fe707645a07d4b7dd6d388"
+      "size": 18940,
+      "sha256": "c3ef3d59d5b86d2b885a5a9309cb5fb0b482c061ed6177b8168f1c76442d9d03"
     },
     {
       "path": "src/worker/cloudflare.ts",
@@ -554,9 +554,14 @@
       "sha256": "2929b4a441a30894d75aff9f21a12731602494c8e3ef12d3d539c28370933158"
     },
     {
+      "path": "src/worker/config-text.ts",
+      "size": 7592,
+      "sha256": "b067192d2fe5b8cb50920ecdc6a01f7ce45ec9f849aab4be9eb7293ac01a0e8a"
+    },
+    {
       "path": "src/worker/coordinator.ts",
-      "size": 92113,
-      "sha256": "4f8991799b66e5d98e526b6f777ba052f7f71c006f1a4a2da6608472207eb6b4"
+      "size": 92442,
+      "sha256": "ca17f2555a10c51614d7aaf4f5c142e0397a4f3920785b6a185bc130cfe60803"
     },
     {
       "path": "src/worker/d1-migrations.ts",
@@ -574,9 +579,19 @@
       "sha256": "a0929951b6a2323051d6845d0b6145df7f2a622b48e9e5e585d30a4e38a19583"
     },
     {
+      "path": "src/worker/deploy-detect.ts",
+      "size": 27875,
+      "sha256": "225ed79e3908718621c3a9b54e100c2a9bf55d439add18a83da78bfdb3b5d295"
+    },
+    {
+      "path": "src/worker/deploy-environments.ts",
+      "size": 660,
+      "sha256": "90fa6b08c01d1bfd71caf85167e2b0f87c40a960d5310f5ee3b67137d0b09a12"
+    },
+    {
       "path": "src/worker/deployments.ts",
-      "size": 58945,
-      "sha256": "eea75be47f008b9de7857481266e8d9af892cdeead3ce9e7e84732e07b012b29"
+      "size": 67584,
+      "sha256": "ae7f24ec922edd30f51e49a7395face78212f7e026b85ccf66278bfe80dd7086"
     },
     {
       "path": "src/worker/distribution.ts",
@@ -635,8 +650,8 @@
     },
     {
       "path": "src/worker/index.ts",
-      "size": 79275,
-      "sha256": "453095b20a12700f13a305b4390218048c5f6ad42fcbf6ad6e719867fe5b0d4c"
+      "size": 79627,
+      "sha256": "0a81a9d1a7aab7af28d9193e4e940b00a11016ae1837b169f6cc52b306843a9a"
     },
     {
       "path": "src/worker/installation-credential.ts",
@@ -650,8 +665,8 @@
     },
     {
       "path": "src/worker/mcp.ts",
-      "size": 84895,
-      "sha256": "0e589dbd0d258e2766e819813ed9816ca23f70703bfc560cacbcc5b7f6399c1c"
+      "size": 86369,
+      "sha256": "d74e041dd0921a094a0e158702db85b29c4916356ff3e13e99a4957951468e73"
     },
     {
       "path": "src/worker/mfa.ts",
@@ -775,8 +790,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 133385,
-      "sha256": "1fe4f8479a4babf6217579b91306a6f97691198e50713c4640748a4d256d5cfd"
+      "size": 135170,
+      "sha256": "a3ac23841260d096e76a4ecfcf2caece1517a0f8e5c88cb5b87c4d4930b813b1"
     },
     {
       "path": "src/worker/skill-edit.ts",
