@@ -180,8 +180,8 @@
     },
     {
       "path": "src/ui/App.tsx",
-      "size": 77180,
-      "sha256": "be4448ee111f706db96fd470184a093ce048446ff2b8e88fb46b65287223f867"
+      "size": 77742,
+      "sha256": "6fa50ed049e7243caa7c27ca2060aa1a8818bb8aaf7845121543f98674b55750"
     },
     {
       "path": "src/ui/assets/cloudflare-icon.svg",
@@ -250,8 +250,8 @@
     },
     {
       "path": "src/ui/AuthScreen.tsx",
-      "size": 14941,
-      "sha256": "920116379d25acbe2a0b3e682091910da117c43702fa45a288355162dbd4fd39"
+      "size": 14969,
+      "sha256": "43a4002d77b03987d6692321459e59b5096558ecc43e4ca381c26675332303e8"
     },
     {
       "path": "src/ui/branches.css",
@@ -377,6 +377,16 @@
       "path": "src/ui/ModelConnections.tsx",
       "size": 8387,
       "sha256": "b4861437b7297a2f503785ca845f8584b3b54910bc9f583da269d50ecfc20999"
+    },
+    {
+      "path": "src/ui/owner-token-notice.ts",
+      "size": 1304,
+      "sha256": "d1e5769788501baf25a43c9a2b3e1835781cf719099214bfa384565dcab8f1e7"
+    },
+    {
+      "path": "src/ui/OwnerTokenNotice.tsx",
+      "size": 2079,
+      "sha256": "af66460f6806acfe53f3ed531a1fb2b18d57697ba8b7c33e8a7068ea65e125ab"
     },
     {
       "path": "src/ui/PreviewSettings.tsx",
@@ -550,8 +560,8 @@
     },
     {
       "path": "src/worker/cloudflare.ts",
-      "size": 31980,
-      "sha256": "2929b4a441a30894d75aff9f21a12731602494c8e3ef12d3d539c28370933158"
+      "size": 32128,
+      "sha256": "0bd16afb64e65d43196292be9bc21944a932e1b6c0dbb333f05158b5a61417e3"
     },
     {
       "path": "src/worker/config-text.ts",
@@ -620,8 +630,8 @@
     },
     {
       "path": "src/worker/env.ts",
-      "size": 2140,
-      "sha256": "84cbcf0bd8b758e1b9be5d2cde81a5029f1fc610317782d5165f48183eb86b65"
+      "size": 2171,
+      "sha256": "9df881a0e2ae143a8f500e8829a724e5293afff35e61efc5fa0a36edbbded10c"
     },
     {
       "path": "src/worker/execution.ts",
@@ -790,8 +800,8 @@
     },
     {
       "path": "src/worker/security.ts",
-      "size": 135170,
-      "sha256": "a3ac23841260d096e76a4ecfcf2caece1517a0f8e5c88cb5b87c4d4930b813b1"
+      "size": 138017,
+      "sha256": "5630a4d786c3e2d18a4df4ade599aa6d0dc71d56d1275787d46bdd9ec254df06"
     },
     {
       "path": "src/worker/skill-edit.ts",

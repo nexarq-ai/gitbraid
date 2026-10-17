@@ -14,7 +14,7 @@ export const ROLE_ACTIONS: Record<Role, Action[]> = {
   Maintainer: ['read', 'contribute', 'execute', 'review', 'land'], Deployer: ['read', 'deploy'], Owner: ['read', 'contribute', 'execute', 'review', 'land', 'deploy', 'migrate', 'manage'],
 };
 interface User { id: string; name: string; email: string; salt: string; hash: string; machine?: boolean; emailVerified?: boolean; cloudflareId?: string; revision?: number; reviewer?: { workspaceId: string }; disabled?: boolean }
-interface Member { userId: string; workspaceId: string; role: Role; repositoryIds?: string[] }
+interface Member { userId: string; workspaceId: string; role: Role; repositoryIds?: string[]; superAdmin?: { previousRole?: Role; previousRepositoryIds?: string[] } }
 interface Session { id: string; userId: string; workspaceId: string; hash: string; expiresAt: number; authenticatedAt?: number; revoked?: boolean; client?: string }
 type PublicSession = Omit<Session, 'hash'>;
 interface WorkspaceRecord { id: string; name: string; bootstrapDisabled?: boolean; agentPending?: boolean }
@@ -25,7 +25,7 @@ interface Credential { id: string; workspaceId: string; userId: string; name: st
 interface Protection { requiredApprovals: number; requiredChecks: string[]; preventSelfApproval: boolean }
 export interface ReviewRule { requiredApprovals: number; requiredCheckNames: string[]; preventSelfApproval: boolean; restrictLanders: Role[] }
 interface Audit { id: string; workspaceId: string; actorId: string; action: string; timestamp: string; resourceId?: string; sequence?: number }
-export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string; INSTALLATION_OWNER_WORKSPACES?: string }
+export interface SecurityOptions { EDITION?: 'hosted' | 'self-hosted'; SETUP_TOKEN?: string; ADMIN_EMAIL?: string; ADMIN_PASSWORD?: string; AUTH_ENCRYPTION_KEY?: string; INSTALLATION_OWNER_WORKSPACES?: string; SUPER_ADMIN_EMAILS?: string }
 export interface InstallationCredentialRecord { version: string; encrypted: string; accountId: string; workerName: string; permissions: string[]; missing: string[]; verifiedAt: string; setBy: string }
 interface MfaRecord { id: string; encryptedSecret: string; enabled: boolean; lastStep: number; recoveryHashes: string[] }
 interface AuthChallenge { id: string; userId: string; kind: 'setup' | 'enroll' | 'login'; workspaceId?: string; expiresAt: number; used?: boolean; linkId?: string }
@@ -87,6 +87,9 @@ const SWEEP_BATCH = 500;
 const OUTBOX_GRACE_MS = 30_000;
 const MIGRATION_VERSION = 1;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function listSetting(value: string | undefined): string[] { return [...new Set((value ?? '').split(',').map(item => item.trim()).filter(Boolean))]; }
+export function superAdminEmails(value: string | undefined): string[] { return listSetting(value?.toLowerCase()).filter(email => EMAIL_PATTERN.test(email)); }
+export function operatorWorkspaces(value: string | undefined): string[] { return listSetting(value); }
 function sameHash(left: string, right: string): boolean { const a = encode.encode(left); const b = encode.encode(right); return a.length === b.length && timingSafeEqual(a, b); }
 function liveFailure(failures: LoginFailures | undefined, now: number): failures is LoginFailures { return !!failures && (failures.lockedUntil ? failures.lockedUntil > now : failures.updatedAt + LOGIN_FAILURE_WINDOW_MS > now); }
 
@@ -868,6 +871,28 @@ export class WorkspaceStore {
       change.audit.push({ actorId: p.userId, action: 'access:user-create', resourceId: userId });
     });
   }
+  async superAdmin(userId: string, grant: boolean): Promise<'granted' | 'demoted' | 'removed' | null> {
+    await this.load(); if (!this.initialized) return null;
+    return this.change(change => {
+      const member = this.data.member.get(userId);
+      if (grant) {
+        if (member?.role === 'Owner') return null;
+        this.data.member.set(userId, { userId, workspaceId: this.workspaceId, role: 'Owner', superAdmin: member ? { previousRole: member.role, ...(member.repositoryIds ? { previousRepositoryIds: member.repositoryIds } : {}) } : {} });
+        change.audit.push({ actorId: userId, action: 'workspace.super_admin.granted', resourceId: userId });
+        return 'granted';
+      }
+      if (!member?.superAdmin) return null;
+      change.audit.push({ actorId: userId, action: 'workspace.super_admin.revoked', resourceId: userId });
+      const { previousRole, previousRepositoryIds } = member.superAdmin;
+      if (previousRole) { this.data.member.set(userId, { userId, workspaceId: this.workspaceId, role: previousRole, ...(previousRepositoryIds ? { repositoryIds: previousRepositoryIds } : {}) }); return 'demoted'; }
+      this.data.member.delete(userId);
+      for (const credential of this.data.credential.values()) if (credential.userId === userId) credential.revoked = true;
+      for (const session of this.data.session.values()) if (session.userId === userId) session.revoked = true;
+      for (const [id, g] of this.data.grant) if (g.subjectType === 'user' && g.subjectId === userId) this.data.grant.delete(id);
+      for (const team of this.data.team.values()) team.userIds = team.userIds.filter(id => id !== userId);
+      return 'removed';
+    });
+  }
   async claimAgent(userId: string): Promise<void> {
     await this.change(change => {
       const record = this.record(); if (!record) fail();
@@ -910,7 +935,7 @@ export class WorkspaceStore {
         }
         return { ok: true };
       }
-      if (action === 'transfer') { const authenticatedAt = this.session(p.sessionId, prepared)?.authenticatedAt; if ((!p.bootstrap || p.sessionId) && (authenticatedAt === undefined || Date.now() - authenticatedAt > 300000 || authenticatedAt > Date.now())) fail('RECENT_AUTH_REQUIRED', 'Sign in again before transferring workspace ownership.'); const target = member(body.userId); if (target.userId === p.userId) fail(); const previous = data.member.get(p.userId); if (previous) previous.role = 'Maintainer'; target.role = 'Owner'; delete target.repositoryIds; this.record()!.bootstrapDisabled = true; return { ok: true }; }
+      if (action === 'transfer') { const authenticatedAt = this.session(p.sessionId, prepared)?.authenticatedAt; if ((!p.bootstrap || p.sessionId) && (authenticatedAt === undefined || Date.now() - authenticatedAt > 300000 || authenticatedAt > Date.now())) fail('RECENT_AUTH_REQUIRED', 'Sign in again before transferring workspace ownership.'); const target = member(body.userId); if (target.userId === p.userId) fail(); const previous = data.member.get(p.userId); if (previous) { previous.role = 'Maintainer'; delete previous.superAdmin; } target.role = 'Owner'; delete target.repositoryIds; delete target.superAdmin; this.record()!.bootstrapDisabled = true; return { ok: true }; }
       if (action === 'team-create') { const team: Team = { id: crypto.randomUUID(), workspaceId, name: requireString(body.name, 'Team name', 100), userIds: [] }; data.team.set(team.id, team); return team; }
       if (action === 'team-member') { const team = data.team.get(String(body.teamId)); if (!team || team.workspaceId !== workspaceId) fail(); const target = member(body.userId); team.userIds = body.remove ? team.userIds.filter(id => id !== target.userId) : [...new Set([...team.userIds, target.userId])]; return team; }
       if (action === 'grant-revoke') { const grant = data.grant.get(String(body.id)); if (!grant || grant.workspaceId !== workspaceId) fail(); data.grant.delete(grant.id); return { ok: true }; }
@@ -1072,7 +1097,7 @@ function validActions(value: unknown): Action[] { if (!Array.isArray(value) || !
 type Remote<T> = { [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never };
 export interface SecurityPeer { identityCall(op: string, args: unknown[]): Promise<unknown>; shardCall(workspaceId: string, op: string, args: unknown[]): Promise<unknown> }
 const IDENTITY_OPS = new Set(['rateLimit', 'users', 'account', 'accountByEmail', 'hints', 'addHint', 'removeHint', 'mfaEnabled', 'installationCredential', 'installationWorkspace', 'selfHostedAllowed', 'lookup', 'index', 'loginAttempt', 'loginFinish', 'applyLink', 'beginMfa', 'challenge', 'verifyChallenge', 'finishOutbox', 'revokeAccount', 'startSetup', 'createUser', 'deleteUser', 'verifyEmail', 'resendVerification', 'requestReset', 'confirmReset', 'cloudflareSigninState', 'cloudflareLookup', 'cloudflareLinkRequest', 'reviewerCreate', 'reviewerUpdate', 'machine', 'createMachine', 'claimMachine', 'legacyWorkspace', 'legacyImported', 'migrationStatus']);
-const SHARD_OPS = new Set(['ensureImported', 'authenticateToken', 'sessionPrincipal', 'sessionState', 'isMember', 'validatePrincipal', 'enrollmentAllowed', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshotPart', 'membership', 'bootstrapAllowed', 'createSession', 'clientSession', 'revokeSession', 'revokeUserSessions', 'revokeUserCredentials', 'audit', 'auditMember', 'initWorkspace', 'peekInvite', 'acceptInvite', 'addMember', 'claimAgent', 'action', 'connectionStore', 'projectStore', 'clearApprovals', 'recordApproval', 'assertLand']);
+const SHARD_OPS = new Set(['ensureImported', 'authenticateToken', 'sessionPrincipal', 'sessionState', 'isMember', 'validatePrincipal', 'enrollmentAllowed', 'authorize', 'authorizeMetadata', 'check', 'checkMany', 'workspace', 'snapshotPart', 'membership', 'bootstrapAllowed', 'createSession', 'clientSession', 'revokeSession', 'revokeUserSessions', 'revokeUserCredentials', 'audit', 'auditMember', 'initWorkspace', 'peekInvite', 'acceptInvite', 'addMember', 'superAdmin', 'claimAgent', 'action', 'connectionStore', 'projectStore', 'clearApprovals', 'recordApproval', 'assertLand']);
 function remote<T>(call: (op: string, args: unknown[]) => Promise<unknown>, inDurableObject: boolean): Remote<T> {
   return new Proxy({}, {
     get: (_target, op) => typeof op !== 'string' || op === 'then' ? undefined : async (...args: unknown[]) => {
@@ -1121,6 +1146,15 @@ export class SecurityService {
     return undefined;
   }
   private async sessionHome(id: string): Promise<string | null> { return sessionIdHome(id) ?? await this.identity().lookup('sessionHome', id); }
+  private async applySuperAdmin(userId: string, identity: CloudflareIdentity) {
+    const workspaces = operatorWorkspaces(this.options.INSTALLATION_OWNER_WORKSPACES);
+    const grant = identity.emailVerified === true && superAdminEmails(this.options.SUPER_ADMIN_EMAILS).includes(identity.email.trim().toLowerCase());
+    for (const workspaceId of workspaces) {
+      const outcome = await this.shard(workspaceId).superAdmin(userId, grant);
+      if (outcome === 'granted') await this.identity().addHint(userId, workspaceId);
+      if (outcome === 'removed') await this.identity().removeHint(userId, workspaceId);
+    }
+  }
   private async issueSession(user: User, workspaceId: string, revision?: number, extra: Partial<{ expiresAt: number; authenticatedAt: number }> = {}) {
     const value = mintToken(workspaceId);
     await this.shard(workspaceId).createSession({ userId: user.id, hash: await hashToken(value), revision, ...extra });
@@ -1147,7 +1181,7 @@ export class SecurityService {
   async installationCredentialAdmin(p: Principal): Promise<boolean> {
     await this.shard(p.workspaceId).validatePrincipal(p, { owner: true });
     if (this.options.EDITION === 'self-hosted') return await this.identity().installationWorkspace() === p.workspaceId;
-    return (this.options.INSTALLATION_OWNER_WORKSPACES ?? '').split(',').map(value => value.trim()).filter(Boolean).includes(p.workspaceId);
+    return operatorWorkspaces(this.options.INSTALLATION_OWNER_WORKSPACES).includes(p.workspaceId);
   }
   installationCredential(): Promise<InstallationCredentialRecord | null> { return this.identity().installationCredential('get') as Promise<InstallationCredentialRecord | null>; }
   async changeInstallationCredential(p: Principal, value: InstallationCredentialRecord | null): Promise<void> {
