@@ -8,6 +8,7 @@ import {
 import type { Mission, MissionSummary } from "../shared/types";
 import { request } from "./api";
 import { EmptyState, Status, relativeTime } from "./components";
+import { OperationTrack } from "./OperationMotion";
 import AgentAssignment from "./AgentAssignment";
 import "./repository-work.css";
 
@@ -218,7 +219,7 @@ export default function RepositoryWork({
                   >
                     {run.name}
                   </button>
-                  <Status status={run.status} />
+                  {["queued", "running", "checking"].includes(run.status) && <OperationTrack compact kind="agents" />}<Status status={run.status} />
                 </div>
                 <p>
                   <button
@@ -271,7 +272,7 @@ export default function RepositoryWork({
                   >
                     {check.name}
                   </button>
-                  <Status status={check.status} />
+                  {["pending", "running"].includes(check.status) && <OperationTrack compact kind="agents" />}<Status status={check.status} />
                 </div>
                 <p>
                   <button
@@ -384,7 +385,7 @@ function CheckOutput({ missionId, checkId }: { missionId: string; checkId: strin
   return (
     <details onToggle={(event) => { if (event.currentTarget.open) load(); }}>
       <summary>View check output</summary>
-      {error ? <p className="repository-work-error">{error}</p> : output === undefined ? <p>Loading output…</p> : output ? <pre className="code-output">{output}</pre> : <p>No output recorded.</p>}
+      {error ? <p className="repository-work-error">{error}</p> : output === undefined ? <div className="operation-inline-status"><OperationTrack compact />Loading output…</div> : output ? <pre className="code-output">{output}</pre> : <p>No output recorded.</p>}
     </details>
   );
 }
