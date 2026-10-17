@@ -1,11 +1,11 @@
 .branch-actions { display: flex; justify-content: flex-end; }
 .branch-created { margin-top: 16px; }
-.branch-created .panel-body > p { margin: 0 0 10px; font-size: 13px; color: #626b79; }
+.branch-created .panel-body > p { margin: 0 0 10px; font-size: 13px; color: var(--gf-color-text-secondary); }
 .branch-created .text-link { display: inline-flex; align-items: center; gap: 5px; margin-top: 12px; font-size: 13px; }
 .branch-source { display: flex; gap: 16px; margin-bottom: 8px; font-size: 13px; }
 .branch-source label { display: inline-flex; align-items: center; gap: 6px; }
 .issue-header-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
-.proposal-issue-link { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 16px; padding: 10px 12px; border: 1px solid #e1e7ef; border-radius: 6px; font-size: 13px; }
-.proposal-issue-link small { color: #626b79; }
+.proposal-issue-link { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 16px; padding: 10px 12px; border: 1px solid var(--gf-color-border); border-radius: 6px; font-size: 13px; }
+.proposal-issue-link small { color: var(--gf-color-text-secondary); }
 .branch-header-actions { display: flex; align-items: center; gap: 10px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

@@ -1,7 +1,7 @@
 .repository-navigation {
   display: flex;
   gap: 22px;
-  border-bottom: 1px solid #dfe3e8;
+  border-bottom: 1px solid var(--gf-color-border);
   margin-bottom: 24px;
   overflow-x: auto;
 }
@@ -14,15 +14,15 @@
   border: 0;
   border-bottom: 2px solid transparent;
   background: none;
-  color: #555d68;
+  color: var(--gf-color-text-secondary);
   font-size: 13px;
   white-space: nowrap;
   cursor: pointer;
   text-decoration: none;
 }
 .repository-navigation > button[aria-current] {
-  color: #222;
-  border-bottom-color: #f6821f;
+  color: var(--gf-color-text);
+  border-bottom-color: var(--gf-color-accent);
   font-weight: 600;
 }
 .repository-browser .source-toolbar {
@@ -32,9 +32,9 @@
 .repository-browser .ref-picker {
   gap: 7px;
   padding: 0 0 0 10px;
-  border: 1px solid #d7dce2;
+  border: 1px solid var(--gf-color-border);
   border-radius: 6px;
-  background: #f8f9fb;
+  background: var(--gf-color-surface);
   min-width: 0;
   max-width: 100%;
 }
@@ -45,51 +45,51 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: #343b45;
+  color: var(--gf-color-text);
   font-size: 12px;
 }
 .repository-browser .ref-picker > button {
   padding: 8px 10px;
   border: 0;
-  border-left: 1px solid #d7dce2;
+  border-left: 1px solid var(--gf-color-border);
   border-radius: 0 5px 5px 0;
-  background: #fff;
-  color: #59616c;
+  background: var(--gf-color-surface-raised);
+  color: var(--gf-color-text-secondary);
   font-size: 12px;
   cursor: pointer;
 }
 .repository-browser .source-breadcrumbs { min-width: 0; font-size: 12px; }
 .repository-browser .source-breadcrumbs button { overflow-wrap: anywhere; cursor: pointer; }
-.repository-browser .source-panel { border-color: #dfe3e8; border-radius: 7px; overflow: hidden; }
+.repository-browser .source-panel { border-color: var(--gf-color-border); border-radius: 7px; overflow: hidden; }
 .source-revision-bar {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: #f7f9fb;
-  border-bottom: 1px solid #dfe3e8;
+  background: var(--gf-color-surface);
+  border-bottom: 1px solid var(--gf-color-border);
   font-size: 12px;
-  color: #59616c;
+  color: var(--gf-color-text-secondary);
 }
 .source-selection { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
 .source-selection > svg { flex-shrink: 0; }
-.source-entry-count { margin-left: auto; white-space: nowrap; color: #717b86; font-size: 11px; }
+.source-entry-count { margin-left: auto; white-space: nowrap; color: var(--gf-color-text-secondary); font-size: 11px; }
 .source-revision-bar .status-strip { margin-left: auto; font-size: 11px; white-space: nowrap; }
 .source-entry-count + .status-strip { margin-left: 0; }
 .repository-browser .source-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
-.repository-browser .source-table td { padding: 10px 16px; border-bottom: 1px solid #edf0f3; font-size: 12px; }
+.repository-browser .source-table td { padding: 10px 16px; border-bottom: 1px solid var(--gf-color-border); font-size: 12px; }
 .repository-browser .source-table tr:last-child td { border-bottom: 0; }
-.repository-browser .source-table tbody tr:hover { background: #f8f9fb; }
-.repository-browser .source-table td:last-child:not(:first-child) { width: 100px; text-align: right; color: #717b86; font-size: 11px; }
-.source-entry { display: inline-flex; align-items: center; gap: 9px; max-width: 100%; border: 0; padding: 0; background: none; color: #303842; cursor: pointer; font: inherit; text-align: left; }
-.source-entry > svg { flex-shrink: 0; color: #7b8b9f; }
+.repository-browser .source-table tbody tr:hover { background: var(--gf-color-surface); }
+.repository-browser .source-table td:last-child:not(:first-child) { width: 100px; text-align: right; color: var(--gf-color-text-secondary); font-size: 11px; }
+.source-entry { display: inline-flex; align-items: center; gap: 9px; max-width: 100%; border: 0; padding: 0; background: none; color: var(--gf-color-text); cursor: pointer; font: inherit; text-align: left; }
+.source-entry > svg { flex-shrink: 0; color: var(--gf-color-text-tertiary); }
 .source-entry > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.source-entry:hover { color: #005fbd; text-decoration: underline; }
+.source-entry:hover { color: var(--gf-color-info); text-decoration: underline; }
 .source-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .repository-browser button:focus-visible,
 .repository-browser input:focus-visible,
 .repository-navigation > button:focus-visible,
-.repository-navigation > a:focus-visible { outline: 2px solid #005fbd; outline-offset: 3px; }
+.repository-navigation > a:focus-visible { outline: 2px solid var(--gf-color-border-strong); outline-offset: 3px; }
 .repository-browser > .panel + .panel { margin-top: 24px; }
 @media (max-width: 600px) {
   .repository-navigation { gap: 18px; }
