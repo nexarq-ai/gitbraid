@@ -4,7 +4,7 @@
 
 This is the open-source, single-workspace edition of Gitflare. It gives every AI agent its own branch and sandbox, tests their changes together, and lands nothing until a person approves the exact commit.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nexarq-ai/gitbraid)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nexarq-ai/gitflare)
 
 ## What you get
 

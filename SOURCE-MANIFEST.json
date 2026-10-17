@@ -36,7 +36,7 @@
     {
       "path": "docs/public/install.md",
       "size": 7087,
-      "sha256": "de2d506546f816a26be9f992152eec471454ac2c27639b2099d43331e29c70c3"
+      "sha256": "d471aff5f379917892e7d107a7eaac870b2209a0de9ab19b9f2895c2ca8892f0"
     },
     {
       "path": "docs/public/mcp.md",
@@ -106,7 +106,7 @@
     {
       "path": "README.md",
       "size": 5249,
-      "sha256": "065eed12ef6eabad32fb9ad9481e203f38452ec073b3fb1c59ae8456fa878f60"
+      "sha256": "d67110802b1e70ee8f6b38118c5e38814d6c8de9309c17043c685ef399f9be81"
     },
     {
       "path": "runner/Dockerfile",

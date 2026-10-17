@@ -2,7 +2,7 @@
 
 Gitflare's self-hosted core is licensed under Apache-2.0 and published in a public GitHub repository. The native Cloudflare Deploy button starts installation from that repository into your own Cloudflare account. It does not connect the hosted Gitflare service or use Nexarq account resources.
 
-[![Deploy Gitflare to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fnexarq-ai%2Fgitbraid)
+[![Deploy Gitflare to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fnexarq-ai%2Fgitflare)
 
 The Cloudflare deployment flow uses a shared provisioning helper to prepare the main and preview Workers and account resources. A fresh-account install through the button has not yet been verified end to end.
 
