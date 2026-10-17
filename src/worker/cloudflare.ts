@@ -29,6 +29,8 @@ const revokeEndpoint = 'https://dash.cloudflare.com/oauth2/revoke';
 const apiOrigin = 'https://api.cloudflare.com/client/v4';
 const cookieName = '__Host-gitflare-cloudflare-state';
 export const CLOUDFLARE_LINK_COOKIE = '__Host-gitflare-cloudflare-link';
+export const CLOUDFLARE_SIGNIN_STATE_COOKIE = '__Host-gitflare-signin-state';
+export const CLOUDFLARE_CALLBACK_PATH = '/api/cloudflare/callback';
 const defaultScopes = 'account-settings.read workers-scripts.metadata_read d1.read d1.write account-analytics.read containers.read';
 const defaultIdentityScopes = 'user-details.read';
 export const WORKER_USAGE_QUERY = 'query GitflareWorkerUsage($accountTag: string!, $scriptName: string!, $start: Time!, $end: Time!) { viewer { accounts(filter: {accountTag: $accountTag}) { workersInvocationsAdaptive(limit: 100, filter: {scriptName: $scriptName, datetime_geq: $start, datetime_leq: $end}) { dimensions {scriptName} sum {requests errors} quantiles {cpuTimeP50 cpuTimeP99} } } } }';
@@ -306,7 +308,8 @@ async function connectionResponse(request:Request,env:AppEnv,p:Principal,action:
 }
 export async function handleCloudflare(request:Request,env:AppEnv,authenticate:(request:Request,env:AppEnv)=>Promise<Principal>):Promise<Response|null> {
   const url=new URL(request.url);const path=url.pathname;if(!path.startsWith('/api/cloudflare'))return null;
-  if(path==='/api/cloudflare/callback'&&request.method==='GET')return callback(request,env);
+  if(path===CLOUDFLARE_CALLBACK_PATH&&request.method==='GET'&&!requestCookie(request,cookieName))return null;
+  if(path===CLOUDFLARE_CALLBACK_PATH&&request.method==='GET')return callback(request,env);
   const p=await authenticate(request,env);await owner(env,p);await service(env).rateLimit(`cloudflare:${p.userId}`,30,60000);
   const credential=/^\/api\/cloudflare\/installation-credential(?:\/([a-z-]+))?$/.exec(path);
   if(credential)return handleInstallationCredential(request,env,p,credential[1]??'');

@@ -560,8 +560,8 @@
     },
     {
       "path": "src/worker/cloudflare.ts",
-      "size": 32268,
-      "sha256": "a75d061cf7fb9a8b173afd5b3e220879422e6285792cfa2010d77bc6eafa19a7"
+      "size": 32522,
+      "sha256": "60a86c0db289134d36299f0cbfc16b10455585c49efdcb9d77134c6ed8f9073a"
     },
     {
       "path": "src/worker/config-text.ts",
